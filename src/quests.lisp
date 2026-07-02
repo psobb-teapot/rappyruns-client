@@ -14,7 +14,16 @@
   start       ; trigger: (:register N) | (:warp-in) | (:floor-switch FLOOR ID)
   end)        ; trigger: (:register N) | (:floor-switch FLOOR ID)
 
-(defvar *quest-defs* '())
+(defvar *quest-defs* '()
+  "Active detection definitions: the builtin sexp merged with any
+trigger-carrying quests fetched from the server.")
+
+(defvar *builtin-quest-defs* '()
+  "Definitions from data/quest-triggers.sexp, kept separate so refreshing
+the server-defined ones does not drop or duplicate them.")
+
+(defvar *server-quest-defs* '()
+  "Definitions built from GET /api/quests (moderator-created categories).")
 
 (defun quest-triggers-path ()
   "data/quest-triggers.sexp next to the executable (delivered image) or
@@ -28,12 +37,22 @@ relative to this system's source directory (development)."
     (or image-relative
         (asdf:system-relative-pathname :ephinea-ta-client "data/quest-triggers.sexp"))))
 
+(defun recompute-quest-defs ()
+  "Server categories win over builtin ones on slug collision."
+  (let ((server-slugs (mapcar #'quest-def-slug *server-quest-defs*)))
+    (setf *quest-defs*
+          (append *server-quest-defs*
+                  (remove-if (lambda (def)
+                               (member (quest-def-slug def) server-slugs
+                                       :test #'string=))
+                             *builtin-quest-defs*)))))
+
 (defun load-quest-defs (&optional (path (quest-triggers-path)))
   (let ((forms (with-open-file (in path :external-format :utf-8)
                  (let ((*read-eval* nil)
                        (*package* (find-package :keyword)))
                    (read in nil nil)))))
-    (setf *quest-defs*
+    (setf *builtin-quest-defs*
           (loop :for entry :in forms
                 :collect (make-quest-def
                           :slug (getf entry :slug)
@@ -42,7 +61,44 @@ relative to this system's source directory (development)."
                           :number (getf entry :number)
                           :start (getf entry :start)
                           :end (getf entry :end))))
-    (length *quest-defs*)))
+    (recompute-quest-defs)
+    (length *builtin-quest-defs*)))
+
+(defun json-trigger (object)
+  "One trigger JSON object (from GET /api/quests) -> internal form, or NIL."
+  (when (hash-table-p object)
+    (let ((type (gethash "type" object)))
+      (cond
+        ((equal type "warp-in") '(:warp-in))
+        ((equal type "register") (list :register (gethash "register" object)))
+        ((equal type "floor-switch")
+         (list :floor-switch (gethash "floor" object) (gethash "switch" object)))))))
+
+(defun server-quest->def (quest)
+  "A GET /api/quests entry -> quest-def, or NIL when it carries no
+detection triggers (a display-only catalog quest)."
+  (let ((start (json-trigger (gethash "start" quest)))
+        (end (json-trigger (gethash "end" quest))))
+    (when (and start end)
+      (let ((names (gethash "game_names" quest)))
+        (make-quest-def
+         :slug (gethash "slug" quest)
+         :episode (gethash "episode" quest)
+         :names (and names (coerce names 'list))
+         :number (gethash "game_number" quest)
+         :start start
+         :end end)))))
+
+(defun set-server-quest-defs (quests)
+  "QUESTS is the parsed GET /api/quests vector. Rebuild the server-defined
+detection entries and merge them with the builtin ones. Returns the
+number of timeable server categories."
+  (setf *server-quest-defs*
+        (loop :for quest :across quests
+              :for def := (server-quest->def quest)
+              :when def :collect def))
+  (recompute-quest-defs)
+  (length *server-quest-defs*))
 
 (defun quest-def-matches-p (def &key number episode name)
   "Match like psostats: by in-game quest number, or by episode + name."

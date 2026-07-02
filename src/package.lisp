@@ -13,6 +13,7 @@
            #:read-snapshot #:snapshot-register-set-p #:snapshot-floor-switch-set-p
            ;; quests
            #:load-quest-defs #:find-quest-def #:find-quest-defs
+           #:set-server-quest-defs
            #:quest-def-slug #:quest-def-episode #:quest-def-names
            #:quest-def-number #:quest-def-start #:quest-def-end
            ;; detect

@@ -118,20 +118,21 @@
              (coerce runs 'vector))))))
 
 (defun check-server (interface)
-  "Verify connectivity and cross-check trigger slugs against the server."
+  "Fetch quests, load any moderator-defined detection categories, and
+cross-check the builtin trigger slugs against the server."
   (mp:process-run-function
    "eta-client-server-check" '()
    (lambda ()
      (handler-case
          (let* ((quests (fetch-quests))
+                (server-defs (set-server-quest-defs quests))
                 (slugs (loop :for quest :across quests
                              :collect (gethash "slug" quest)))
-                (unknown (unknown-slugs slugs)))
+                (unknown (unknown-slugs slugs *builtin-quest-defs*)))
            (set-pane-text interface #'server-status-pane
-                          (if unknown
-                              (format nil "Server: OK (~d quests; ~d local trigger~:p unknown to server)"
-                                      (length quests) (length unknown))
-                              (format nil "Server: OK (~d quests)" (length quests)))))
+                          (format nil "Server: OK (~d quests, ~d timed category~:p~@[; ~d local trigger~:p unknown~])"
+                                  (length quests) server-defs
+                                  (and (plusp (length unknown)) (length unknown)))))
        (error (condition)
          (set-pane-text interface #'server-status-pane
                         (format nil "Server: ~a" condition)))))))

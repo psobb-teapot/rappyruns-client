@@ -273,10 +273,107 @@ REGISTER-VALUES an alist of (register-id . value)."
 
 ;;; ------------------------------------------------------------------
 
+;;; ------------------------------------------------------------------
+;;; Server-defined detection categories (GET /api/quests -> quest-def)
+;;; ------------------------------------------------------------------
+
+(defun api-quest (&rest keys-and-values)
+  (let ((table (make-hash-table :test 'equal)))
+    (loop :for (key value) :on keys-and-values :by #'cddr
+          :do (setf (gethash key table) value))
+    table))
+
+(defun floor-switch-json (floor switch)
+  (api-quest "type" "floor-switch" "floor" floor "switch" switch))
+
+(defun run-server-defs-tests ()
+  (format t "~&--- server-defined categories ---~%")
+  (load-quest-defs)
+  (let ((builtin-count (length ephinea-ta-client::*builtin-quest-defs*)))
+    ;; A moderator-created "GDV reset": ep2 quest 944, ends at floor 5 sw 2.
+    (let ((quests (vector
+                   (api-quest "slug" "ep2-gdv-reset" "episode" 2
+                              "game_number" 944
+                              "start" (floor-switch-json 5 0)
+                              "end" (floor-switch-json 5 2))
+                   ;; A display-only entry (no triggers) is ignored.
+                   (api-quest "slug" "ep1-some-catalog-quest" "episode" 1))))
+      (check "set-server-quest-defs counts only timeable entries"
+             (= 1 (set-server-quest-defs quests)))
+      (check "server def merged into active defs"
+             (find "ep2-gdv-reset" ephinea-ta-client::*quest-defs*
+                   :key #'quest-def-slug :test #'equal))
+      (check "builtin defs still present after merge"
+             (= (1+ builtin-count) (length ephinea-ta-client::*quest-defs*)))
+      (let ((def (find "ep2-gdv-reset" ephinea-ta-client::*quest-defs*
+                       :key #'quest-def-slug :test #'equal)))
+        (check "server def start trigger converted"
+               (equal '(:floor-switch 5 0) (quest-def-start def)))
+        (check "server def end trigger converted"
+               (equal '(:floor-switch 5 2) (quest-def-end def)))
+        (check "server def keeps game number" (eql 944 (quest-def-number def)))))
+    ;; Re-fetching replaces server defs without duplicating.
+    (set-server-quest-defs (vector))
+    (check "empty refetch drops server defs, keeps builtin"
+           (= builtin-count (length ephinea-ta-client::*quest-defs*)))))
+
+;;; A GDV reset (server-defined) tracked alongside the full GDV clear.
+(defun gdv-reader (&key (start 0) (room2 0) (full 0))
+  "GDV = Maximum Attack E: Gal Da Val, ep2 quest 944. Start = floor 5
+switch 0; room 2 cleared = floor 5 switch 2; full clear = register 254."
+  (let ((switches (make-array (* 32 18) :element-type '(unsigned-byte 8)
+                                        :initial-element 0)))
+    ;; floor 5 switch 0 and switch 2 live in the floor-5 block.
+    (flet ((set-switch (floor switch)
+             (let ((offset (+ (* 32 floor) (floor switch 8)))
+                   (mask (ash #x80 (- (mod switch 8)))))
+               (setf (aref switches offset)
+                     (logior (aref switches offset) mask)))))
+      (when (plusp start) (set-switch 5 0))
+      (when (plusp room2) (set-switch 5 2)))
+    (let ((reader (make-game-regions
+                   :episode-raw 1  ; raw 1 -> episode 2
+                   :players (list (make-player-block :name "Ryu" :class-id 2 :floor 5))
+                   :quest-name "Maximum Attack E: Gal Da Val" :quest-number 944
+                   :register-values (list (cons 254 full)))))
+      ;; Overlay our crafted floor-switch block.
+      (push (cons #x00AC9FA0 switches)
+            (ephinea-ta-client::mock-reader-regions reader))
+      reader)))
+
+(defun run-gdv-segment-test ()
+  (format t "~&--- GDV reset alongside full clear ---~%")
+  (load-quest-defs)
+  (set-server-quest-defs
+   (vector (api-quest "slug" "ep2-gdv-reset" "episode" 2 "game_number" 944
+                      "start" (floor-switch-json 5 0)
+                      "end" (floor-switch-json 5 2))))
+  (let ((detector (make-detector)))
+    (step-with detector (lobby-reader))
+    (step-with detector (gdv-reader))                ; loaded, not started
+    (step-with detector (gdv-reader :start 1))       ; start switch set
+    (check "GDV: both full-clear and reset tracked"
+           (= 2 (ephinea-ta-client:detector-active-count detector)))
+    (sleep 0.05)
+    (let ((runs (step-with detector (gdv-reader :start 1 :room2 1))))
+      (check "GDV reset emitted at room 2"
+             (equal '("ep2-gdv-reset")
+                    (mapcar (lambda (r) (getf r :quest-slug)) runs))))
+    (check "GDV full clear still running"
+           (= 1 (ephinea-ta-client:detector-active-count detector)))
+    (sleep 0.05)
+    (let ((runs (step-with detector (gdv-reader :start 1 :room2 1 :full 1))))
+      (check "GDV full clear emitted at register 254"
+             (equal '("ep2-maximum-attack-e-gal-da-val")
+                    (mapcar (lambda (r) (getf r :quest-slug)) runs)))))
+  (set-server-quest-defs (vector)))
+
 (defun run-client-tests ()
   (setf *failures* 0)
   (load-quest-defs)
   (run-memory-tests)
   (run-detect-tests)
+  (run-server-defs-tests)
+  (run-gdv-segment-test)
   (format t "~&=== client tests: ~d failure~:p ===~%" *failures*)
   *failures*)

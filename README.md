@@ -59,30 +59,48 @@ lowercased, non-alphanumerics collapsed to `-`). The client cross-checks
 all slugs against `GET /api/quests` at startup and reports unknown ones
 in the server status line.
 
-## Segment categories (e.g. "2 Rooms")
+## Segment categories (e.g. "GDV reset")
 
 Multiple trigger entries may share one in-game quest: the detector
 tracks each matching definition in parallel, so a single full run
-produces the full-clear draft *and* every segment draft. Workflow for a
-new category such as "kill everything up to room 2":
+produces the full-clear draft *and* every segment draft. There are two
+ways to define a segment category; the site form is the normal one.
 
-1. A moderator creates the category on the site (`/mod/quests`, e.g.
-   "Maximum Attack E: Forest (2 Rooms)"); the page shows the generated
-   slug.
-2. Find the end trigger: enable **Log trigger changes** in the client
-   settings, play the segment once, then check
-   `%APPDATA%/ephinea-ta-client/trigger-log.txt` for the floor switch
-   (or register) that fired the moment the room's last enemy died. In
-   gated TA quests the door-opening switch is exactly "room cleared".
-3. Add an entry to `data/quest-triggers.sexp` with the same
-   `:number`/`:names` as the parent quest, the parent's `:start`, the
-   discovered `:end`, and the new slug. Restart the client - no rebuild
-   needed.
+### On the site (no client config, no rebuild)
+
+A moderator defines the whole thing on `/mod/quests`:
+
+1. Enter the name (e.g. "GDV reset"), episode and category.
+2. Under **Detection**, fill in the game quest number (from psostats or
+   in-game, e.g. 944 for GDV), the start trigger (usually the parent
+   quest's start) and the end trigger (what fires when the segment is
+   done). Save.
+
+The client fetches these categories from `GET /api/quests` at startup
+(and whenever you press Save settings), converts their triggers and
+times them automatically alongside the full clear. If you get a switch
+number wrong, fix it with the inline "Edit detection" form on the same
+page - the client picks up the change on its next server check.
+
+To discover a trigger number, enable **Log trigger changes** in the
+client settings, play the segment once, and read
+`%APPDATA%/ephinea-ta-client/trigger-log.txt`: the floor switch (or
+register) that flips the moment the room's last enemy dies is the end
+trigger. In gated TA quests the door-opening switch is exactly "room
+cleared".
 
 For quests psostats already documents, room switches are known: e.g.
 MAE Forest rooms are floor 2 switches 1..3 (room N cleared = switch N),
 MAE Caves floor 4 switches 1..6, Sweep-up #8 floor 10 and #9 floor 17
 (see psostats `questDefinitions.go` Splits).
+
+### In the builtin file (shipped defaults)
+
+`data/quest-triggers.sexp` holds the builtin full-clear definitions and
+can also carry segment entries. Add one with the same `:number`/`:names`
+as the parent quest, the parent's `:start`, the discovered `:end`, and a
+slug matching a quest created on the site. Server-defined categories win
+over builtin ones on a slug collision.
 
 ## Tests
 
