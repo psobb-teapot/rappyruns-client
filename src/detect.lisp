@@ -94,7 +94,11 @@ puts the run in the PB category (simplified psostats StartNewQuest check)."
               :pb (and (detector-pb-flag detector) t)
               :players (detector-party detector)
               :finished-at (get-universal-time))
-      (reset-detector detector))))
+      (reset-detector detector)
+      ;; The quest stays loaded with its triggers still set after
+      ;; completion; disarm until the player unloads it (lobby) so the
+      ;; same run cannot re-start (psostats' AllowQuestStart behaviour).
+      (setf (detector-armed detector) nil))))
 
 (defun detector-step (detector snapshot)
   "Feed one SNAPSHOT (NIL when the game is unreadable). Returns a run

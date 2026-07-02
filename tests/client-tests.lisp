@@ -178,7 +178,17 @@ REGISTER-VALUES an alist of (register-id . value)."
                     (mapcar (lambda (p) (cons (getf p :name) (getf p :class)))
                             (getf run :players))))
       (check "run not PB" (not (getf run :pb)))
-      (check "detector reset after run" (eq :idle (detector-state detector)))))
+      (check "detector reset after run" (eq :idle (detector-state detector))))
+    ;; Triggers stay set after completion while the quest is loaded; the
+    ;; detector must not re-start (and re-submit) the same run.
+    (step-with detector (ttf-reader :start 1 :end 1))
+    (check "no restart while completed quest stays loaded"
+           (eq :idle (detector-state detector)))
+    ;; Back through the lobby re-arms; a fresh take of the quest starts.
+    (step-with detector (lobby-reader))
+    (step-with detector (ttf-reader :start 1))
+    (check "re-armed after lobby visit"
+           (eq :in-quest (detector-state detector))))
   ;; Attaching mid-quest must not start a run (not armed).
   (let ((detector (make-detector)))
     (step-with detector (ttf-reader :start 1))
