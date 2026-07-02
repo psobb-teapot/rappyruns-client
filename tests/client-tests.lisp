@@ -368,6 +368,39 @@ switch 0; room 2 cleared = floor 5 switch 2; full clear = register 254."
                     (mapcar (lambda (r) (getf r :quest-slug)) runs)))))
   (set-server-quest-defs (vector)))
 
+(defun run-trigger-log-tests ()
+  (format t "~&--- trigger log ---~%")
+  (ephinea-ta-client::close-trigger-log)
+  (let ((path (ephinea-ta-client::trigger-log-path)))
+    (ignore-errors (delete-file path))
+    ;; Enabling logging must create the file immediately (before any
+    ;; trigger changes), so the user can see it is working.
+    (start-trigger-log)
+    (check "start-trigger-log creates the file at once" (probe-file path))
+    ;; A floor switch flipping between two frames is recorded.
+    (let* ((clear (make-array (* 32 18) :element-type '(unsigned-byte 8)
+                                        :initial-element 0))
+           (set-2 (make-array (* 32 18) :element-type '(unsigned-byte 8)
+                                        :initial-element 0)))
+      ;; floor 5 switch 2 on in the second frame.
+      (setf (aref set-2 (+ (* 32 5) 0)) (ash #x80 (- 2)))
+      (let ((prev (list :quest-name "GDV" :quest-ptr 1 :floor-switches clear
+                        :registers (make-array 1024 :element-type '(unsigned-byte 8)
+                                                     :initial-element 0)))
+            (next (list :quest-name "GDV" :quest-ptr 1 :floor-switches set-2
+                        :registers (make-array 1024 :element-type '(unsigned-byte 8)
+                                                     :initial-element 0))))
+        (check "diff records the flipped switch"
+               (= 1 (log-trigger-changes prev next)))))
+    (ephinea-ta-client::close-trigger-log)
+    (let ((text (with-output-to-string (out)
+                  (with-open-file (in path :external-format :utf-8)
+                    (loop :for line := (read-line in nil nil)
+                          :while line :do (format out "~a~%" line))))))
+      (check "log names floor 5 switch 2"
+             (search "floor 5 switch 2" text)))
+    (ignore-errors (delete-file path))))
+
 (defun run-client-tests ()
   (setf *failures* 0)
   (load-quest-defs)
@@ -375,5 +408,6 @@ switch 0; room 2 cleared = floor 5 switch 2; full clear = register 254."
   (run-detect-tests)
   (run-server-defs-tests)
   (run-gdv-segment-test)
+  (run-trigger-log-tests)
   (format t "~&=== client tests: ~d failure~:p ===~%" *failures*)
   *failures*)

@@ -21,7 +21,7 @@
            #:detector-active-def #:detector-active-count
            #:detector-elapsed-ms
            ;; trigger discovery
-           #:log-trigger-changes #:close-trigger-log
+           #:log-trigger-changes #:start-trigger-log #:close-trigger-log
            ;; api
            #:fetch-quests #:submit-run
            ;; store

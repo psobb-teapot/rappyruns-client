@@ -9,6 +9,16 @@
 
 (defvar *trigger-log-stream* nil)
 
+;; The GUI thread (toggle -> header) and the poll thread (per-frame diffs)
+;; both write here; serialize file access.
+(defvar *trigger-log-lock*
+  #+lispworks (mp:make-lock :name "eta-client-trigger-log")
+  #-lispworks nil)
+
+(defmacro with-trigger-log-lock (&body body)
+  #+lispworks `(mp:with-lock (*trigger-log-lock*) ,@body)
+  #-lispworks `(progn ,@body))
+
 (defun trigger-log-path ()
   (merge-pathnames "trigger-log.txt" (config-dir)))
 
@@ -22,9 +32,21 @@
                     :external-format :utf-8)))))
 
 (defun close-trigger-log ()
-  (when *trigger-log-stream*
-    (ignore-errors (close *trigger-log-stream*))
-    (setf *trigger-log-stream* nil)))
+  (with-trigger-log-lock
+    (when *trigger-log-stream*
+      (ignore-errors (close *trigger-log-stream*))
+      (setf *trigger-log-stream* nil))))
+
+(defun start-trigger-log ()
+  "Open (creating) the log and write a session header, so the file exists
+the moment logging is enabled - before any trigger has changed. Returns
+the log path."
+  (with-trigger-log-lock
+    (let ((stream (trigger-log-stream)))
+      (format stream "~&=== trigger logging started ~a ===~%" (time-of-day))
+      (format stream "Play the segment; each register / floor-switch change is listed below.~%")
+      (finish-output stream)))
+  (trigger-log-path))
 
 (defun time-of-day ()
   (multiple-value-bind (second minute hour) (decode-universal-time
@@ -38,6 +60,7 @@ snapshots of the same loaded quest."
              (getf previous :quest-name)
              (getf snapshot :quest-name)
              (eql (getf previous :quest-ptr) (getf snapshot :quest-ptr)))
+    (with-trigger-log-lock
     (let ((stream (trigger-log-stream))
           (stamp (time-of-day))
           (quest (getf snapshot :quest-name))
@@ -71,4 +94,4 @@ snapshots of the same loaded quest."
                               (plusp (logand new-byte mask)))))))))))
       (when (plusp changes)
         (force-output stream))
-      changes)))
+      changes))))

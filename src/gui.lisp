@@ -60,6 +60,9 @@
    (trigger-log-check capi:check-button
                       :text "Log trigger changes (for finding switch IDs of new categories)"
                       :selected (config-value :trigger-log)
+                      :selection-callback 'toggle-trigger-log-callback
+                      :retract-callback 'toggle-trigger-log-callback
+                      :callback-type :interface
                       :accessor trigger-log-check)
    (save-button capi:push-button
                 :text "Save settings"
@@ -102,6 +105,19 @@
   (setf *retry-requested* t))
 
 (defvar *retry-requested* nil)
+
+(defun toggle-trigger-log-callback (interface)
+  "Apply the logging toggle immediately (no Save needed) and, when turned
+on, start the log file right away so the user can see it is working."
+  (let ((on (capi:button-selected (trigger-log-check interface))))
+    (setf (config-value :trigger-log) on)
+    (save-config!)
+    (if on
+        (let ((path (start-trigger-log)))
+          (capi:display-message
+           "Trigger logging is on. Play the segment, then open:~%~%~a~%~%The floor switch (or register) that flips when the room is cleared is your end trigger."
+           (namestring path)))
+        (close-trigger-log))))
 
 (defun set-pane-text (interface accessor text)
   (capi:execute-with-interface
