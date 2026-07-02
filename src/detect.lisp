@@ -1,27 +1,49 @@
 (in-package :ephinea-ta-client)
 
 ;;; Quest detection state machine. Pure: consumes snapshots produced by
-;;; READ-SNAPSHOT (or synthesized by tests) and emits a run plist when a
-;;; quest completes. Mirrors psostats-client's RefreshData flow.
+;;; READ-SNAPSHOT (or synthesized by tests) and emits run plists when
+;;; quests complete. Mirrors psostats-client's RefreshData flow.
+;;;
+;;; One loaded quest can match SEVERAL trigger definitions (the full
+;;; clear plus segment categories like "(2 Rooms)" that share the start
+;;; trigger but end earlier). Each matching definition gets its own
+;;; tracker, so a full run also produces the segment records for free.
+
+(defstruct tracker
+  def          ; the quest-def this tracker times
+  start-time   ; internal real time at its start trigger
+  party        ; ((:name ... :class ...) ...) captured at start
+  done)        ; T once its run has been emitted
 
 (defstruct detector
-  (state :idle)        ; :idle | :in-quest
+  (state :idle)        ; :idle | :in-quest (any tracker still running)
   (armed nil)          ; T once we've seen "no quest loaded" (lobby);
                        ; guards against starting the client mid-quest
-  quest-def            ; matched quest-def while :in-quest
-  quest-ptr            ; quest struct pointer at start, to detect resets
-  start-time           ; internal real time at quest start
-  party                ; ((:name ... :class ...) ...) captured at start
+  quest-ptr            ; quest struct pointer, to detect quest reloads
+  (trackers '())       ; trackers for the loaded quest, oldest first;
+                       ; kept (done or not) until the quest unloads so a
+                       ; definition can never re-start within one load
   my-pb                ; own PB gauge on the previous frame
-  (pb-flag nil))       ; T when the run belongs in the PB category
+  (pb-flag nil))       ; T when the session belongs in the PB category
 
 (defun elapsed-ms (start-time)
   (round (* 1000 (- (get-internal-real-time) start-time))
          internal-time-units-per-second))
 
+(defun active-trackers (detector)
+  (remove-if #'tracker-done (detector-trackers detector)))
+
+(defun detector-active-def (detector)
+  "Definition of the longest-running unfinished tracker, or NIL."
+  (let ((tracker (first (active-trackers detector))))
+    (and tracker (tracker-def tracker))))
+
+(defun detector-active-count (detector)
+  (length (active-trackers detector)))
+
 (defun detector-elapsed-ms (detector)
-  (when (eq (detector-state detector) :in-quest)
-    (elapsed-ms (detector-start-time detector))))
+  (let ((tracker (first (active-trackers detector))))
+    (and tracker (elapsed-ms (tracker-start-time tracker)))))
 
 (defun trigger-met-p (trigger snapshot)
   (ecase (first trigger)
@@ -33,11 +55,12 @@
                            (not (getf player :warping))))
                     (getf snapshot :players)))))
 
-(defun snapshot-quest-def (snapshot)
-  (when (getf snapshot :quest-name)
-    (find-quest-def :number (getf snapshot :quest-number)
-                    :episode (getf snapshot :episode)
-                    :name (getf snapshot :quest-name))))
+(defun snapshot-quest-defs (snapshot)
+  (if (getf snapshot :quest-name)
+      (find-quest-defs :number (getf snapshot :quest-number)
+                       :episode (getf snapshot :episode)
+                       :name (getf snapshot :quest-name))
+      '()))
 
 (defun party-of (snapshot)
   (loop :for player :in (getf snapshot :players)
@@ -65,71 +88,75 @@ puts the run in the PB category (simplified psostats StartNewQuest check)."
 
 (defun reset-detector (detector)
   (setf (detector-state detector) :idle
-        (detector-quest-def detector) nil
+        (detector-trackers detector) '()
         (detector-quest-ptr detector) nil
-        (detector-start-time detector) nil
-        (detector-party detector) nil
         (detector-my-pb detector) nil
         (detector-pb-flag detector) nil))
 
-(defun start-run (detector snapshot quest-def)
-  (setf (detector-state detector) :in-quest
-        (detector-quest-def detector) quest-def
-        (detector-quest-ptr detector) (getf snapshot :quest-ptr)
-        (detector-start-time detector) (get-internal-real-time)
-        (detector-party detector) (party-of snapshot)
-        (detector-my-pb detector) (let ((me (snapshot-my-player snapshot)))
-                                    (and me (getf me :pb)))
-        (detector-pb-flag detector) (pb-category-at-start-p snapshot)))
+(defun start-tracker (detector def snapshot)
+  ;; The PB session state belongs to the quest, not the tracker; take it
+  ;; when the first tracker starts.
+  (when (null (detector-trackers detector))
+    (setf (detector-pb-flag detector) (pb-category-at-start-p snapshot)
+          (detector-my-pb detector) (let ((me (snapshot-my-player snapshot)))
+                                      (and me (getf me :pb)))))
+  (let ((tracker (make-tracker :def def
+                               :start-time (get-internal-real-time)
+                               :party (party-of snapshot))))
+    (setf (detector-trackers detector)
+          (append (detector-trackers detector) (list tracker)))
+    tracker))
 
-(defun finish-run (detector snapshot)
-  (let ((def (detector-quest-def detector))
-        (time-ms (max 1 (elapsed-ms (detector-start-time detector)))))
-    (prog1
-        (list :quest-slug (quest-def-slug def)
-              :quest-name (getf snapshot :quest-name)
-              :episode (quest-def-episode def)
-              :time-ms time-ms
-              :party-size (length (detector-party detector))
-              :pb (and (detector-pb-flag detector) t)
-              :players (detector-party detector)
-              :finished-at (get-universal-time))
-      (reset-detector detector)
-      ;; The quest stays loaded with its triggers still set after
-      ;; completion; disarm until the player unloads it (lobby) so the
-      ;; same run cannot re-start (psostats' AllowQuestStart behaviour).
-      (setf (detector-armed detector) nil))))
+(defun finish-tracker (detector tracker snapshot)
+  (let ((def (tracker-def tracker))
+        (time-ms (max 1 (elapsed-ms (tracker-start-time tracker)))))
+    (setf (tracker-done tracker) t)
+    (list :quest-slug (quest-def-slug def)
+          :quest-name (getf snapshot :quest-name)
+          :episode (quest-def-episode def)
+          :time-ms time-ms
+          :party-size (length (tracker-party tracker))
+          :pb (and (detector-pb-flag detector) t)
+          :players (tracker-party tracker)
+          :finished-at (get-universal-time))))
 
 (defun detector-step (detector snapshot)
-  "Feed one SNAPSHOT (NIL when the game is unreadable). Returns a run
-plist when a quest just completed, otherwise NIL."
+  "Feed one SNAPSHOT (NIL when the game is unreadable). Returns the list
+of runs that completed this frame (usually empty or one)."
   (cond
-    ;; Game gone: abandon any run in progress.
+    ;; Game gone: abandon everything.
     ((null snapshot)
      (reset-detector detector)
      (setf (detector-armed detector) nil)
-     nil)
-    ;; No quest loaded (lobby / free field): arm and idle.
+     '())
+    ;; No quest loaded (lobby / free field): reset and arm.
     ((not (and (getf snapshot :quest-ptr) (plusp (getf snapshot :quest-ptr))))
      (reset-detector detector)
      (setf (detector-armed detector) t)
-     nil)
-    ((eq (detector-state detector) :idle)
-     (let ((def (snapshot-quest-def snapshot)))
-       (when (and def
-                  (detector-armed detector)
-                  (trigger-met-p (quest-def-start def) snapshot))
-         (start-run detector snapshot def))
-       nil))
-    ;; :in-quest
+     '())
     (t
-     (cond
-       ;; Quest reloaded or a different quest: the run is void.
-       ((/= (getf snapshot :quest-ptr) (detector-quest-ptr detector))
-        (reset-detector detector)
-        nil)
-       ((trigger-met-p (quest-def-end (detector-quest-def detector)) snapshot)
-        (finish-run detector snapshot))
-       (t
-        (update-pb-tracking detector snapshot)
-        nil)))))
+     (let ((ptr (getf snapshot :quest-ptr)))
+       ;; Quest reloaded or a different quest: in-flight runs are void.
+       (when (and (detector-quest-ptr detector)
+                  (/= ptr (detector-quest-ptr detector)))
+         (reset-detector detector))
+       (setf (detector-quest-ptr detector) ptr))
+     (let ((started '())
+           (completed '()))
+       ;; Start a tracker for each definition whose start trigger fired.
+       (when (detector-armed detector)
+         (dolist (def (snapshot-quest-defs snapshot))
+           (unless (find def (detector-trackers detector) :key #'tracker-def)
+             (when (trigger-met-p (quest-def-start def) snapshot)
+               (push (start-tracker detector def snapshot) started)))))
+       (when (active-trackers detector)
+         (update-pb-tracking detector snapshot))
+       ;; End checks skip trackers started this frame: a real end trigger
+       ;; cannot fire on the start frame, only stale data could.
+       (dolist (tracker (detector-trackers detector))
+         (unless (or (tracker-done tracker) (member tracker started))
+           (when (trigger-met-p (quest-def-end (tracker-def tracker)) snapshot)
+             (push (finish-tracker detector tracker snapshot) completed))))
+       (setf (detector-state detector)
+             (if (active-trackers detector) :in-quest :idle))
+       (nreverse completed)))))

@@ -140,12 +140,12 @@ REGISTER-VALUES an alist of (register-id . value)."
 ;;; Detection state machine (driven through mock memory images)
 ;;; ------------------------------------------------------------------
 
-(defun ttf-reader (&key (start 0) (end 0) (pb 0.0))
+(defun ttf-reader (&key (start 0) (end 0) (seg 0) (pb 0.0))
   (make-game-regions
    :players (list (make-player-block :name "Ryu" :class-id 2 :floor 1 :pb pb)
                   (make-player-block :name "Elly" :class-id 8 :floor 1))
    :quest-name "Towards the Future" :quest-number 118
-   :register-values (list (cons 12 start) (cons 254 end))))
+   :register-values (list (cons 12 start) (cons 254 end) (cons 100 seg))))
 
 (defun lobby-reader ()
   (make-game-regions
@@ -168,7 +168,7 @@ REGISTER-VALUES an alist of (register-id . value)."
     (check "no run before end register"
            (null (step-with detector (ttf-reader :start 1))))
     (sleep 0.05)
-    (let ((run (step-with detector (ttf-reader :start 1 :end 1))))
+    (let ((run (first (step-with detector (ttf-reader :start 1 :end 1)))))
       (check "run emitted on end register" (not (null run)))
       (check "run slug" (equal "ep1-towards-the-future" (getf run :quest-slug)))
       (check "run time >= 100ms" (>= (getf run :time-ms) 100))
@@ -197,7 +197,7 @@ REGISTER-VALUES an alist of (register-id . value)."
   (let ((detector (make-detector)))
     (step-with detector (lobby-reader))
     (step-with detector (ttf-reader :start 1 :pb 80.0))
-    (let ((run (step-with detector (ttf-reader :start 1 :end 1 :pb 80.0))))
+    (let ((run (first (step-with detector (ttf-reader :start 1 :end 1 :pb 80.0)))))
       (check "charged PB at start -> PB category" (eq t (getf run :pb)))))
   ;; PB used mid-run (gauge drop > 50) flags the run.
   (let ((detector (make-detector)))
@@ -205,8 +205,37 @@ REGISTER-VALUES an alist of (register-id . value)."
     (step-with detector (ttf-reader :start 1))
     (step-with detector (ttf-reader :start 1 :pb 90.0))
     (step-with detector (ttf-reader :start 1 :pb 2.0))
-    (let ((run (step-with detector (ttf-reader :start 1 :end 1))))
+    (let ((run (first (step-with detector (ttf-reader :start 1 :end 1)))))
       (check "PB gauge drop -> PB category" (eq t (getf run :pb)))))
+  ;; A segment definition sharing the quest is tracked in parallel with
+  ;; the full clear: one run through the quest yields both records.
+  (let* ((segment (ephinea-ta-client::make-quest-def
+                   :slug "ep1-towards-the-future-2-rooms" :episode 1
+                   :names '("Towards the Future") :number 118
+                   :start '(:register 12) :end '(:register 100)))
+         (ephinea-ta-client::*quest-defs*
+           (cons segment ephinea-ta-client::*quest-defs*))
+         (detector (make-detector)))
+    (step-with detector (lobby-reader))
+    (step-with detector (ttf-reader :start 1))
+    (check "segment: both trackers active"
+           (= 2 (ephinea-ta-client:detector-active-count detector)))
+    (sleep 0.05)
+    (let ((runs (step-with detector (ttf-reader :start 1 :seg 1))))
+      (check "segment run emitted first"
+             (equal '("ep1-towards-the-future-2-rooms")
+                    (mapcar (lambda (run) (getf run :quest-slug)) runs))))
+    (check "full clear still running"
+           (= 1 (ephinea-ta-client:detector-active-count detector)))
+    (sleep 0.05)
+    (let ((runs (step-with detector (ttf-reader :start 1 :seg 1 :end 1))))
+      (check "full clear emitted second"
+             (equal '("ep1-towards-the-future")
+                    (mapcar (lambda (run) (getf run :quest-slug)) runs)))
+      (check "full clear time > segment possible"
+             (>= (getf (first runs) :time-ms) 100)))
+    (check "segment does not restart while quest loaded"
+           (null (step-with detector (ttf-reader :start 1 :seg 1 :end 1)))))
   ;; Warp-in quests start when a player leaves Pioneer 2.
   (let ((detector (make-detector))
         (en1-p2 (make-game-regions
@@ -219,12 +248,11 @@ REGISTER-VALUES an alist of (register-id . value)."
     (step-with detector (lobby-reader))
     (step-with detector en1-p2)
     (check "warp-in: idle on Pioneer 2" (eq :idle (detector-state detector)))
-    (let ((run (step-with detector en1-in)))
-      ;; Same frame reaches the end register here; start frame first:
-      (declare (ignore run)))
+    ;; Same frame reaches the end register here; start frame first:
+    (step-with detector en1-in)
     (check "warp-in: started once on the field"
            (eq :in-quest (detector-state detector)))
-    (let ((run (step-with detector en1-in)))
+    (let ((run (first (step-with detector en1-in))))
       (check "warp-in quest completes" (equal "ep1-endless-nightmare-1"
                                               (getf run :quest-slug)))))
   ;; Unknown quests never start.

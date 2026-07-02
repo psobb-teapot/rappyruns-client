@@ -44,17 +44,27 @@ relative to this system's source directory (development)."
                           :end (getf entry :end))))
     (length *quest-defs*)))
 
-(defun find-quest-def (&key number episode name (defs *quest-defs*))
-  "Match like psostats: by in-game quest number first, then by
-episode + in-game name."
+(defun quest-def-matches-p (def &key number episode name)
+  "Match like psostats: by in-game quest number, or by episode + name."
   (or (and number (plusp number)
-           (find number defs :key #'quest-def-number))
+           (eql number (quest-def-number def)))
       (and name
-           (find-if (lambda (def)
-                      (and (or (null episode)
-                               (eql episode (quest-def-episode def)))
-                           (member name (quest-def-names def) :test #'string=)))
-                    defs))))
+           (or (null episode)
+               (eql episode (quest-def-episode def)))
+           (member name (quest-def-names def) :test #'string=))))
+
+(defun find-quest-defs (&key number episode name (defs *quest-defs*))
+  "All definitions matching the loaded quest. Several can match at once:
+the full clear plus segment categories (e.g. \"(2 Rooms)\") that reuse
+the same quest number with an earlier end trigger."
+  (remove-if-not (lambda (def)
+                   (quest-def-matches-p def :number number
+                                            :episode episode :name name))
+                 defs))
+
+(defun find-quest-def (&key number episode name (defs *quest-defs*))
+  (first (find-quest-defs :number number :episode episode :name name
+                          :defs defs)))
 
 (defun unknown-slugs (server-slugs &optional (defs *quest-defs*))
   "Trigger definitions whose slug the server does not know (misconfiguration)."

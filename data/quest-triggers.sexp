@@ -10,6 +10,22 @@
 ;;;   :start   (:register N) set | (:warp-in) | (:floor-switch FLOOR ID)
 ;;;   :end     (:register N) set | (:floor-switch FLOOR ID)
 ;;;
+;;; SEGMENT CATEGORIES: several entries may share the same quest
+;;; (:number / :names); the client times them all in parallel, so one
+;;; full run also records every segment. To add e.g. a "kill everything
+;;; up to room 2" category:
+;;;   1. a moderator creates the quest entry on the site (/mod/quests,
+;;;      e.g. name "Maximum Attack E: Forest (2 Rooms)") and notes the
+;;;      generated slug,
+;;;   2. find the end trigger: enable "Log trigger changes" in the
+;;;      client, clear the segment, and look in
+;;;      %APPDATA%/ephinea-ta-client/trigger-log.txt for the floor
+;;;      switch that fires when the room's last enemy dies,
+;;;   3. add an entry here, e.g.:
+;;;      (:slug "ep1-maximum-attack-e-forest-2-rooms" :episode 1 :number 930
+;;;       :names ("Maximum Attack E: Forest")
+;;;       :start (:floor-switch 2 0) :end (:floor-switch 2 2))
+;;;
 ;;; This file is read with *READ-EVAL* off; keep it pure data.
 
 (;; ------------------------------------------------ Episode 1 - Extermination

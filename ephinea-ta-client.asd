@@ -19,6 +19,7 @@
                              (:file "psobb")
                              (:file "quests")
                              (:file "detect")
+                             (:file "trigger-log")
                              (:file "api-client")
                              (:file "store")
                              (:file "gui" :if-feature :lispworks)

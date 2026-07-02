@@ -12,12 +12,15 @@
            ;; psobb
            #:read-snapshot #:snapshot-register-set-p #:snapshot-floor-switch-set-p
            ;; quests
-           #:load-quest-defs #:find-quest-def
+           #:load-quest-defs #:find-quest-def #:find-quest-defs
            #:quest-def-slug #:quest-def-episode #:quest-def-names
            #:quest-def-number #:quest-def-start #:quest-def-end
            ;; detect
            #:make-detector #:detector-step #:detector-state
-           #:detector-quest-def #:detector-elapsed-ms
+           #:detector-active-def #:detector-active-count
+           #:detector-elapsed-ms
+           ;; trigger discovery
+           #:log-trigger-changes #:close-trigger-log
            ;; api
            #:fetch-quests #:submit-run
            ;; store

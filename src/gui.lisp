@@ -57,6 +57,10 @@
                       :text "Submit automatically on quest completion"
                       :selected (config-value :auto-submit)
                       :accessor auto-submit-check)
+   (trigger-log-check capi:check-button
+                      :text "Log trigger changes (for finding switch IDs of new categories)"
+                      :selected (config-value :trigger-log)
+                      :accessor trigger-log-check)
    (save-button capi:push-button
                 :text "Save settings"
                 :callback 'save-settings-callback
@@ -71,7 +75,7 @@
    (buttons-row capi:row-layout '(save-button retry-button))
    (main-layout capi:column-layout
                 '(status-row quest-status runs-list
-                  settings-row auto-submit-check buttons-row)
+                  settings-row auto-submit-check trigger-log-check buttons-row)
                 :adjust :left))
   (:default-initargs
    :title "Ephinea TA Client"
@@ -86,7 +90,9 @@
         (string-trim " " (capi:text-input-pane-text
                           (api-token-input interface)))
         (config-value :auto-submit)
-        (capi:button-selected (auto-submit-check interface)))
+        (capi:button-selected (auto-submit-check interface))
+        (config-value :trigger-log)
+        (capi:button-selected (trigger-log-check interface)))
   (save-config!)
   (check-server interface))
 
@@ -137,9 +143,11 @@
    interface #'quest-status-pane
    (cond
      ((eq (detector-state detector) :in-quest)
-      (format nil "~a - ~a"
-              (first (quest-def-names (detector-quest-def detector)))
-              (format-run-time (detector-elapsed-ms detector))))
+      (let ((extra (1- (detector-active-count detector))))
+        (format nil "~a~@[ (+~d)~] - ~a"
+                (quest-def-slug (detector-active-def detector))
+                (and (plusp extra) extra)
+                (format-run-time (detector-elapsed-ms detector)))))
      ((and snapshot (getf snapshot :quest-name))
       (format nil "~a (waiting for start)" (getf snapshot :quest-name)))
      (t "No active quest"))))

@@ -5,7 +5,8 @@
 (defparameter *default-config*
   (list :server-url "http://localhost:8080"
         :api-token ""
-        :auto-submit t))
+        :auto-submit t
+        :trigger-log nil))
 
 (defvar *config* nil)
 

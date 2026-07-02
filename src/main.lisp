@@ -9,20 +9,17 @@
 
 (defvar *stop-requested* nil)
 
-(defun handle-completed-run (run)
-  (enqueue-run! run)
-  (when (config-value :auto-submit)
+(defun handle-completed-runs (runs)
+  (dolist (run runs)
+    (enqueue-run! run))
+  (when (and runs (config-value :auto-submit))
     (submit-queued!)))
-
-(defun poll-step (reader detector)
-  "One frame. Returns the run plist when a quest just completed."
-  (let ((snapshot (ignore-errors (read-snapshot reader))))
-    (detector-step detector snapshot)))
 
 #+lispworks
 (defun poll-loop (interface)
   (let ((reader nil)
         (detector (make-detector))
+        (previous-snapshot nil)
         (last-gui-update 0))
     (unwind-protect
          (loop :until *stop-requested*
@@ -41,13 +38,18 @@
                      ((not (reader-alive-p reader))
                       (close-reader reader)
                       (setf reader nil)
+                      (setf previous-snapshot nil)
                       (detector-step detector nil))
                      (t
                       (let* ((snapshot (ignore-errors (read-snapshot reader)))
-                             (run (detector-step detector snapshot)))
-                        (when run
-                          (handle-completed-run run)
+                             (runs (detector-step detector snapshot)))
+                        (when runs
+                          (handle-completed-runs runs)
                           (refresh-runs-list interface))
+                        (when (config-value :trigger-log)
+                          (ignore-errors
+                            (log-trigger-changes previous-snapshot snapshot)))
+                        (setf previous-snapshot snapshot)
                         (when *retry-requested*
                           (setf *retry-requested* nil)
                           (submit-queued!)
@@ -64,6 +66,7 @@
                       (mp:process-wait-with-timeout
                        "poll interval" +poll-interval+
                        (lambda () *stop-requested*)))))
+      (close-trigger-log)
       (when reader (close-reader reader)))))
 
 #+lispworks
@@ -91,7 +94,6 @@ Uses whatever config is already loaded - it does not reload it."
   (let ((detector (make-detector))
         (completed '()))
     (dolist (snapshot snapshots (nreverse completed))
-      (let ((run (detector-step detector snapshot)))
-        (when run
-          (push run completed)
-          (when on-run (funcall on-run run)))))))
+      (dolist (run (detector-step detector snapshot))
+        (push run completed)
+        (when on-run (funcall on-run run))))))
