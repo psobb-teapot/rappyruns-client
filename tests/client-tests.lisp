@@ -193,20 +193,30 @@ REGISTER-VALUES an alist of (register-id . value)."
   (let ((detector (make-detector)))
     (step-with detector (ttf-reader :start 1))
     (check "mid-quest attach stays idle" (eq :idle (detector-state detector))))
-  ;; PB charged at start flags the run.
+  ;; A charged gauge / cast Shifta at the start is NOT enough for PB - a
+  ;; normal No-PB run often starts that way. It must be No PB.
   (let ((detector (make-detector)))
     (step-with detector (lobby-reader))
     (step-with detector (ttf-reader :start 1 :pb 80.0))
+    (sleep 0.02)
     (let ((run (first (step-with detector (ttf-reader :start 1 :end 1 :pb 80.0)))))
-      (check "charged PB at start -> PB category" (eq t (getf run :pb)))))
-  ;; PB used mid-run (gauge drop > 50) flags the run.
+      (check "charged PB at start alone stays No PB" (null (getf run :pb)))))
+  ;; Actually discharging a Photon Blast mid-run (gauge drop > 50) is PB.
   (let ((detector (make-detector)))
     (step-with detector (lobby-reader))
     (step-with detector (ttf-reader :start 1))
     (step-with detector (ttf-reader :start 1 :pb 90.0))
     (step-with detector (ttf-reader :start 1 :pb 2.0))
     (let ((run (first (step-with detector (ttf-reader :start 1 :end 1)))))
-      (check "PB gauge drop -> PB category" (eq t (getf run :pb)))))
+      (check "PB discharge -> PB category" (eq t (getf run :pb)))))
+  ;; A quest run that never discharges is No PB, even with Shifta up
+  ;; (the segment tests below and this one cover the common case).
+  (let ((detector (make-detector)))
+    (step-with detector (lobby-reader))
+    (step-with detector (ttf-reader :start 1))
+    (step-with detector (ttf-reader :start 1))
+    (let ((run (first (step-with detector (ttf-reader :start 1 :end 1)))))
+      (check "no discharge -> No PB" (null (getf run :pb)))))
   ;; A segment definition sharing the quest is tracked in parallel with
   ;; the full clear: one run through the quest yields both records.
   (let* ((segment (ephinea-ta-client::make-quest-def

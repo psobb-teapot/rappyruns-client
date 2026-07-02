@@ -69,12 +69,13 @@
                          :class (getf player :class))))
 
 (defun pb-category-at-start-p (snapshot)
-  "Entering the quest with a charged Photon Blast or Shifta already cast
-puts the run in the PB category (simplified psostats StartNewQuest check)."
-  (let ((me (snapshot-my-player snapshot)))
-    (and me
-         (or (> (getf me :pb 0.0) 5.0)
-             (> (abs (getf me :shifta 0.0)) 0.0)))))
+  "The PB category is decided solely by an actual Photon Blast discharge
+during the run (a large PB-gauge drop; see UPDATE-PB-TRACKING). Treating
+a charged gauge or an already-cast Shifta at the start frame as PB
+produced false positives - a normal No-PB party run routinely starts
+with Shifta up - so a run is No PB until a discharge is seen."
+  (declare (ignore snapshot))
+  nil)
 
 (defun update-pb-tracking (detector snapshot)
   "A large single-frame drop of the PB gauge means a Photon Blast was used."
