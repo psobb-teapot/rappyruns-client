@@ -6,6 +6,7 @@
 
 (fli:register-module :user32 :real-name "user32" :connection-style :automatic)
 (fli:register-module :kernel32 :real-name "kernel32" :connection-style :automatic)
+(fli:register-module :shell32 :real-name "shell32" :connection-style :automatic)
 
 (fli:define-foreign-function (%find-window "FindWindowW")
     ((class-name :pointer)
@@ -61,6 +62,31 @@
   :result-type (:boolean :int)
   :calling-convention :stdcall
   :module :kernel32)
+
+;; ShellExecuteW takes the URL as a single lpFile argument, so nothing
+;; is ever parsed by a shell; returns an HINSTANCE > 32 on success.
+(fli:define-foreign-function (%shell-execute "ShellExecuteW")
+    ((hwnd :pointer)
+     (operation (:reference-pass :ef-wc-string))
+     (file (:reference-pass :ef-wc-string))
+     (parameters :pointer)
+     (directory :pointer)
+     (show-cmd :int))
+  :result-type :pointer
+  :calling-convention :stdcall
+  :module :shell32)
+
+;; Asynchronous and thread-safe, so the poll loop can call it directly;
+;; plays the user's sound scheme (and respects mute).
+(fli:define-foreign-function (%message-beep "MessageBeep")
+    ((type (:unsigned :int)))
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :user32)
+
+(defconstant +sw-shownormal+ 1)
+(defconstant +mb-iconasterisk+ #x40)   ; notification sound
+(defconstant +mb-iconhand+ #x10)       ; error sound
 
 (defconstant +process-vm-read+ #x0010)
 (defconstant +process-query-information+ #x0400)

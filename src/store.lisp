@@ -18,6 +18,36 @@ and, once submitted, :url and :reason on rejection.")
   #+lispworks `(mp:with-lock (*runs-lock*) ,@body)
   #-lispworks `(progn ,@body))
 
+(defparameter +max-finished-runs+ 50
+  "How many finished entries (submitted/duplicate/rejected) to keep in
+the list; unfinished ones (:queued/:failed) are never dropped.")
+
+(defun trim-finished-runs (runs limit)
+  "RUNS is newest first: keep every :queued/:failed entry and only the
+newest LIMIT finished ones, preserving order."
+  (let ((finished 0))
+    (remove-if (lambda (entry)
+                 (and (not (member (getf entry :status) '(:queued :failed)))
+                      (> (incf finished) limit)))
+               runs)))
+
+;;; Display helpers for run entries. They live here rather than in the
+;;; (LispWorks-only) GUI so the SBCL tests can cover them.
+
+(defun format-run-time (ms)
+  (multiple-value-bind (total-seconds msec) (floor ms 1000)
+    (multiple-value-bind (minutes seconds) (floor total-seconds 60)
+      (format nil "~d:~2,'0d.~3,'0d" minutes seconds msec))))
+
+(defun run-status-label (entry)
+  (case (getf entry :status)
+    (:queued "queued")
+    (:submitted "draft - double-click to add video")
+    (:duplicate "duplicate (already on server)")
+    (:rejected (format nil "rejected: ~a" (or (getf entry :reason) "?")))
+    (:failed (format nil "failed: ~a" (or (getf entry :reason) "?")))
+    (t "?")))
+
 (defun queue-path ()
   (merge-pathnames "queue.sexp" (config-dir)))
 
@@ -40,7 +70,9 @@ and, once submitted, :url and :reason on rejection.")
 
 (defun enqueue-run! (run)
   (let ((entry (list* :status :queued run)))
-    (with-runs-lock (push entry *runs*))
+    (with-runs-lock
+      (push entry *runs*)
+      (setf *runs* (trim-finished-runs *runs* +max-finished-runs+)))
     (save-queue!)
     entry))
 
@@ -52,7 +84,9 @@ are not already present.)"
     (loop :for (key value) :on updates :by #'cddr
           :do (setf (getf new key) value))
     (with-runs-lock
-      (setf *runs* (substitute new entry *runs* :test #'eq)))
+      (setf *runs* (trim-finished-runs
+                    (substitute new entry *runs* :test #'eq)
+                    +max-finished-runs+)))
     (save-queue!)
     new))
 
@@ -76,10 +110,10 @@ are not already present.)"
                    :reason (api-error-message condition)))))
 
 (defun submit-queued! ()
-  "Try to submit every :queued or :failed run. Returns the entries touched."
+  "Try to submit every :queued or :failed run. Returns the UPDATED
+entries (the pre-submission plists would show stale statuses)."
   (let ((pending (with-runs-lock
                    (remove-if-not (lambda (entry)
                                     (member (getf entry :status) '(:queued :failed)))
                                   *runs*))))
-    (dolist (entry pending pending)
-      (submit-entry! entry))))
+    (mapcar #'submit-entry! pending)))

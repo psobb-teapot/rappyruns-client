@@ -705,9 +705,9 @@ over the defaults. Restores the global config afterwards (it is bound)."
       (let ((rename (first (events-of backend :rename))))
         (check "completed run's video is renamed"
                (and rename (search "rec-tmp-" (second rename))))
-        (check "final name has slug, time and date"
+        (check "final name has quest, time and date"
                (and rename
-                    (search "ep1-test-quest_9m59.123_2026-07-04_2130.mp4"
+                    (search "ep1-test-quest 9'59.123 (2026-07-04 2130).mp4"
                             (third rename)))))
       (check "recorder returns to idle after finalize"
              (and (eq (recorder-state rec) :idle)
@@ -734,8 +734,8 @@ over the defaults. Restores the global config afterwards (it is bound)."
       (recorder-step rec :idle '() "Ephinea PSOBB")
       (setf (mock-alive backend) nil)
       (recorder-step rec :idle '() "Ephinea PSOBB")
-      (check "segment-only capture is kept under the segment slug"
-             (search "ep1-seg_2m00.500"
+      (check "segment-only capture is kept under the segment name"
+             (search "ep1-seg 2'00.500"
                      (third (first (events-of backend :rename))))))
     ;; Full clear + segment: the longest run names the file.
     (multiple-value-bind (rec backend) (make-test-recorder)
@@ -749,7 +749,7 @@ over the defaults. Restores the global config afterwards (it is bound)."
       (setf (mock-alive backend) nil)
       (recorder-step rec :idle '() "Ephinea PSOBB")
       (check "full clear (longest run) names the video"
-             (search "ep1-full_9m59.123"
+             (search "ep1-full 9'59.123"
                      (third (first (events-of backend :rename))))))
     ;; ffmpeg fails to start: error surfaced, retried on the NEXT quest.
     (multiple-value-bind (rec backend) (make-test-recorder)
@@ -822,6 +822,13 @@ over the defaults. Restores the global config afterwards (it is bound)."
   ;; Pure helpers.
   (check "sanitize-filename strips reserved characters"
          (string= "a-b-c-d" (sanitize-filename "a:b/c\"d")))
+  (check "video filename prefers the in-game quest name"
+         (search "Towards the Future 9'59.123"
+                 (run-video-filename
+                  (list :quest-slug "ep1-towards-the-future"
+                        :quest-name "Towards the Future"
+                        :time-ms 599123
+                        :finished-at (encode-universal-time 0 30 21 4 7 2026)))))
   (check "best-session-run picks the longest run"
          (string= "long"
                   (getf (best-session-run
@@ -836,6 +843,77 @@ over the defaults. Restores the global config afterwards (it is bound)."
     (check "ffmpeg output path is the last argument"
            (equal "out.mp4" (first (last args))))))
 
+;;; ------------------------------------------------------------------
+;;; UX helpers: status labels, list trimming, URL and error text
+;;; ------------------------------------------------------------------
+
+(defun run-ux-helper-tests ()
+  (format t "~&--- ux helpers ---~%")
+  ;; Status labels (shown in the runs list).
+  (let ((label (ephinea-ta-client::run-status-label
+                (list :status :submitted
+                      :url "https://example.com/runs/42"))))
+    (check "submitted label does not leak the URL"
+           (not (search "http" label)))
+    (check "submitted label says draft and hints at the video step"
+           (and (search "draft" label) (search "video" label))))
+  (check "rejected label carries the reason"
+         (search "too fast"
+                 (ephinea-ta-client::run-status-label
+                  (list :status :rejected :reason "too fast"))))
+  (check "format-run-time formats minutes:seconds.millis"
+         (string= "9:59.123" (ephinea-ta-client::format-run-time 599123)))
+  ;; Trimming: unfinished entries survive, finished ones are capped.
+  (let* ((runs (loop :for i :from 0 :below 70
+                     :collect (list :status (case (mod i 7)
+                                              (3 :queued)
+                                              (5 :failed)
+                                              (t :submitted))
+                                    :n i)))
+         (trimmed (ephinea-ta-client::trim-finished-runs runs 50)))
+    (check "trim keeps every queued/failed entry"
+           (= (count-if (lambda (entry)
+                          (member (getf entry :status) '(:queued :failed)))
+                        runs)
+              (count-if (lambda (entry)
+                          (member (getf entry :status) '(:queued :failed)))
+                        trimmed)))
+    (check "trim caps finished entries at the limit"
+           (= 50 (count :submitted trimmed :key (lambda (e) (getf e :status)))))
+    (check "trim keeps the newest finished entries in order"
+           (equal (subseq (mapcar (lambda (e) (getf e :n)) runs) 0 10)
+                  (subseq (mapcar (lambda (e) (getf e :n)) trimmed) 0 10))))
+  ;; Browser URL guard.
+  (check "http and https URLs are openable"
+         (and (ephinea-ta-client::valid-http-url-p "http://x/y")
+              (ephinea-ta-client::valid-http-url-p "https://x/y")))
+  (check "non-web strings are rejected"
+         (notany #'ephinea-ta-client::valid-http-url-p
+                 (list "C:\\evil.exe" "file:///c:/x" "https://x/a b"
+                       "javascript:alert(1)" nil 42 "")))
+  ;; Human-readable server errors.
+  (check "windows error code is extracted"
+         (= 12029 (ephinea-ta-client::windows-error-code
+                   "WinHttpConnect failed (Windows error 12029)")))
+  (check "windows error code absent -> nil"
+         (null (ephinea-ta-client::windows-error-code "plain message")))
+  (flet ((text-for (message)
+           (ephinea-ta-client::server-status-error-text
+            (make-condition 'ephinea-ta-client::api-error :message message))))
+    (check "connection failure reads like a sentence, not a condition"
+           (search "could not connect"
+                   (text-for "WinHttpConnect failed (Windows error 12029)")))
+    (check "bad URL points at the settings fix"
+           (search "Save settings" (text-for "Bad URL: nonsense")))
+    (check "unexpected HTTP status mentions the response"
+           (search "unexpected response"
+                   (text-for "GET /api/quests -> 500"))))
+  (check "non-api conditions still say what happened"
+         (search "check failed"
+                 (ephinea-ta-client::server-status-error-text
+                  (make-condition 'simple-error
+                                  :format-control "boom")))))
+
 (defun run-client-tests ()
   (setf *failures* 0)
   (load-quest-defs)
@@ -849,5 +927,6 @@ over the defaults. Restores the global config afterwards (it is bound)."
   (run-gdv-segment-test)
   (run-trigger-log-tests)
   (run-recorder-tests)
+  (run-ux-helper-tests)
   (format t "~&=== client tests: ~d failure~:p ===~%" *failures*)
   *failures*)

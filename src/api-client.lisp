@@ -22,6 +22,45 @@
   #+sbcl (sb-ext:octets-to-string octets :external-format :utf-8)
   #-(or lispworks sbcl) (map 'string #'code-char octets))
 
+(defun valid-http-url-p (url)
+  "Only http(s) URLs may be handed to the OS to open in a browser; this
+keeps a mangled Server URL setting (a local path, file://...) from ever
+reaching ShellExecute."
+  (and (stringp url)
+       (or (eql 0 (search "http://" url))
+           (eql 0 (search "https://" url)))
+       (notany (lambda (char) (char<= char #\Space)) url)))
+
+(defun windows-error-code (message)
+  "Extract N from a \"... (Windows error N)\" winhttp message, or NIL."
+  (let ((start (search "(Windows error " message)))
+    (when start
+      (parse-integer message :start (+ start 15) :junk-allowed t))))
+
+(defun connection-error-hint (code)
+  "Plain-language hint for the common WinHTTP error codes."
+  (case code
+    (12007 "server address not found - check the Server URL")
+    ((12029 12030) "could not connect - server down, or no internet?")
+    (12002 "connection timed out")
+    ((12157 12175) "secure connection (https) failed")
+    (t nil)))
+
+(defun server-status-error-text (condition)
+  "The server-status line for a failed server check, phrased for
+humans instead of echoing the raw condition."
+  (if (typep condition 'api-error)
+      (let* ((message (api-error-message condition))
+             (hint (connection-error-hint (windows-error-code message))))
+        (cond (hint (format nil "Server: ~a" hint))
+              ((search "Bad URL" message)
+               "Server: the Server URL looks wrong - fix it and press Save settings")
+              ((search "-> " message)
+               (format nil "Server: unexpected response (~a) - is the URL right?"
+                       message))
+              (t (format nil "Server: ~a" message))))
+      (format nil "Server: check failed (~a)" condition)))
+
 (defun parse-url (url)
   "Returns (values scheme host port path)."
   (let* ((scheme-end (or (search "://" url)

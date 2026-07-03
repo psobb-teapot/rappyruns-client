@@ -33,10 +33,26 @@ uses them whenever present."
   snapshot)
 
 (defun handle-completed-runs (runs)
+  "Queue RUNS and auto-submit; returns the submission results (updated
+entries) so the caller can react to failures, or NIL when not submitting."
   (dolist (run runs)
     (enqueue-run! run))
   (when (and runs (config-value :auto-submit))
     (submit-queued!)))
+
+#+lispworks
+(defun run-completion-sounds (runs)
+  "Completion beep the moment RUNS finish (before the network round
+trip), then the error sound if auto-submission left any of them
+failed/rejected. Two sounds correctly say: timed OK, upload did not."
+  (when (config-value :completion-sound)
+    (%message-beep +mb-iconasterisk+))
+  (let ((results (handle-completed-runs runs)))
+    (when (and (config-value :completion-sound)
+               (find-if (lambda (entry)
+                          (member (getf entry :status) '(:failed :rejected)))
+                        results))
+      (%message-beep +mb-iconhand+))))
 
 #+lispworks
 (defun poll-loop (interface)
@@ -62,6 +78,12 @@ uses them whenever present."
                               (recorder-step recorder
                                              (detector-state detector)
                                              '() nil))
+                            ;; "Submit pending runs" must work without
+                            ;; the game running too.
+                            (when *retry-requested*
+                              (setf *retry-requested* nil)
+                              (submit-queued!)
+                              (refresh-runs-list interface))
                             (update-game-status interface nil detector nil
                                                 recorder)
                             (mp:process-wait-with-timeout
@@ -87,7 +109,7 @@ uses them whenever present."
                           (recorder-step recorder (detector-state detector)
                                          runs (reader-window-title reader)))
                         (when runs
-                          (handle-completed-runs runs)
+                          (run-completion-sounds runs)
                           (refresh-runs-list interface))
                         (when (config-value :trigger-log)
                           (ignore-errors
@@ -123,6 +145,7 @@ uses them whenever present."
     (capi:display interface)
     (refresh-runs-list interface)
     (check-server interface)
+    (maybe-prompt-for-token interface)
     (mp:process-run-function "eta-client-poll" '()
                              (lambda () (poll-loop interface)))
     interface))

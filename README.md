@@ -53,17 +53,21 @@ machines don't have.)
 With "Record quest videos automatically" checked, the client records the
 game window with ffmpeg (gdigrab window capture, video only): recording
 starts when a quest's start trigger fires and stops when the run
-completes or the quest is abandoned. Completed runs are saved as
-`<slug>_<time>_<date>.mp4` (e.g.
-`ep1-towards-the-future_9m59.123_2026-07-04_2130.mp4`) into
-`Videos\EphineaTA\` (configurable); abandoned/failed captures are
-deleted automatically. Recording never interferes with detection or
+completes or the quest is abandoned. Completed runs are saved under the
+in-game quest name, e.g.
+`Towards the Future 9'59.123 (2026-07-04 2130).mp4`, into
+`Videos\EphineaTA\` (configurable, and one click away via "Open
+recordings folder"); abandoned/failed captures are deleted
+automatically. Recording never interferes with detection or
 submission - if ffmpeg fails, the run is still timed and uploaded.
 
-ffmpeg is found in this order: the "ffmpeg path" setting, then
-`ffmpeg\ffmpeg.exe` next to the client exe (the bundled copy), then
-`ffmpeg.exe` on `PATH`. Toggling the checkbox on verifies ffmpeg starts
-and explains what to do when it doesn't.
+ffmpeg is found in this order: the `:ffmpeg-path` key in
+`%APPDATA%\ephinea-ta-client\config.sexp` (power-user override, not
+shown in the GUI), then `ffmpeg\ffmpeg.exe` next to the client exe (the
+bundled copy), then `ffmpeg.exe` on `PATH`. Toggling the checkbox on
+verifies ffmpeg starts and explains what to do when it doesn't. The
+recordings folder is picked with a directory dialog ("Change
+folder..."), applied immediately.
 
 Implementation: `src/recording.lisp` is the pure state machine (tested
 on SBCL against a mock backend); `src/ffmpeg-win32.lisp` spawns

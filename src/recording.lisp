@@ -95,7 +95,9 @@ directory). Returns a capture token, or (values nil error-string)."))
       (resolve-record-dir)))))
 
 (defun run-video-filename (run)
-  "\"<slug>_<9m59.123>_<2026-07-04_2130>.mp4\" from a completed run plist."
+  "\"Towards the Future 9'59.123 (2026-07-04 2130).mp4\" from a
+completed run plist. Uses the in-game quest name (what the player
+recognizes when browsing the folder), not the site slug."
   (multiple-value-bind (total-seconds msec) (floor (getf run :time-ms 0) 1000)
     (multiple-value-bind (minutes seconds) (floor total-seconds 60)
       (multiple-value-bind (sec min hour day month year)
@@ -103,8 +105,8 @@ directory). Returns a capture token, or (values nil error-string)."))
                                      (get-universal-time)))
         (declare (ignore sec))
         (sanitize-filename
-         (format nil "~a_~dm~2,'0d.~3,'0d_~4,'0d-~2,'0d-~2,'0d_~2,'0d~2,'0d.mp4"
-                 (or (getf run :quest-slug) "run")
+         (format nil "~a ~d'~2,'0d.~3,'0d (~4,'0d-~2,'0d-~2,'0d ~2,'0d~2,'0d).mp4"
+                 (or (getf run :quest-name) (getf run :quest-slug) "run")
                  minutes seconds msec year month day hour min))))))
 
 (defun best-session-run (runs)

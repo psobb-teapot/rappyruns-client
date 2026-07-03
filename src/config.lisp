@@ -6,6 +6,8 @@
   (list :server-url "https://ephinea-ta-production.up.railway.app"
         :api-token ""
         :auto-submit t
+        :completion-sound t
+        :token-prompt-shown nil ; the one-time "no API token yet" dialog
         :trigger-log nil
         :record-enabled t
         :ffmpeg-path ""     ; blank = bundled copy next to the exe, or PATH
