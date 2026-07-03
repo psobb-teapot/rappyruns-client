@@ -18,8 +18,6 @@ New-Item -ItemType Directory -Force (Join-Path $stage "data") | Out-Null
 
 Copy-Item $exe $stage
 Copy-Item $triggers (Join-Path $stage "data")
-# If your LispWorks build needs OpenSSL DLLs for https servers, drop them
-# in dist/ and add Copy-Item lines here (see README.md, "Building the exe").
 
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip

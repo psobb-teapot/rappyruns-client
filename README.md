@@ -42,11 +42,11 @@ Config and the offline retry queue live in `%APPDATA%/ephinea-ta-client/`.
 ```
 
 Output: `client/dist/EphineaTAClient.exe`. Distribute together with
-`data/quest-triggers.sexp` (looked up next to the exe). For an `https`
-server URL, LispWorks' SSL support must be available at runtime; if your
-LispWorks build uses OpenSSL, ship the matching OpenSSL DLLs next to the
-exe (LW 8.1 on Windows can also use the native SChannel backend, in which
-case no extra DLLs are needed).
+`data/quest-triggers.sexp` (looked up next to the exe). `https` needs no
+extra DLLs: on LispWorks the client speaks HTTP(S) through the Windows
+WinHTTP API (`src/winhttp.lisp`), so TLS comes from the OS. (LispWorks'
+own COMM SSL is *not* used - it requires OpenSSL 1.1 DLLs that end-user
+machines don't have.)
 
 ## Packaging
 
@@ -55,9 +55,7 @@ powershell -File client/package.ps1
 ```
 
 Bundles the exe and `data/quest-triggers.sexp` (from `client/data/`, the
-source of truth) into `client/dist/EphineaTAClient.zip`. If your build
-needs OpenSSL DLLs (see above), drop them in `dist/` and add `Copy-Item`
-lines to the script.
+source of truth) into `client/dist/EphineaTAClient.zip`.
 
 ## Releasing
 

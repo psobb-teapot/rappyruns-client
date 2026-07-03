@@ -16,6 +16,7 @@
                              (:file "config")
                              (:file "memory")
                              (:file "win32" :if-feature :lispworks)
+                             (:file "winhttp" :if-feature :lispworks)
                              (:file "psobb")
                              (:file "quests")
                              (:file "detect")

@@ -1,10 +1,11 @@
 (in-package :ephinea-ta-client)
 
-;;; Minimal HTTP/1.0 client over raw sockets and the ephinea-ta JSON API
-;;; on top of it. HTTP/1.0 + "Connection: close" avoids chunked encoding:
-;;; the response is simply everything until EOF. LispWorks uses COMM
-;;; (with built-in SSL for https); SBCL uses sb-bsd-sockets (plain http,
-;;; good enough for tests against a local server).
+;;; The ephinea-ta JSON API client. On LispWorks, requests go through
+;;; WinHTTP (winhttp.lisp) so https works without shipping OpenSSL DLLs.
+;;; SBCL uses a minimal HTTP/1.0 client over sb-bsd-sockets (plain http,
+;;; good enough for tests against a local server); HTTP/1.0 +
+;;; "Connection: close" avoids chunked encoding: the response is simply
+;;; everything until EOF.
 
 (define-condition api-error (error)
   ((message :initarg :message :reader api-error-message))
@@ -37,16 +38,9 @@
                      (t 80))))
     (values scheme host port path)))
 
+#-lispworks
 (defun open-http-stream (scheme host port)
-  "Binary stream to HOST:PORT; TLS when SCHEME is https."
-  #+lispworks
-  (or (comm:open-tcp-stream host port
-                            :direction :io
-                            :element-type '(unsigned-byte 8)
-                            :timeout 10
-                            :read-timeout 30
-                            :ssl-ctx (when (string= scheme "https") t))
-      (error 'api-error :message (format nil "Cannot connect to ~a:~a" host port)))
+  "Binary stream to HOST:PORT (plain http only)."
   #+sbcl
   (progn
     (when (string= scheme "https")
@@ -60,13 +54,15 @@
        port)
       (sb-bsd-sockets:socket-make-stream socket :input t :output t
                                                 :element-type '(unsigned-byte 8))))
-  #-(or lispworks sbcl)
+  #-sbcl
   (error 'api-error :message "No socket backend for this implementation"))
 
+#-lispworks
 (defun write-ascii (stream string)
   (loop :for char :across string
         :do (write-byte (char-code char) stream)))
 
+#-lispworks
 (defun read-all-bytes (stream)
   (let ((buffer (make-array 4096 :element-type '(unsigned-byte 8)
                                  :adjustable t :fill-pointer 0)))
@@ -78,6 +74,7 @@
       (error () nil))
     buffer))
 
+#-lispworks
 (defun split-response (bytes)
   "Returns (values status-code body-octets) from a raw HTTP response."
   (let ((header-end
@@ -92,6 +89,25 @@
            (status (parse-integer head :start (1+ space) :junk-allowed t)))
       (values status (subseq bytes (+ header-end 4))))))
 
+#+lispworks
+(defun http-request (method url &key body (content-type "application/json") token)
+  "Blocking HTTP request. Returns (values status-code body-string)."
+  (multiple-value-bind (scheme host port path) (parse-url url)
+    (handler-case
+        (multiple-value-bind (status response-body)
+            (winhttp-request method scheme host port path
+                             :headers (append
+                                       (when token
+                                         (list (cons "Authorization"
+                                                     (format nil "Bearer ~a" token))))
+                                       (when body
+                                         (list (cons "Content-Type" content-type))))
+                             :body (and body (string-to-utf8 body)))
+          (values status (utf8-to-string response-body)))
+      (winhttp-error (condition)
+        (error 'api-error :message (winhttp-error-message condition))))))
+
+#-lispworks
 (defun http-request (method url &key body (content-type "application/json") token)
   "Blocking HTTP request. Returns (values status-code body-string)."
   (multiple-value-bind (scheme host port path) (parse-url url)
