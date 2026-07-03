@@ -77,23 +77,23 @@ gh repo create psobb-teapot/ephinea-ta-client-releases --public \
 Give it a single README commit (releases need at least one commit); no
 source goes there.
 
-Per release (tag `vX.Y.Z`):
+Per release (tag `vX.Y.Z`), `release.ps1` builds the exe, packages the
+zip and publishes it in one go:
 
 ```
-gh release create v0.1.0 client/dist/EphineaTAClient.zip \
-  --repo psobb-teapot/ephinea-ta-client-releases \
-  --title "Ephinea TA Client v0.1.0" \
-  --notes "Changes: ..."
+.\client\release.ps1 v0.2.0 -NotesFile notes.md   # new release
+.\client\release.ps1 v0.2.0 -Prerelease           # test build, excluded from `latest`
+.\client\release.ps1 v0.1.0 -Clobber              # replace the asset on an existing release
 ```
+
+Without `-NotesFile` the notes are just the version; write real notes
+in a file (passing quotes on the `gh` command line is unreliable).
 
 The asset must be named `EphineaTAClient.zip` - the site's download
 button points at
 `https://github.com/psobb-teapot/ephinea-ta-client-releases/releases/latest/download/EphineaTAClient.zip`
-(override with `ETA_CLIENT_DOWNLOAD_URL` on the server). To replace an
-asset on an existing release:
-`gh release upload vX.Y.Z client/dist/EphineaTAClient.zip --clobber --repo psobb-teapot/ephinea-ta-client-releases`.
-Pre-releases (`--prerelease`) are excluded from `latest`, so they are
-safe for test builds.
+(override with `ETA_CLIENT_DOWNLOAD_URL` on the server). Pre-releases
+are excluded from `latest`, so they are safe for test builds.
 
 ## Quest coverage
 
