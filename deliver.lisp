@@ -26,4 +26,5 @@
 (deliver (intern "MAIN" "EPHINEA-TA-CLIENT")
          (namestring (merge-pathnames "dist/EphineaTAClient" *client-root*))
          0                       ; delivery level: start low, raise once stable
-         :interface :capi)
+         :interface :capi
+         :startup-bitmap-file nil) ; no "built with LispWorks" splash
