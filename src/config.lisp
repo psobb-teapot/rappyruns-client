@@ -6,7 +6,10 @@
   (list :server-url "https://ephinea-ta-production.up.railway.app"
         :api-token ""
         :auto-submit t
-        :trigger-log nil))
+        :trigger-log nil
+        :record-enabled t
+        :ffmpeg-path ""     ; blank = bundled copy next to the exe, or PATH
+        :record-dir ""))    ; blank = <user home>/Videos/EphineaTA/
 
 (defvar *config* nil)
 

@@ -25,6 +25,17 @@
            #:make-detector #:detector-step #:detector-state
            #:detector-active-def #:detector-active-count
            #:detector-elapsed-ms
+           ;; recording (backend generics are specialized by tests and
+           ;; by the live ffmpeg backend)
+           #:make-recorder #:recorder-step #:recorder-shutdown
+           #:recorder-state #:recorder-last-error
+           #:cleanup-stale-recordings
+           #:build-ffmpeg-args #:run-video-filename #:sanitize-filename
+           #:best-session-run #:reader-window-title
+           #:backend-start-capture #:backend-capture-alive-p
+           #:backend-request-stop #:backend-kill-capture
+           #:backend-close-capture #:backend-rename-file
+           #:backend-delete-file #:backend-list-stale-files
            ;; trigger discovery
            #:log-trigger-changes #:start-trigger-log #:close-trigger-log
            ;; api

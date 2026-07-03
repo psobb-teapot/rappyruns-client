@@ -21,6 +21,8 @@
                              (:file "quests")
                              (:file "telemetry")
                              (:file "detect")
+                             (:file "recording")
+                             (:file "ffmpeg-win32" :if-feature :lispworks)
                              (:file "trigger-log")
                              (:file "api-client")
                              (:file "store")

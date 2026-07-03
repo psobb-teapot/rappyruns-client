@@ -14,6 +14,14 @@
   :calling-convention :stdcall
   :module :user32)
 
+(fli:define-foreign-function (%get-window-text "GetWindowTextW")
+    ((hwnd :pointer)
+     (buffer :pointer)
+     (max-count :int))
+  :result-type :int
+  :calling-convention :stdcall
+  :module :user32)
+
 (fli:define-foreign-function (%get-window-thread-process-id "GetWindowThreadProcessId")
     ((hwnd :pointer)
      (process-id (:reference-return (:unsigned :long))))
@@ -65,14 +73,34 @@
 (defclass live-reader ()
   ((handle :initarg :handle :accessor live-reader-handle)
    (pid :initarg :pid :reader live-reader-pid)
+   (window-title :initarg :window-title :initform nil
+                 :reader live-reader-window-title)
    (buffer :initform nil :accessor live-reader-buffer)
    (buffer-size :initform 0 :accessor live-reader-buffer-size)))
+
+(defmethod reader-window-title ((reader live-reader))
+  (live-reader-window-title reader))
 
 (defun find-psobb-window ()
   (dolist (name +psobb-window-names+)
     (let ((hwnd (%find-window fli:*null-pointer* name)))
       (unless (fli:null-pointer-p hwnd)
         (return hwnd)))))
+
+(defun window-title (hwnd)
+  "The window's actual title via GetWindowTextW, or NIL (BMP only).
+The recorder passes this to ffmpeg's gdigrab title= input, which needs
+an exact match - the FindWindowW candidate name is not good enough."
+  (fli:with-dynamic-foreign-objects ()
+    (let* ((max-count 256)
+           (buffer (fli:allocate-dynamic-foreign-object
+                    :type '(:unsigned :short) :nelems max-count))
+           (length (%get-window-text hwnd buffer max-count)))
+      (when (plusp length)
+        (with-output-to-string (out)
+          (dotimes (i length)
+            (write-char (code-char (fli:dereference buffer :index i))
+                        out)))))))
 
 (defun open-psobb-reader ()
   "Attach to a running PSOBB process; NIL when not found."
@@ -87,7 +115,8 @@
                          (logior +process-vm-read+ +process-query-information+)
                          nil pid)))
             (unless (fli:null-pointer-p handle)
-              (make-instance 'live-reader :handle handle :pid pid))))))))
+              (make-instance 'live-reader :handle handle :pid pid
+                                          :window-title (window-title hwnd)))))))))
 
 (defun close-reader (reader)
   (when (live-reader-buffer reader)

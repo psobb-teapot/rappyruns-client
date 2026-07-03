@@ -79,6 +79,26 @@
                       :callback-type :interface
                       :font *ui-font*
                       :accessor trigger-log-check)
+   (record-check capi:check-button
+                 :text "Record quest videos automatically (needs ffmpeg)"
+                 :selected (config-value :record-enabled)
+                 :selection-callback 'toggle-record-callback
+                 :retract-callback 'toggle-record-callback
+                 :callback-type :interface
+                 :font *ui-font*
+                 :accessor record-check)
+   (ffmpeg-path-input capi:text-input-pane
+                      :title "ffmpeg path (blank = bundled/PATH)"
+                      :text (config-value :ffmpeg-path)
+                      :font *ui-font*
+                      :title-font *ui-font*
+                      :accessor ffmpeg-path-input)
+   (record-dir-input capi:text-input-pane
+                     :title "Recordings folder (blank = Videos\\EphineaTA)"
+                     :text (config-value :record-dir)
+                     :font *ui-font*
+                     :title-font *ui-font*
+                     :accessor record-dir-input)
    (save-button capi:push-button
                 :text "Save settings"
                 :callback 'save-settings-callback
@@ -92,10 +112,12 @@
   (:layouts
    (status-row capi:row-layout '(game-status server-status))
    (settings-row capi:row-layout '(server-url-input api-token-input))
+   (recording-row capi:row-layout '(ffmpeg-path-input record-dir-input))
    (buttons-row capi:row-layout '(save-button retry-button))
    (main-layout capi:column-layout
                 '(status-row quest-status runs-list
-                  settings-row auto-submit-check trigger-log-check buttons-row)
+                  settings-row auto-submit-check trigger-log-check
+                  record-check recording-row buttons-row)
                 :adjust :left))
   (:default-initargs
    :title "Ephinea TA Client"
@@ -112,7 +134,15 @@
         (config-value :auto-submit)
         (capi:button-selected (auto-submit-check interface))
         (config-value :trigger-log)
-        (capi:button-selected (trigger-log-check interface)))
+        (capi:button-selected (trigger-log-check interface))
+        (config-value :record-enabled)
+        (capi:button-selected (record-check interface))
+        (config-value :ffmpeg-path)
+        (string-trim " " (capi:text-input-pane-text
+                          (ffmpeg-path-input interface)))
+        (config-value :record-dir)
+        (string-trim " " (capi:text-input-pane-text
+                          (record-dir-input interface))))
   (save-config!)
   (check-server interface))
 
@@ -135,6 +165,26 @@ on, start the log file right away so the user can see it is working."
            "Trigger logging is on. Play the segment, then open:~%~%~a~%~%The floor switch (or register) that flips when the room is cleared is your end trigger."
            (namestring path)))
         (close-trigger-log))))
+
+(defun toggle-record-callback (interface)
+  "Apply the recording toggle immediately (no Save needed). Turning it
+on first adopts the path fields as typed, then verifies that ffmpeg can
+actually be started; otherwise the box snaps back off with instructions."
+  (let ((on (capi:button-selected (record-check interface))))
+    (when on
+      (setf (config-value :ffmpeg-path)
+            (string-trim " " (capi:text-input-pane-text
+                              (ffmpeg-path-input interface)))
+            (config-value :record-dir)
+            (string-trim " " (capi:text-input-pane-text
+                              (record-dir-input interface))))
+      (unless (ffmpeg-available-p)
+        (setf (capi:button-selected (record-check interface)) nil
+              on nil)
+        (capi:display-message
+         "ffmpeg was not found, so recording stays off.~%~%Either use the client zip that bundles it (ffmpeg\\ffmpeg.exe next to the exe), or install ffmpeg yourself and put its full path into \"ffmpeg path\".")))
+    (setf (config-value :record-enabled) on)
+    (save-config!)))
 
 (defun set-pane-text (interface accessor text)
   (capi:execute-with-interface
@@ -170,18 +220,24 @@ cross-check the builtin trigger slugs against the server."
          (set-pane-text interface #'server-status-pane
                         (format nil "Server: ~a" condition)))))))
 
-(defun update-game-status (interface connected-p detector snapshot)
+(defun update-game-status (interface connected-p detector snapshot
+                           &optional recorder)
   (set-pane-text interface #'game-status-pane
-                 (if connected-p "Game: attached" "Game: searching..."))
+                 (format nil "~a~@[ / recording error: ~a~]"
+                         (if connected-p "Game: attached" "Game: searching...")
+                         (and recorder (recorder-last-error recorder))))
   (set-pane-text
    interface #'quest-status-pane
-   (cond
-     ((eq (detector-state detector) :in-quest)
-      (let ((extra (1- (detector-active-count detector))))
-        (format nil "~a~@[ (+~d)~] - ~a"
-                (quest-def-slug (detector-active-def detector))
-                (and (plusp extra) extra)
-                (format-run-time (detector-elapsed-ms detector)))))
-     ((and snapshot (getf snapshot :quest-name))
-      (format nil "~a (waiting for start)" (getf snapshot :quest-name)))
-     (t "No active quest"))))
+   (let ((recording-p (and recorder
+                           (eq (recorder-state recorder) :recording))))
+     (cond
+       ((eq (detector-state detector) :in-quest)
+        (let ((extra (1- (detector-active-count detector))))
+          (format nil "~a~@[ (+~d)~] - ~a~:[~; [REC]~]"
+                  (quest-def-slug (detector-active-def detector))
+                  (and (plusp extra) extra)
+                  (format-run-time (detector-elapsed-ms detector))
+                  recording-p)))
+       ((and snapshot (getf snapshot :quest-name))
+        (format nil "~a (waiting for start)" (getf snapshot :quest-name)))
+       (t "No active quest")))))

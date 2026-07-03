@@ -9,6 +9,14 @@
    "Read SIZE bytes at ADDRESS. Returns an (unsigned-byte 8) vector,
 or NIL when the memory is unreadable."))
 
+(defgeneric reader-window-title (reader)
+  (:documentation
+   "Title of the game window this reader is attached to, or NIL. The
+recorder needs it for ffmpeg's gdigrab title= input.")
+  (:method (reader)
+    (declare (ignore reader))
+    nil))
+
 (defclass mock-reader ()
   ((regions :initarg :regions :accessor mock-reader-regions
             :documentation "List of (address . byte-vector).")))

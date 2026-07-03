@@ -611,6 +611,231 @@ switch 0; room 2 cleared = floor 5 switch 2; full clear = register 254."
              (search "floor 5 switch 2" text)))
     (ignore-errors (delete-file path))))
 
+;;; ------------------------------------------------------------------
+;;; Recorder: capture-backend mock and state machine tests
+;;; ------------------------------------------------------------------
+
+(defclass mock-backend ()
+  ((events :initform '() :accessor mock-events
+           :documentation "Chronological list of side-effect events.")
+   (alive :initform t :accessor mock-alive)
+   (start-result :initform :ok :accessor mock-start-result)
+   (stale :initform '() :accessor mock-stale)))
+
+(defun record-event (backend &rest event)
+  (setf (mock-events backend)
+        (append (mock-events backend) (list event))))
+
+(defun events-of (backend kind)
+  (remove kind (mock-events backend) :key #'first :test-not #'eq))
+
+(defmethod backend-start-capture ((backend mock-backend) ffmpeg-path args
+                                  output-path)
+  (record-event backend :start ffmpeg-path args output-path)
+  (if (eq (mock-start-result backend) :ok)
+      :mock-capture
+      (values nil "mock start failure")))
+
+(defmethod backend-capture-alive-p ((backend mock-backend) capture)
+  (declare (ignore capture))
+  (mock-alive backend))
+
+(defmethod backend-request-stop ((backend mock-backend) capture)
+  (declare (ignore capture))
+  (record-event backend :stop))
+
+(defmethod backend-kill-capture ((backend mock-backend) capture)
+  (declare (ignore capture))
+  (record-event backend :kill))
+
+(defmethod backend-close-capture ((backend mock-backend) capture)
+  (declare (ignore capture))
+  (record-event backend :close))
+
+(defmethod backend-rename-file ((backend mock-backend) from to)
+  (record-event backend :rename from to))
+
+(defmethod backend-delete-file ((backend mock-backend) path)
+  (record-event backend :delete path))
+
+(defmethod backend-list-stale-files ((backend mock-backend) dir)
+  (declare (ignore dir))
+  (mock-stale backend))
+
+(defmacro with-recording-config ((&rest overrides) &body body)
+  "Run BODY with an in-memory config; OVERRIDES are plist entries laid
+over the defaults. Restores the global config afterwards (it is bound)."
+  `(let ((ephinea-ta-client::*config*
+           (append (list ,@overrides)
+                   (copy-list ephinea-ta-client::*default-config*))))
+     ,@body))
+
+(defun make-test-run (&key (slug "ep1-test-quest") (time-ms 599123))
+  (list :quest-slug slug
+        :time-ms time-ms
+        :finished-at (encode-universal-time 0 30 21 4 7 2026)))
+
+(defun make-test-recorder ()
+  (let ((backend (make-instance 'mock-backend)))
+    (values (make-recorder :backend backend) backend)))
+
+(defun run-recorder-tests ()
+  (format t "~&--- recorder ---~%")
+  (with-recording-config (:record-enabled t)
+    ;; Happy path: quest completes, video kept under the run's name.
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (check "recording starts on :idle -> :in-quest"
+             (eq (recorder-state rec) :recording))
+      (let ((start (first (events-of backend :start))))
+        (check "ffmpeg args capture the window title"
+               (member "title=Ephinea PSOBB" (third start) :test #'equal))
+        (check "ffmpeg writes to a rec-tmp file"
+               (search "rec-tmp-" (fourth start))))
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      ;; The full clear completes and the detector flips to :idle on the
+      ;; same frame; the run must still be credited to this capture.
+      (recorder-step rec :idle (list (make-test-run)) "Ephinea PSOBB")
+      (check "stop is requested when the detector goes idle"
+             (and (eq (recorder-state rec) :stopping)
+                  (= 1 (length (events-of backend :stop)))))
+      (setf (mock-alive backend) nil)
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (let ((rename (first (events-of backend :rename))))
+        (check "completed run's video is renamed"
+               (and rename (search "rec-tmp-" (second rename))))
+        (check "final name has slug, time and date"
+               (and rename
+                    (search "ep1-test-quest_9m59.123_2026-07-04_2130.mp4"
+                            (third rename)))))
+      (check "recorder returns to idle after finalize"
+             (and (eq (recorder-state rec) :idle)
+                  (null (events-of backend :delete))
+                  (= 1 (length (events-of backend :close))))))
+    ;; Abandoned quest: no completed runs, file deleted.
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (setf (mock-alive backend) nil)
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "abandoned quest video is deleted"
+             (and (= 1 (length (events-of backend :delete)))
+                  (null (events-of backend :rename))
+                  (eq (recorder-state rec) :idle))))
+    ;; Segment completed, then the player leaves before the full clear.
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (recorder-step rec :in-quest
+                     (list (make-test-run :slug "ep1-seg" :time-ms 120500))
+                     "Ephinea PSOBB")
+      (check "segment completion does not stop the capture"
+             (eq (recorder-state rec) :recording))
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (setf (mock-alive backend) nil)
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "segment-only capture is kept under the segment slug"
+             (search "ep1-seg_2m00.500"
+                     (third (first (events-of backend :rename))))))
+    ;; Full clear + segment: the longest run names the file.
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (recorder-step rec :in-quest
+                     (list (make-test-run :slug "ep1-seg" :time-ms 120500))
+                     "Ephinea PSOBB")
+      (recorder-step rec :idle
+                     (list (make-test-run :slug "ep1-full" :time-ms 599123))
+                     "Ephinea PSOBB")
+      (setf (mock-alive backend) nil)
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "full clear (longest run) names the video"
+             (search "ep1-full_9m59.123"
+                     (third (first (events-of backend :rename))))))
+    ;; ffmpeg fails to start: error surfaced, retried on the NEXT quest.
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (setf (mock-start-result backend) :fail)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (check "failed start leaves the recorder idle with an error"
+             (and (eq (recorder-state rec) :idle)
+                  (recorder-last-error rec)))
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (check "failed start is not retried mid-quest"
+             (= 1 (length (events-of backend :start))))
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (check "failed start is retried on the next quest"
+             (= 2 (length (events-of backend :start)))))
+    ;; ffmpeg dies mid-recording: cleanup + error, detection unaffected.
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (setf (mock-alive backend) nil)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (check "ffmpeg dying mid-quest deletes the file and reports"
+             (and (eq (recorder-state rec) :idle)
+                  (= 1 (length (events-of backend :delete)))
+                  (recorder-last-error rec))))
+    ;; "q" ignored: killed after the grace period, file still kept.
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (recorder-step rec :idle (list (make-test-run)) "Ephinea PSOBB")
+      (setf (ephinea-ta-client::recorder-stop-deadline rec)
+            (1- (get-internal-real-time)))
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "unresponsive ffmpeg is killed after the grace period"
+             (= 1 (length (events-of backend :kill))))
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "kill happens only once" (= 1 (length (events-of backend :kill))))
+      (setf (mock-alive backend) nil)
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "killed capture is still kept (fragmented mp4)"
+             (= 1 (length (events-of backend :rename)))))
+    ;; Shutdown mid-recording finishes the capture synchronously.
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (recorder-step rec :in-quest (list (make-test-run)) "Ephinea PSOBB")
+      (recorder-shutdown rec :timeout 0)
+      (check "shutdown mid-recording kills and keeps the completed run"
+             (and (eq (recorder-state rec) :idle)
+                  (= 1 (length (events-of backend :kill)))
+                  (= 1 (length (events-of backend :rename))))))
+    ;; No window title (mock reader / not attached): no capture.
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (recorder-step rec :in-quest '() nil)
+      (check "no window title means no capture"
+             (and (eq (recorder-state rec) :idle)
+                  (null (mock-events backend)))))
+    ;; Stale tmp files from a crashed session are removed at startup.
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (setf (mock-stale backend) '("a/rec-tmp-1.mp4" "a/rec-tmp-2.mp4"))
+      (cleanup-stale-recordings rec)
+      (check "stale recordings are deleted at startup"
+             (equal '("a/rec-tmp-1.mp4" "a/rec-tmp-2.mp4")
+                    (mapcar #'second (events-of backend :delete))))))
+  ;; Recording disabled: the poll loop feeds frames but nothing happens.
+  (with-recording-config (:record-enabled nil)
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "disabled recorder does nothing"
+             (and (eq (recorder-state rec) :idle)
+                  (null (mock-events backend))))))
+  ;; Pure helpers.
+  (check "sanitize-filename strips reserved characters"
+         (string= "a-b-c-d" (sanitize-filename "a:b/c\"d")))
+  (check "best-session-run picks the longest run"
+         (string= "long"
+                  (getf (best-session-run
+                         (list (list :quest-slug "short" :time-ms 10)
+                               (list :quest-slug "long" :time-ms 20)))
+                        :quest-slug)))
+  (let ((args (build-ffmpeg-args :window-title "T" :output-path "out.mp4")))
+    (check "ffmpeg args use fragmented mp4"
+           (member "+frag_keyframe+empty_moov" args :test #'equal))
+    (check "ffmpeg args set the poll framerate"
+           (member "30" args :test #'equal))
+    (check "ffmpeg output path is the last argument"
+           (equal "out.mp4" (first (last args))))))
+
 (defun run-client-tests ()
   (setf *failures* 0)
   (load-quest-defs)
@@ -623,5 +848,6 @@ switch 0; room 2 cleared = floor 5 switch 2; full clear = register 254."
   (run-server-defs-tests)
   (run-gdv-segment-test)
   (run-trigger-log-tests)
+  (run-recorder-tests)
   (format t "~&=== client tests: ~d failure~:p ===~%" *failures*)
   *failures*)

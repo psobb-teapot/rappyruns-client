@@ -42,8 +42,11 @@ uses them whenever present."
 (defun poll-loop (interface)
   (let ((reader nil)
         (detector (make-detector))
+        (recorder (make-recorder
+                   :backend (make-instance 'win32-ffmpeg-backend)))
         (previous-snapshot nil)
         (last-gui-update 0))
+    (ignore-errors (cleanup-stale-recordings recorder))
     (unwind-protect
          (loop :until *stop-requested*
                :do (cond
@@ -53,7 +56,14 @@ uses them whenever present."
                       (if reader
                           (detector-step detector nil) ; fresh attach: disarm
                           (progn
-                            (update-game-status interface nil detector nil)
+                            ;; Keep any in-flight stop moving (deletes
+                            ;; the abandoned file once ffmpeg exits).
+                            (ignore-errors
+                              (recorder-step recorder
+                                             (detector-state detector)
+                                             '() nil))
+                            (update-game-status interface nil detector nil
+                                                recorder)
                             (mp:process-wait-with-timeout
                              "waiting for game" +search-interval+
                              (lambda () *stop-requested*)))))
@@ -62,12 +72,20 @@ uses them whenever present."
                       (close-reader reader)
                       (setf reader nil)
                       (setf previous-snapshot nil)
-                      (detector-step detector nil))
+                      (detector-step detector nil)
+                      (ignore-errors
+                        (recorder-step recorder (detector-state detector)
+                                       '() nil)))
                      (t
                       (let* ((snapshot (augment-snapshot
                                         reader
                                         (ignore-errors (read-snapshot reader))))
                              (runs (detector-step detector snapshot)))
+                        ;; Recording never interferes with detection or
+                        ;; submission; errors only reach the GUI label.
+                        (ignore-errors
+                          (recorder-step recorder (detector-state detector)
+                                         runs (reader-window-title reader)))
                         (when runs
                           (handle-completed-runs runs)
                           (refresh-runs-list interface))
@@ -85,12 +103,13 @@ uses them whenever present."
                                       internal-time-units-per-second))
                             (setf last-gui-update now)
                             (update-game-status interface (and reader t)
-                                                detector snapshot)
+                                                detector snapshot recorder)
                             (when (eq (detector-state detector) :in-quest)
                               (refresh-runs-list interface)))))
                       (mp:process-wait-with-timeout
                        "poll interval" +poll-interval+
                        (lambda () *stop-requested*)))))
+      (ignore-errors (recorder-shutdown recorder))
       (close-trigger-log)
       (when reader (close-reader reader)))))
 

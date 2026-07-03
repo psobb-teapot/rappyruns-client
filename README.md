@@ -48,6 +48,34 @@ WinHTTP API (`src/winhttp.lisp`), so TLS comes from the OS. (LispWorks'
 own COMM SSL is *not* used - it requires OpenSSL 1.1 DLLs that end-user
 machines don't have.)
 
+## Recording quest videos
+
+With "Record quest videos automatically" checked, the client records the
+game window with ffmpeg (gdigrab window capture, video only): recording
+starts when a quest's start trigger fires and stops when the run
+completes or the quest is abandoned. Completed runs are saved as
+`<slug>_<time>_<date>.mp4` (e.g.
+`ep1-towards-the-future_9m59.123_2026-07-04_2130.mp4`) into
+`Videos\EphineaTA\` (configurable); abandoned/failed captures are
+deleted automatically. Recording never interferes with detection or
+submission - if ffmpeg fails, the run is still timed and uploaded.
+
+ffmpeg is found in this order: the "ffmpeg path" setting, then
+`ffmpeg\ffmpeg.exe` next to the client exe (the bundled copy), then
+`ffmpeg.exe` on `PATH`. Toggling the checkbox on verifies ffmpeg starts
+and explains what to do when it doesn't.
+
+Implementation: `src/recording.lisp` is the pure state machine (tested
+on SBCL against a mock backend); `src/ffmpeg-win32.lisp` spawns
+ffmpeg.exe via `CreateProcessW` with a stdin pipe (`q` = graceful stop,
+`TerminateProcess` after 5 s as fallback). Output is fragmented MP4
+(`-movflags +frag_keyframe+empty_moov`), so even a killed capture stays
+playable.
+
+Known limits: capture starts a few hundred ms after the start trigger
+(ffmpeg spin-up), gdigrab can't capture a minimized window, and audio is
+not recorded.
+
 ## Packaging
 
 ```
@@ -55,7 +83,27 @@ powershell -File client/package.ps1
 ```
 
 Bundles the exe and `data/quest-triggers.sexp` (from `client/data/`, the
-source of truth) into `client/dist/EphineaTAClient.zip`.
+source of truth) into `client/dist/EphineaTAClient.zip`, plus
+`ffmpeg/ffmpeg.exe` when `client/vendor/ffmpeg/` is populated (see
+below); without it the zip is built with a warning and recording needs a
+user-installed ffmpeg.
+
+### Bundling ffmpeg
+
+`client/vendor/` is not committed. To ship ffmpeg in the zip, download a
+**GPL win64** build from [BtbN/FFmpeg-Builds][btbn] (asset
+`ffmpeg-master-latest-win64-gpl.zip`) and copy into
+`client/vendor/ffmpeg/`:
+
+- `bin/ffmpeg.exe` → `client/vendor/ffmpeg/ffmpeg.exe`
+- `LICENSE.txt` → `client/vendor/ffmpeg/LICENSE.txt` (required:
+  ffmpeg GPL builds must ship with their license text; it is copied
+  into the zip next to the exe)
+
+ffmpeg runs as a separate process, so bundling it does not affect the
+client's own MIT license.
+
+[btbn]: https://github.com/BtbN/FFmpeg-Builds/releases
 
 ## Releasing
 
