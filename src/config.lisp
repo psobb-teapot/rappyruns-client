@@ -3,7 +3,7 @@
 ;;; Config lives in %APPDATA%/ephinea-ta-client/config.sexp as a plist.
 
 (defparameter *default-config*
-  (list :server-url "http://localhost:8080"
+  (list :server-url "https://ephinea-ta-production.up.railway.app"
         :api-token ""
         :auto-submit t
         :trigger-log nil))
