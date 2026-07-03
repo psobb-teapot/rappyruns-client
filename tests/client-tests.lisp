@@ -52,18 +52,33 @@
 (defconstant +quest-data-base+ #x00710000)
 (defconstant +register-base+ #x00720000)
 
-(defun make-player-block (&key name (class-id 0) (floor 0) (warping nil) (pb 0.0))
+(defun make-player-block (&key name (class-id 0) (floor 0) (warping nil) (pb 0.0)
+                               (section-id 0) (level-raw 0) (room 0) (state 1)
+                               (hp 0) (max-hp 0) (tp 0) (max-tp 0) (meseta 0)
+                               guild-card)
   (let ((bytes (make-array #xE60 :element-type '(unsigned-byte 8)
                                  :initial-element 0)))
     (put-utf16 bytes #x428 (format nil "~aE~a" #\Tab name))
-    (put-u16 bytes #x960 (ash class-id 8))
+    (put-u16 bytes #x960 (logior (ash class-id 8) section-id))
     (put-u16 bytes #x3F0 floor)
     (put-u16 bytes #x33E (if warping #x04 0))
     (put-f32 bytes #x520 pb)
+    (put-u16 bytes #x028 room)
+    (put-u16 bytes #x348 state)
+    (put-u16 bytes #x2BC max-hp)
+    (put-u16 bytes #x2BE max-tp)
+    (put-u16 bytes #x334 hp)
+    (put-u16 bytes #x336 tp)
+    (put-u16 bytes #xE44 level-raw)
+    (put-u32 bytes #xE4C meseta)
+    (when guild-card
+      (loop :for char :across guild-card
+            :for i :from #x930
+            :do (setf (aref bytes i) (char-code char))))
     bytes))
 
 (defun make-game-regions (&key (episode-raw 0) players quest-name quest-number
-                               register-values)
+                               register-values (difficulty 0) (map 0))
   "Full mock memory image. PLAYERS is a list of player block byte vectors;
 REGISTER-VALUES an alist of (register-id . value)."
   (let ((globals (make-array 4 :element-type '(unsigned-byte 8) :initial-element 0))
@@ -91,6 +106,14 @@ REGISTER-VALUES an alist of (register-id . value)."
         (push (cons +quest-base+ quest) regions)
         (push (cons +quest-data-base+ data) regions)
         (push (cons +register-base+ registers) regions)))
+    (let ((difficulty-bytes (make-array 2 :element-type '(unsigned-byte 8)
+                                          :initial-element 0))
+          (map-bytes (make-array 2 :element-type '(unsigned-byte 8)
+                                   :initial-element 0)))
+      (put-u16 difficulty-bytes 0 difficulty)
+      (put-u16 map-bytes 0 map)
+      (push (cons #x00A9CD68 difficulty-bytes) regions)
+      (push (cons #x00AAFC9C map-bytes) regions))
     (push (cons #x00A9C4F4 globals) regions)          ; my player index = 0
     (push (cons #x00A9B1C8 episode) regions)
     (push (cons #x00A94254 player-array) regions)
@@ -135,6 +158,183 @@ REGISTER-VALUES an alist of (register-id . value)."
     (check "register 12 set" (snapshot-register-set-p snapshot 12))
     (check "register 254 clear" (not (snapshot-register-set-p snapshot 254)))
     (check "floor switch clear" (not (snapshot-floor-switch-set-p snapshot 4 99)))))
+
+;;; ------------------------------------------------------------------
+;;; Extended player stats (psostats parity fields)
+;;; ------------------------------------------------------------------
+
+(defun run-extended-player-tests ()
+  (format t "~&--- extended player stats ---~%")
+  (let* ((reader (make-game-regions
+                  :difficulty 3
+                  :map 5
+                  :players (list (make-player-block
+                                  :name "Ryu" :class-id 2 :floor 5
+                                  :section-id 2 :level-raw 41 :room 7
+                                  :state 4 :hp 945 :max-hp 1200
+                                  :tp 300 :max-tp 400 :meseta 123456
+                                  :guild-card "42001234"))))
+         (snapshot (read-snapshot reader))
+         (me (snapshot-my-player snapshot)))
+    (check "difficulty in snapshot" (= 3 (getf snapshot :difficulty)))
+    (check "difficulty name" (equal "Ultimate" (difficulty-name 3)))
+    (check "map in snapshot" (= 5 (getf snapshot :map)))
+    (check "section id decoded" (equal "Skyly" (getf me :section-id)))
+    (check "level decoded (+1)" (= 42 (getf me :level)))
+    (check "guild card decoded" (equal "42001234" (getf me :guild-card)))
+    (check "room decoded" (= 7 (getf me :room)))
+    (check "action state decoded" (= 4 (getf me :state)))
+    (check "hp decoded" (= 945 (getf me :hp)))
+    (check "max hp decoded" (= 1200 (getf me :max-hp)))
+    (check "tp decoded" (= 300 (getf me :tp)))
+    (check "meseta decoded" (= 123456 (getf me :meseta)))
+    (check "no shifta -> level 0" (= 0 (getf me :shifta))))
+  (check "shifta multiplier -> level"
+         ;; level 20 multiplier on Ephinea is 10% + 19 * 1.3% = 0.347
+         (= 20 (shifta-level 0.347)))
+  (check "tech name lookup" (equal "Resta" (tech-name #x0F))))
+
+;;; ------------------------------------------------------------------
+;;; Telemetry accumulation
+;;; ------------------------------------------------------------------
+
+(defun tele-snapshot (&key (hp 100) (tp 50) (state 1) (pb 0.0) (meseta 1000)
+                           (floor 1) (map 1) (tech 0) inventory monsters)
+  (list :my-index 0
+        :map map
+        :quest-ptr 1
+        :players (list (list :index 0 :name "Ryu" :class "HUcast"
+                             :hp hp :max-hp 100 :tp tp :max-tp 50
+                             :state state :pb pb :meseta meseta
+                             :floor floor :room 2 :x 10.04 :z -3.06
+                             :shifta 0 :deband 0 :invincible nil
+                             :current-tech tech
+                             :damage-traps 0 :freeze-traps 0 :confuse-traps 0))
+        :inventory inventory
+        :monsters monsters))
+
+(defun run-telemetry-tests ()
+  (format t "~&--- telemetry ---~%")
+  (let* ((tick internal-time-units-per-second)
+         (start (get-internal-real-time))
+         (tele (make-telemetry :start-time start)))
+    ;; Second 0: baseline frame, two monsters alive, 3 monomates.
+    (telemetry-step tele (tele-snapshot
+                          :inventory '(:consumables (:monomate 3) :equipment ()
+                                       :weapon nil)
+                          :monsters '((:id 1 :hp 50) (:id 2 :hp 30)))
+                    :now start)
+    ;; Second 1: cast Resta, one monster killed, one monomate used,
+    ;; 100 meseta charged.
+    (telemetry-step tele (tele-snapshot
+                          :state 8 :tech #x0F :meseta 900
+                          :inventory '(:consumables (:monomate 2) :equipment ()
+                                       :weapon nil)
+                          :monsters '((:id 1 :hp 0) (:id 2 :hp 30)))
+                    :now (+ start tick))
+    ;; Second 2: died.
+    (telemetry-step tele (tele-snapshot :hp 0 :state 15 :meseta 900)
+                    :now (+ start (* 2 tick)))
+    (let ((data (telemetry-run-data tele)))
+      (check "one frame per second" (= 3 (length (getf data :frames))))
+      (check "frame layout matches +frame-keys+"
+             (= (length ephinea-ta-client::+frame-keys+)
+                (length (first (getf data :frames)))))
+      (check "death counted" (= 1 (getf data :death-count)))
+      (check "kill counted" (= 1 (getf data :kills)))
+      (check "meseta charged" (= 100 (getf data :meseta-charged)))
+      (check "monomate use counted"
+             (equal '((:monomate . 1)) (getf data :items-used)))
+      (check "resta cast counted"
+             (equal '(("Resta" . 1)) (getf data :techs-cast)))
+      (check "bare-handed accrues seconds"
+             (let ((weapon (find "Bare Handed" (getf data :weapons)
+                                 :key (lambda (entry) (getf entry :id))
+                                 :test #'equal)))
+               (and weapon (= 2 (getf weapon :seconds)))))
+      (check "time-by-state covers the dead second"
+             (let ((cell (assoc 15 (getf data :time-by-state))))
+               (and cell (plusp (cdr cell)))))
+      (check "run data is printable"
+             (stringp (with-standard-io-syntax
+                        (write-to-string data :readably t)))))))
+
+;;; ------------------------------------------------------------------
+;;; Run JSON payload
+;;; ------------------------------------------------------------------
+
+(defun run-payload-tests ()
+  (format t "~&--- run payload ---~%")
+  (let* ((run (list :quest-slug "ep1-towards-the-future"
+                    :quest-name "Towards the Future"
+                    :episode 1 :time-ms 754321 :party-size 1 :pb t
+                    :difficulty "Ultimate" :death-count 2
+                    :players (list (list :name "Ryu" :class "HUcast"
+                                         :level 142 :section-id "Skyly"
+                                         :guild-card "42001234"))
+                    :telemetry (list :frames '((0 945 300 0 0 1 2 10.0 -3.1
+                                                0 0 0 1 12 0))
+                                     :events '((:t 12 :type "death"))
+                                     :death-count 2 :meseta-charged 400
+                                     :kills 55 :tp-used 120
+                                     :traps-used '(:dt 0 :ft 2 :ct 0)
+                                     :items-used '((:monomate . 1))
+                                     :techs-cast '(("Resta" . 3))
+                                     :time-by-state '((1 . 60000))
+                                     :weapons (list
+                                               (list :id "00010000"
+                                                     :display "Charge Vulcan +9"
+                                                     :type :weapon :seconds 700
+                                                     :attacks 512 :techs 0)))))
+         (parsed (com.inuoe.jzon:parse (ephinea-ta-client::run-json run))))
+    (check "payload difficulty" (equal "Ultimate" (gethash "difficulty" parsed)))
+    (check "payload death count" (eql 2 (gethash "death_count" parsed)))
+    (check "payload episode" (eql 1 (gethash "episode" parsed)))
+    (let ((player (aref (gethash "players" parsed) 0)))
+      (check "payload player level" (eql 142 (gethash "level" player)))
+      (check "payload player section" (equal "Skyly" (gethash "section_id" player)))
+      (check "payload player guild card"
+             (equal "42001234" (gethash "guild_card" player))))
+    (let ((telemetry (gethash "telemetry" parsed)))
+      (check "payload telemetry present" (hash-table-p telemetry))
+      (check "payload frame keys"
+             (equalp (coerce ephinea-ta-client::+frame-keys+ 'list)
+                     (coerce (gethash "frame_keys" telemetry) 'list)))
+      (check "payload one frame"
+             (= 1 (length (gethash "frames" telemetry))))
+      (check "payload items snake_cased"
+             (eql 1 (gethash "monomate" (gethash "items_used" telemetry))))
+      (check "payload traps skip zeroes"
+             (and (eql 2 (gethash "ft" (gethash "traps_used" telemetry)))
+                  (null (gethash "dt" (gethash "traps_used" telemetry)))))
+      (check "payload weapon display"
+             (equal "Charge Vulcan +9"
+                    (gethash "display" (aref (gethash "weapons" telemetry) 0))))
+      (check "payload event"
+             (equal "death" (gethash "type"
+                                     (aref (gethash "events" telemetry) 0)))))))
+
+;;; ------------------------------------------------------------------
+;;; Detector integration: telemetry rides along with completed runs
+;;; ------------------------------------------------------------------
+
+(defun run-detect-telemetry-tests ()
+  (format t "~&--- detect + telemetry ---~%")
+  (let ((detector (make-detector)))
+    (step-with detector (lobby-reader))
+    (step-with detector (ttf-reader))
+    (step-with detector (ttf-reader :start 1))
+    (sleep 0.05)
+    (step-with detector (ttf-reader :start 1))
+    (sleep 0.05)
+    (let ((run (first (step-with detector (ttf-reader :start 1 :end 1)))))
+      (check "run has difficulty" (equal "Normal" (getf run :difficulty)))
+      (check "run has death count" (eql 0 (getf run :death-count)))
+      (check "run has telemetry" (listp (getf run :telemetry)))
+      (check "telemetry recorded a frame"
+             (plusp (length (getf (getf run :telemetry) :frames))))
+      (check "player carries level"
+             (= 1 (getf (first (getf run :players)) :level))))))
 
 ;;; ------------------------------------------------------------------
 ;;; Detection state machine (driven through mock memory images)
@@ -415,7 +615,11 @@ switch 0; room 2 cleared = floor 5 switch 2; full clear = register 254."
   (setf *failures* 0)
   (load-quest-defs)
   (run-memory-tests)
+  (run-extended-player-tests)
+  (run-telemetry-tests)
+  (run-payload-tests)
   (run-detect-tests)
+  (run-detect-telemetry-tests)
   (run-server-defs-tests)
   (run-gdv-segment-test)
   (run-trigger-log-tests)

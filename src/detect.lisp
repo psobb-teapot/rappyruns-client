@@ -24,7 +24,8 @@
                        ; kept (done or not) until the quest unloads so a
                        ; definition can never re-start within one load
   my-pb                ; own PB gauge on the previous frame
-  (pb-flag nil))       ; T when the session belongs in the PB category
+  (pb-flag nil)        ; T when the session belongs in the PB category
+  telemetry)           ; per-quest TELEMETRY, created with the first tracker
 
 (defun elapsed-ms (start-time)
   (round (* 1000 (- (get-internal-real-time) start-time))
@@ -66,7 +67,10 @@
   (loop :for player :in (getf snapshot :players)
         :when (getf player :class)
           :collect (list :name (getf player :name)
-                         :class (getf player :class))))
+                         :class (getf player :class)
+                         :level (getf player :level)
+                         :section-id (getf player :section-id)
+                         :guild-card (getf player :guild-card))))
 
 (defun pb-category-at-start-p (snapshot)
   "The PB category is decided solely by an actual Photon Blast discharge
@@ -92,15 +96,18 @@ with Shifta up - so a run is No PB until a discharge is seen."
         (detector-trackers detector) '()
         (detector-quest-ptr detector) nil
         (detector-my-pb detector) nil
-        (detector-pb-flag detector) nil))
+        (detector-pb-flag detector) nil
+        (detector-telemetry detector) nil))
 
 (defun start-tracker (detector def snapshot)
-  ;; The PB session state belongs to the quest, not the tracker; take it
-  ;; when the first tracker starts.
+  ;; The PB session state and telemetry belong to the quest, not the
+  ;; tracker; take them when the first tracker starts.
   (when (null (detector-trackers detector))
     (setf (detector-pb-flag detector) (pb-category-at-start-p snapshot)
           (detector-my-pb detector) (let ((me (snapshot-my-player snapshot)))
-                                      (and me (getf me :pb)))))
+                                      (and me (getf me :pb)))
+          (detector-telemetry detector)
+          (make-telemetry :start-time (get-internal-real-time))))
   (let ((tracker (make-tracker :def def
                                :start-time (get-internal-real-time)
                                :party (party-of snapshot))))
@@ -110,7 +117,8 @@ with Shifta up - so a run is No PB until a discharge is seen."
 
 (defun finish-tracker (detector tracker snapshot)
   (let ((def (tracker-def tracker))
-        (time-ms (max 1 (elapsed-ms (tracker-start-time tracker)))))
+        (time-ms (max 1 (elapsed-ms (tracker-start-time tracker))))
+        (telemetry (detector-telemetry detector)))
     (setf (tracker-done tracker) t)
     (list :quest-slug (quest-def-slug def)
           :quest-name (getf snapshot :quest-name)
@@ -119,6 +127,9 @@ with Shifta up - so a run is No PB until a discharge is seen."
           :party-size (length (tracker-party tracker))
           :pb (and (detector-pb-flag detector) t)
           :players (tracker-party tracker)
+          :difficulty (difficulty-name (getf snapshot :difficulty))
+          :death-count (and telemetry (telemetry-death-count telemetry))
+          :telemetry (and telemetry (telemetry-run-data telemetry))
           :finished-at (get-universal-time))))
 
 (defun detector-step (detector snapshot)
@@ -151,7 +162,9 @@ of runs that completed this frame (usually empty or one)."
              (when (trigger-met-p (quest-def-start def) snapshot)
                (push (start-tracker detector def snapshot) started)))))
        (when (active-trackers detector)
-         (update-pb-tracking detector snapshot))
+         (update-pb-tracking detector snapshot)
+         (when (detector-telemetry detector)
+           (telemetry-step (detector-telemetry detector) snapshot)))
        ;; End checks skip trackers started this frame: a real end trigger
        ;; cannot fire on the start frame, only stale data could.
        (dolist (tracker (detector-trackers detector))

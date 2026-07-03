@@ -9,6 +9,29 @@
 
 (defvar *stop-requested* nil)
 
+(defvar *last-heavy-sample* 0
+  "Internal real time of the last inventory/monster sample.")
+
+(defun augment-snapshot (reader snapshot)
+  "Attach :inventory and :monsters to SNAPSHOT about once per second
+while a quest is loaded. These need many small process reads, so they
+are sampled instead of read at the 30/s poll rate; the telemetry module
+uses them whenever present."
+  (when (and snapshot
+             (getf snapshot :quest-ptr)
+             (plusp (getf snapshot :quest-ptr)))
+    (let ((now (get-internal-real-time)))
+      (when (>= (- now *last-heavy-sample*) internal-time-units-per-second)
+        (setf *last-heavy-sample* now)
+        (setf snapshot
+              (append snapshot
+                      (list :inventory (ignore-errors
+                                         (read-inventory
+                                          reader (getf snapshot :my-index)))
+                            :monsters (ignore-errors
+                                        (read-monsters reader))))))))
+  snapshot)
+
 (defun handle-completed-runs (runs)
   (dolist (run runs)
     (enqueue-run! run))
@@ -41,7 +64,9 @@
                       (setf previous-snapshot nil)
                       (detector-step detector nil))
                      (t
-                      (let* ((snapshot (ignore-errors (read-snapshot reader)))
+                      (let* ((snapshot (augment-snapshot
+                                        reader
+                                        (ignore-errors (read-snapshot reader))))
                              (runs (detector-step detector snapshot)))
                         (when runs
                           (handle-completed-runs runs)

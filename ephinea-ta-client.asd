@@ -19,6 +19,7 @@
                              (:file "winhttp" :if-feature :lispworks)
                              (:file "psobb")
                              (:file "quests")
+                             (:file "telemetry")
                              (:file "detect")
                              (:file "trigger-log")
                              (:file "api-client")

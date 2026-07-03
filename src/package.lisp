@@ -11,6 +11,11 @@
            #:read-u8 #:read-u16 #:read-u32 #:read-f32 #:read-utf16-string
            ;; psobb
            #:read-snapshot #:snapshot-register-set-p #:snapshot-floor-switch-set-p
+           #:read-player #:read-inventory #:read-monsters
+           #:snapshot-my-player #:difficulty-name #:tech-name #:shifta-level
+           ;; telemetry
+           #:make-telemetry #:telemetry-step #:telemetry-run-data
+           #:telemetry-death-count #:telemetry-kills #:telemetry-frames
            ;; quests
            #:load-quest-defs #:find-quest-def #:find-quest-defs
            #:set-server-quest-defs
