@@ -4,6 +4,10 @@
 ;;; CAPI:EXECUTE-WITH-INTERFACE because the poll loop runs on its own
 ;;; mp:process.
 
+(defparameter *ui-font*
+  (gp:make-font-description :family "Segoe UI" :size 12)
+  "Font for all panes; the CAPI default on Windows is small and hard to read.")
+
 (defun run-status-label (entry)
   (case (getf entry :status)
     (:queued "queued")
@@ -23,14 +27,19 @@
   (:panes
    (game-status capi:title-pane
                 :text "Game: searching..."
+                :font *ui-font*
                 :accessor game-status-pane)
    (server-status capi:title-pane
                   :text "Server: not checked"
+                  :font *ui-font*
                   :accessor server-status-pane)
    (quest-status capi:title-pane
                  :text "No active quest"
+                 :font *ui-font*
                  :accessor quest-status-pane)
    (runs-list capi:multi-column-list-panel
+              :font *ui-font*
+              :header-args (list :font *ui-font*)
               :columns '((:title "Quest" :width (:character 34))
                          (:title "Time" :width (:character 12))
                          (:title "Party" :width (:character 6))
@@ -48,14 +57,19 @@
    (server-url-input capi:text-input-pane
                      :title "Server URL"
                      :text (config-value :server-url)
+                     :font *ui-font*
+                     :title-font *ui-font*
                      :accessor server-url-input)
    (api-token-input capi:password-pane
                     :title "API token"
                     :text (config-value :api-token)
+                    :font *ui-font*
+                    :title-font *ui-font*
                     :accessor api-token-input)
    (auto-submit-check capi:check-button
                       :text "Submit automatically on quest completion"
                       :selected (config-value :auto-submit)
+                      :font *ui-font*
                       :accessor auto-submit-check)
    (trigger-log-check capi:check-button
                       :text "Log trigger changes (for finding switch IDs of new categories)"
@@ -63,15 +77,18 @@
                       :selection-callback 'toggle-trigger-log-callback
                       :retract-callback 'toggle-trigger-log-callback
                       :callback-type :interface
+                      :font *ui-font*
                       :accessor trigger-log-check)
    (save-button capi:push-button
                 :text "Save settings"
                 :callback 'save-settings-callback
-                :callback-type :interface)
+                :callback-type :interface
+                :font *ui-font*)
    (retry-button capi:push-button
                  :text "Submit pending runs"
                  :callback 'retry-callback
-                 :callback-type :interface))
+                 :callback-type :interface
+                 :font *ui-font*))
   (:layouts
    (status-row capi:row-layout '(game-status server-status))
    (settings-row capi:row-layout '(server-url-input api-token-input))
