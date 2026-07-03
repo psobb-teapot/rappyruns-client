@@ -48,6 +48,53 @@ LispWorks build uses OpenSSL, ship the matching OpenSSL DLLs next to the
 exe (LW 8.1 on Windows can also use the native SChannel backend, in which
 case no extra DLLs are needed).
 
+## Packaging
+
+```
+powershell -File client/package.ps1
+```
+
+Bundles the exe and `data/quest-triggers.sexp` (from `client/data/`, the
+source of truth) into `client/dist/EphineaTAClient.zip`. If your build
+needs OpenSSL DLLs (see above), drop them in `dist/` and add `Copy-Item`
+lines to the script.
+
+## Releasing
+
+Releases live on a separate **public** repo so the main repo can stay
+private; the site links to the `latest` asset URL, so publishing a
+release is all it takes - no site change or redeploy. Uses the [GitHub
+CLI](https://cli.github.com/) (`gh`); the web UI works too (create the
+release on the releases repo and upload the zip as an asset).
+
+One-time setup:
+
+```
+gh repo create psobb-teapot/ephinea-ta-client-releases --public \
+  --description "Binary releases of the Ephinea TA desktop client"
+```
+
+Give it a single README commit (releases need at least one commit); no
+source goes there.
+
+Per release (tag `vX.Y.Z`):
+
+```
+gh release create v0.1.0 client/dist/EphineaTAClient.zip \
+  --repo psobb-teapot/ephinea-ta-client-releases \
+  --title "Ephinea TA Client v0.1.0" \
+  --notes "Changes: ..."
+```
+
+The asset must be named `EphineaTAClient.zip` - the site's download
+button points at
+`https://github.com/psobb-teapot/ephinea-ta-client-releases/releases/latest/download/EphineaTAClient.zip`
+(override with `ETA_CLIENT_DOWNLOAD_URL` on the server). To replace an
+asset on an existing release:
+`gh release upload vX.Y.Z client/dist/EphineaTAClient.zip --clobber --repo psobb-teapot/ephinea-ta-client-releases`.
+Pre-releases (`--prerelease`) are excluded from `latest`, so they are
+safe for test builds.
+
 ## Quest coverage
 
 `data/quest-triggers.sexp` defines the start/end trigger per quest and
