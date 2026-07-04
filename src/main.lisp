@@ -69,6 +69,8 @@ failed/rejected. Two sounds correctly say: timed OK, upload did not."
                      ;; Not attached: look for the game once per second.
                      ((null reader)
                       (setf reader (open-psobb-reader))
+                      (setf *audio-target-pid*
+                            (and reader (live-reader-pid reader)))
                       (if reader
                           (detector-step detector nil) ; fresh attach: disarm
                           (progn
@@ -93,6 +95,7 @@ failed/rejected. Two sounds correctly say: timed OK, upload did not."
                      ((not (reader-alive-p reader))
                       (close-reader reader)
                       (setf reader nil)
+                      (setf *audio-target-pid* nil)
                       (setf previous-snapshot nil)
                       (detector-step detector nil)
                       (ignore-errors

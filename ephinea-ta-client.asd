@@ -22,6 +22,7 @@
                              (:file "telemetry")
                              (:file "detect")
                              (:file "recording")
+                             (:file "audio-win32" :if-feature :lispworks)
                              (:file "ffmpeg-win32" :if-feature :lispworks)
                              (:file "trigger-log")
                              (:file "api-client")

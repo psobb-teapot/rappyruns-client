@@ -68,15 +68,7 @@
   :calling-convention :stdcall
   :module :kernel32)
 
-(fli:define-foreign-function (%write-file "WriteFile")
-    ((handle :pointer)
-     (buffer :pointer)
-     (bytes-to-write (:unsigned :long))
-     (bytes-written (:reference-return (:unsigned :long)))
-     (overlapped :pointer))
-  :result-type (:boolean :int)
-  :calling-convention :stdcall
-  :module :kernel32)
+;; %write-file lives in win32.lisp (shared with the audio pipe).
 
 (fli:define-foreign-function (%terminate-process "TerminateProcess")
     ((process :pointer)
@@ -84,6 +76,10 @@
   :result-type (:boolean :int)
   :calling-convention :stdcall
   :module :kernel32)
+
+(defparameter +audio-drain-seconds+ 3
+  "After the audio pipe EOF, how long ffmpeg gets to drain the buffered
+audio tail before \"q\" stops it reading.")
 
 (defconstant +startf-usestdhandles+ #x100)
 (defconstant +create-no-window+ #x08000000)
@@ -127,7 +123,8 @@
   process-handle
   thread-handle
   stdin-write   ; our end of the child's stdin pipe
-  pid)
+  pid
+  audio)        ; audio-session (audio-win32.lisp) or NIL
 
 (defun create-stdin-pipe ()
   "An anonymous pipe whose read end the child may inherit as stdin.
@@ -216,20 +213,41 @@ the GUI to validate the recording checkbox; -version exits on its own."
 (defclass win32-ffmpeg-backend () ())
 
 (defmethod backend-start-capture ((backend win32-ffmpeg-backend)
-                                  ffmpeg-path args output-path)
+                                  ffmpeg-path args output-path
+                                  &key audio-pipe audio-pid)
   (handler-case
       (progn
         (ensure-directories-exist output-path)
-        (spawn-process ffmpeg-path args))
+        ;; The pipe server end must exist before ffmpeg opens its
+        ;; inputs. If the session cannot start at all, drop the audio
+        ;; arguments and record video-only rather than fail the run;
+        ;; otherwise point ffmpeg at the session's actual capture format.
+        (let ((audio (and audio-pipe
+                          (start-audio-session audio-pipe audio-pid))))
+          (setf args
+                (if audio
+                    (retarget-audio-args
+                     args
+                     :sample-format (audio-session-sample-format audio)
+                     :rate (audio-session-rate audio)
+                     :channels (audio-session-channels audio))
+                    (strip-audio-args args audio-pipe)))
+          (handler-case
+              (let ((capture (spawn-process ffmpeg-path args)))
+                (setf (ffmpeg-capture-audio capture) audio)
+                capture)
+            (error (condition)
+              (when audio (stop-audio-session audio))
+              (error condition)))))
     (error (condition)
       (values nil (format nil "~a" condition)))))
 
 (defmethod backend-capture-alive-p ((backend win32-ffmpeg-backend) capture)
   (capture-alive-p capture))
 
-(defmethod backend-request-stop ((backend win32-ffmpeg-backend) capture)
+(defun write-quit (capture)
   ;; A lone "q" on stdin makes ffmpeg finish the output cleanly. Two
-  ;; bytes always fit the pipe buffer, so this never blocks the poll loop.
+  ;; bytes always fit the pipe buffer, so this never blocks.
   (fli:with-dynamic-foreign-objects ()
     (let ((buffer (fli:allocate-dynamic-foreign-object
                    :type '(:unsigned :byte) :nelems 2)))
@@ -238,10 +256,32 @@ the GUI to validate the recording checkbox; -version exits on its own."
       (%write-file (ffmpeg-capture-stdin-write capture) buffer 2 0
                    fli:*null-pointer*))))
 
+(defmethod backend-request-stop ((backend win32-ffmpeg-backend) capture)
+  ;; End the audio stream first: closing the pipe is the audio EOF
+  ;; ffmpeg needs. ffmpeg reads the piped audio a couple of seconds
+  ;; behind real time, and "q" makes it stop reading at once - so wait
+  ;; (off-thread; the poll loop must not block) for the buffered tail
+  ;; to drain before quitting, or the last seconds of audio are lost.
+  (let ((audio (ffmpeg-capture-audio capture)))
+    (cond (audio
+           (stop-audio-session audio)
+           (mp:process-run-function
+            "eta-ffmpeg-stop" '()
+            (lambda ()
+              (sleep +audio-drain-seconds+)
+              (ignore-errors (write-quit capture)))))
+          (t (write-quit capture)))))
+
 (defmethod backend-kill-capture ((backend win32-ffmpeg-backend) capture)
+  (when (ffmpeg-capture-audio capture)
+    (stop-audio-session (ffmpeg-capture-audio capture)))
   (%terminate-process (ffmpeg-capture-process-handle capture) 1))
 
 (defmethod backend-close-capture ((backend win32-ffmpeg-backend) capture)
+  ;; Idempotent; also reached when ffmpeg died on its own, where the
+  ;; capture thread must not be left serving a dead pipe.
+  (when (ffmpeg-capture-audio capture)
+    (stop-audio-session (ffmpeg-capture-audio capture)))
   (close-capture-handles capture))
 
 (defmethod backend-rename-file ((backend win32-ffmpeg-backend) from to)

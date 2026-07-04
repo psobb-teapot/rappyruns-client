@@ -630,8 +630,9 @@ switch 0; room 2 cleared = floor 5 switch 2; full clear = register 254."
   (remove kind (mock-events backend) :key #'first :test-not #'eq))
 
 (defmethod backend-start-capture ((backend mock-backend) ffmpeg-path args
-                                  output-path)
-  (record-event backend :start ffmpeg-path args output-path)
+                                  output-path &key audio-pipe audio-pid)
+  (record-event backend :start ffmpeg-path args output-path
+                audio-pipe audio-pid)
   (if (eq (mock-start-result backend) :ok)
       :mock-capture
       (values nil "mock start failure")))
@@ -841,7 +842,51 @@ over the defaults. Restores the global config afterwards (it is bound)."
     (check "ffmpeg args set the poll framerate"
            (member "30" args :test #'equal))
     (check "ffmpeg output path is the last argument"
-           (equal "out.mp4" (first (last args))))))
+           (equal "out.mp4" (first (last args))))
+    (check "video-only args carry no audio input"
+           (not (member "s16le" args :test #'equal))))
+  ;; Audio arguments and their video-only fallback.
+  (let* ((pipe (ephinea-ta-client::audio-pipe-name))
+         (with-audio (build-ffmpeg-args :window-title "T"
+                                        :output-path "out.mp4"
+                                        :audio-pipe pipe)))
+    (check "audio args add the pipe input and aac"
+           (and (member pipe with-audio :test #'equal)
+                (member "aac" with-audio :test #'equal)))
+    (check "stripping audio args restores the video-only argv"
+           (equal (build-ffmpeg-args :window-title "T" :output-path "out.mp4")
+                  (ephinea-ta-client::strip-audio-args with-audio pipe)))
+    (let ((retargeted (ephinea-ta-client::retarget-audio-args
+                       with-audio :sample-format "f32le"
+                       :rate 44100 :channels 2)))
+      (check "retargeting rewrites the audio format tokens"
+             (and (member "f32le" retargeted :test #'equal)
+                  (member "44100" retargeted :test #'equal)
+                  (not (member "s16le" retargeted :test #'equal))
+                  (not (member "48000" retargeted :test #'equal))))
+      (check "retargeting keeps the video tokens intact"
+             (and (member "gdigrab" retargeted :test #'equal)
+                  (member "30" retargeted :test #'equal)))))
+  ;; The recorder passes the audio pipe and target pid to the backend.
+  (with-recording-config (:record-enabled t :record-audio t)
+    (let ((ephinea-ta-client::*audio-target-pid* 1234))
+      (multiple-value-bind (rec backend) (make-test-recorder)
+        (recorder-step rec :in-quest '() "Ephinea PSOBB")
+        (let ((start (first (events-of backend :start))))
+          (check "recorder hands the backend the audio pipe and pid"
+                 (and (equal (fifth start) (ephinea-ta-client::audio-pipe-name))
+                      (eql (sixth start) 1234))))))
+    (let ((ephinea-ta-client::*audio-target-pid* nil))
+      (multiple-value-bind (rec backend) (make-test-recorder)
+        (recorder-step rec :in-quest '() "Ephinea PSOBB")
+        (check "no attached game pid means no audio pipe"
+               (null (fifth (first (events-of backend :start))))))))
+  (with-recording-config (:record-enabled t :record-audio nil)
+    (let ((ephinea-ta-client::*audio-target-pid* 1234))
+      (multiple-value-bind (rec backend) (make-test-recorder)
+        (recorder-step rec :in-quest '() "Ephinea PSOBB")
+        (check "audio can be disabled in config"
+               (null (fifth (first (events-of backend :start)))))))))
 
 ;;; ------------------------------------------------------------------
 ;;; UX helpers: status labels, list trimming, URL and error text

@@ -92,6 +92,11 @@
                  :callback-type :interface
                  :font *ui-font*
                  :accessor record-check)
+   (record-audio-check capi:check-button
+                       :text "Record game audio (only the game is heard, not Discord etc.)"
+                       :selected (config-value :record-audio)
+                       :font *ui-font*
+                       :accessor record-audio-check)
    ;; ffmpeg itself is not a setting: the release bundles it next to the
    ;; exe (an override still exists as :ffmpeg-path in config.sexp).
    (record-dir-display capi:title-pane
@@ -138,7 +143,8 @@
                   :adjust :center)
    (settings-tab capi:column-layout
                  '(settings-row auto-submit-check completion-sound-check
-                   record-check recording-row trigger-log-check save-button)
+                   record-check record-audio-check recording-row
+                   trigger-log-check save-button)
                  :adjust :left)
    (main-tabs capi:tab-layout ()
               :items '(("Runs" runs-tab) ("Settings" settings-tab))
@@ -166,7 +172,9 @@
         (config-value :trigger-log)
         (capi:button-selected (trigger-log-check interface))
         (config-value :record-enabled)
-        (capi:button-selected (record-check interface)))
+        (capi:button-selected (record-check interface))
+        (config-value :record-audio)
+        (capi:button-selected (record-audio-check interface)))
   (save-config!)
   (check-server interface))
 

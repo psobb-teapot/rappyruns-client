@@ -51,9 +51,24 @@ machines don't have.)
 ## Recording quest videos
 
 With "Record quest videos automatically" checked, the client records the
-game window with ffmpeg (gdigrab window capture, video only): recording
-starts when a quest's start trigger fires and stops when the run
-completes or the quest is abandoned. Completed runs are saved under the
+game window with ffmpeg (gdigrab window capture): recording starts when
+a quest's start trigger fires and stops when the run completes or the
+quest is abandoned. Game audio is included by default via the Windows
+process-loopback API (Windows 10 2004+) scoped to the PSOBB process:
+**only the game is heard** - Discord, notifications etc. never end up
+in the video. On older Windows it falls back to endpoint loopback (all
+desktop audio). The client captures the PCM itself
+(`src/audio-win32.lisp`) and serves it to ffmpeg over a named pipe,
+since ffmpeg has no native Windows loopback input; if the audio path
+fails entirely the video is still recorded (with silence).
+
+Two non-obvious details, learned the hard way: loopback observes the
+signal AFTER the Windows volume mixer, so a low per-app slider would
+make recordings inaudible - recordings are therefore captured in
+float32 and loudness-normalized (ffmpeg loudnorm) to stay audible
+regardless of mixer settings. And when debugging "no audio", check the
+mixer first: a working capture of a 5% slider looks exactly like a
+broken capture. Disable with "Record game audio" in Settings. Completed runs are saved under the
 in-game quest name, e.g.
 `Towards the Future 9'59.123 (2026-07-04 2130).mp4`, into
 `Videos\EphineaTA\` (configurable, and one click away via "Open
@@ -77,8 +92,9 @@ ffmpeg.exe via `CreateProcessW` with a stdin pipe (`q` = graceful stop,
 playable.
 
 Known limits: capture starts a few hundred ms after the start trigger
-(ffmpeg spin-up), gdigrab can't capture a minimized window, and audio is
-not recorded.
+(ffmpeg spin-up), gdigrab can't capture a minimized window, and the
+recording gets a ~3 s video tail after the run ends (ffmpeg drains the
+buffered audio before quitting).
 
 ## Packaging
 

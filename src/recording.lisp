@@ -16,11 +16,15 @@
 
 ;;; Capture-backend protocol
 
-(defgeneric backend-start-capture (backend ffmpeg-path args output-path)
+(defgeneric backend-start-capture (backend ffmpeg-path args output-path
+                                   &key audio-pipe audio-pid)
   (:documentation
    "Spawn ffmpeg with ARGS (a list of argv strings; OUTPUT-PATH is the
 last of them, passed separately so the backend can create the
-directory). Returns a capture token, or (values nil error-string)."))
+directory). When AUDIO-PIPE is non-NIL, ARGS reference it as a second
+input and the backend must serve AUDIO-PID's game audio on it (fixing
+the format tokens in ARGS up to match, see RETARGET-AUDIO-ARGS).
+Returns a capture token, or (values nil error-string)."))
 
 (defgeneric backend-capture-alive-p (backend capture))
 
@@ -47,8 +51,19 @@ directory). Returns a capture token, or (values nil error-string)."))
 (defparameter +record-framerate+ 30)
 (defparameter +record-preset+ "veryfast")
 (defparameter +record-crf+ 23)
-(defparameter +stop-grace-seconds+ 5
-  "How long to wait for ffmpeg to exit after \"q\" before killing it.")
+
+(defvar *audio-target-pid* nil
+  "PID of the attached PSOBB process, maintained by the poll loop.
+The audio backend captures this process tree's sound (process
+loopback), so only the game is heard - not Discord or system sounds.")
+
+(defun audio-pipe-name ()
+  "Named pipe ffmpeg reads raw captured audio from (second input)."
+  "\\\\.\\pipe\\ephinea-ta-audio")
+(defparameter +stop-grace-seconds+ 8
+  "How long to wait for ffmpeg to exit after a stop request before
+killing it. Must exceed the audio drain delay (ffmpeg-win32) plus
+ffmpeg's own finalization time.")
 
 ;;; Paths and filenames
 
@@ -115,21 +130,69 @@ when segments completed alongside it."
   (first (sort (copy-list runs) #'>
                :key (lambda (run) (getf run :time-ms 0)))))
 
-(defun build-ffmpeg-args (&key window-title output-path
+(defun build-ffmpeg-args (&key window-title output-path audio-pipe
                                (framerate +record-framerate+))
   "ffmpeg argv (without the program itself). Fragmented MP4 keeps the
-file playable even when ffmpeg is killed instead of quitting on \"q\"."
-  (list "-y" "-loglevel" "error"
-        "-f" "gdigrab"
-        "-framerate" (princ-to-string framerate)
-        "-draw_mouse" "0"
-        "-i" (format nil "title=~a" window-title)
-        "-c:v" "libx264"
-        "-preset" +record-preset+
-        "-crf" (princ-to-string +record-crf+)
-        "-pix_fmt" "yuv420p"
-        "-movflags" "+frag_keyframe+empty_moov"
-        output-path))
+file playable even when ffmpeg is killed instead of quitting on \"q\".
+With AUDIO-PIPE, raw 16-bit 48 kHz stereo game audio arrives on that
+named pipe as a second input and is encoded as AAC."
+  (append
+   (list "-y" "-loglevel" "error"
+         "-f" "gdigrab"
+         "-framerate" (princ-to-string framerate)
+         "-draw_mouse" "0"
+         "-i" (format nil "title=~a" window-title))
+   (when audio-pipe
+     (list "-f" "s16le" "-ar" "48000" "-ac" "2"
+           "-thread_queue_size" "1024"
+           "-i" audio-pipe))
+   (list "-c:v" "libx264"
+         "-preset" +record-preset+
+         "-crf" (princ-to-string +record-crf+)
+         "-pix_fmt" "yuv420p")
+   (when audio-pipe
+     ;; Loopback capture is post-mixer: a low per-app volume slider
+     ;; (observed at 5% in the field) makes the raw capture inaudible.
+     ;; Loudness normalization brings every recording to a consistent,
+     ;; audible level regardless of the player's mixer settings. The
+     ;; mix is float, so boosting quiet captures loses nothing.
+     ;; (loudnorm outputs 192 kHz internally; resample back down.)
+     (list "-af" "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
+           "-c:a" "aac" "-b:a" "160k"))
+   (list "-movflags" "+frag_keyframe+empty_moov"
+         output-path)))
+
+(defun remove-subseq (list subseq)
+  "LIST without the first occurrence of the consecutive SUBSEQ."
+  (let ((position (search subseq list :test #'equal)))
+    (if position
+        (append (subseq list 0 position)
+                (nthcdr (+ position (length subseq)) list))
+        list)))
+
+(defun strip-audio-args (args audio-pipe)
+  "ARGS without the audio input/codec arguments BUILD-FFMPEG-ARGS added
+for AUDIO-PIPE - the video-only fallback when the audio session cannot
+start (the pipe would never be served, and ffmpeg would hang opening it)."
+  (remove-subseq
+   (remove-subseq args (list "-f" "s16le" "-ar" "48000" "-ac" "2"
+                             "-thread_queue_size" "1024" "-i" audio-pipe))
+   (list "-af" "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
+         "-c:a" "aac" "-b:a" "160k")))
+
+(defun retarget-audio-args (args &key sample-format rate channels)
+  "ARGS with the audio input's placeholder format tokens replaced by
+the session's actual capture format (the endpoint mix format is only
+known once the audio session is activated)."
+  (let ((position (position "s16le" args :test #'equal)))
+    (if (not position)
+        args
+        (let ((new (copy-list args)))
+          ;; ... "-f" "s16le" "-ar" "48000" "-ac" "2" ...
+          (setf (nth position new) sample-format
+                (nth (+ position 2) new) (princ-to-string rate)
+                (nth (+ position 4) new) (princ-to-string channels))
+          new))))
 
 ;;; The recorder state machine
 
@@ -148,10 +211,14 @@ file playable even when ffmpeg is killed instead of quitting on \"q\"."
 (defun start-recording (recorder window-title)
   (let* ((ffmpeg (resolve-ffmpeg-path))
          (output (recording-tmp-path))
+         (audio-pid (and (config-value :record-audio) *audio-target-pid*))
+         (audio-pipe (and audio-pid (audio-pipe-name)))
          (args (build-ffmpeg-args :window-title window-title
-                                  :output-path output)))
+                                  :output-path output
+                                  :audio-pipe audio-pipe)))
     (multiple-value-bind (capture error)
-        (backend-start-capture (recorder-backend recorder) ffmpeg args output)
+        (backend-start-capture (recorder-backend recorder) ffmpeg args output
+                               :audio-pipe audio-pipe :audio-pid audio-pid)
       (if capture
           (setf (recorder-capture recorder) capture
                 (recorder-tmp-path recorder) output

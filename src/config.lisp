@@ -10,6 +10,7 @@
         :token-prompt-shown nil ; the one-time "no API token yet" dialog
         :trigger-log nil
         :record-enabled t
+        :record-audio t     ; game-only capture (process loopback; see audio-win32)
         :ffmpeg-path ""     ; blank = bundled copy next to the exe, or PATH
         :record-dir ""))    ; blank = <user home>/Videos/EphineaTA/
 

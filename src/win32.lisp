@@ -56,6 +56,16 @@
   :calling-convention :stdcall
   :module :kernel32)
 
+(fli:define-foreign-function (%write-file "WriteFile")
+    ((handle :pointer)
+     (buffer :pointer)
+     (bytes-to-write (:unsigned :long))
+     (bytes-written (:reference-return (:unsigned :long)))
+     (overlapped :pointer))
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :kernel32)
+
 (fli:define-foreign-function (%get-exit-code-process "GetExitCodeProcess")
     ((process :pointer)
      (exit-code (:reference-return (:unsigned :long))))
