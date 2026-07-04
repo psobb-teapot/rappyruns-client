@@ -1091,6 +1091,29 @@ store functions that persist never touch the real %APPDATA% queue."
              (null (getf (first saved) :telemetry)))
       (check "persisted queued entry keeps its telemetry"
              (getf (second saved) :telemetry))))
+  ;; Clearing the list keeps only unsent runs - the one thing that
+  ;; exists nowhere else. Drafts with a pending video go too (their
+  ;; recording and server draft survive elsewhere), so recordings the
+  ;; user never means to upload cannot haunt the list forever.
+  (with-test-store ((list :status :submitted :server-id 1)
+                    (list :status :queued)
+                    (list :status :failed :reason "boom")
+                    (list :status :submitted :server-id 2 :video-path "v.mp4")
+                    (list :status :submitted :server-id 3 :video-path "w.mp4"
+                          :video-attached t)
+                    (list :status :duplicate :server-id 4)
+                    (list :status :rejected :reason "nope"))
+    (check "clear-runs! reports the removed count"
+           (= 5 (ephinea-ta-client::clear-runs!)))
+    (check "clear keeps only queued and failed entries, in order"
+           (equal '(:queued :failed)
+                  (mapcar (lambda (entry) (getf entry :status))
+                          (queued-runs))))
+    (check "clear persists the surviving queue"
+           (= 2 (length (ephinea-ta-client::read-sexp-file
+                         ephinea-ta-client::*queue-path*))))
+    (check "cleared pending-video draft is no longer a video candidate"
+           (null (ephinea-ta-client::video-candidates))))
   ;; Which run does a copied URL belong to?
   (let ((a (list :quest-slug "a" :time-ms 1 :finished-at 1 :server-id 1))
         (b (list :quest-slug "b" :time-ms 2 :finished-at 2 :server-id 2)))

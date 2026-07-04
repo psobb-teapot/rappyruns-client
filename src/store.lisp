@@ -97,6 +97,23 @@ link were already submitted, so the (large) telemetry payload is dropped."
 (defun queued-runs ()
   (with-runs-lock (copy-list *runs*)))
 
+(defun entry-unsent-p (entry)
+  "Entries that exist nowhere but this client: clearing one loses the
+run for good, unlike drafts (on the server) and recordings (on disk)."
+  (member (getf entry :status) '(:queued :failed)))
+
+(defun clear-runs! ()
+  "Drop every entry except unsent ones (see ENTRY-UNSENT-P). Cleared
+drafts stay on the server and their recordings stay on disk; only this
+client's link between the two is forgotten, so a video can still be
+added on the site. Returns the number of entries removed."
+  (let ((removed (with-runs-lock
+                   (let ((kept (remove-if-not #'entry-unsent-p *runs*)))
+                     (prog1 (- (length *runs*) (length kept))
+                       (setf *runs* kept))))))
+    (save-queue!)
+    removed))
+
 (defun enqueue-run! (run)
   (let ((entry (list* :status :queued run)))
     (with-runs-lock

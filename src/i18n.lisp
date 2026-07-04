@@ -95,6 +95,9 @@
     :retry-button
     ("Submit pending runs"
      "未送信の記録を送信")
+    :clear-list-button
+    ("Clear list"
+     "一覧をクリア")
 
     ;; Settings tab
     :group-language
@@ -144,6 +147,9 @@
      "トリガーの変化をログに記録する (新カテゴリのスイッチ ID 調査用)")
 
     ;; Dialogs
+    :clear-list-confirm
+    ("Clear the list?~%~%Runs not submitted yet are kept. Recordings stay on disk and drafts stay on the server (videos can still be added on the site), but this client forgets which recording belongs to which draft.~%~%Nothing is deleted on the server."
+     "一覧をクリアしますか?~%~%未送信の記録は残ります。録画ファイルとサーバー上の下書きもそのまま残ります (動画の追加はサイトからできます) が、どの録画がどの下書きのものかの対応はこのクライアントから消えます。~%~%サーバー上のデータは削除されません。")
     :choose-record-dir
     ("Choose the recordings folder"
      "録画フォルダを選択")

@@ -163,7 +163,12 @@ poll loop re-reads it every iteration.")
                  :text (tr :retry-button)
                  :callback 'retry-callback
                  :callback-type :interface
-                 :font *ui-font*))
+                 :font *ui-font*)
+   (clear-list-button capi:push-button
+                      :text (tr :clear-list-button)
+                      :callback 'clear-list-callback
+                      :callback-type :interface
+                      :font *ui-font*))
   ;; Two tabs mirror how the app is used: Settings once up front, then
   ;; the Runs tab for the daily play -> check video -> submit flow.
   (:layouts
@@ -172,7 +177,7 @@ poll loop re-reads it every iteration.")
    ;; right here), with the folder / site / resubmit as fallbacks.
    (actions-row capi:row-layout
                 '(upload-button recordings-folder-button my-runs-button
-                  retry-button))
+                  retry-button clear-list-button))
    (runs-tab capi:column-layout
              '(status-row quest-status runs-list actions-row)
              :adjust :left)
@@ -298,6 +303,15 @@ and saved immediately (no Save settings needed)."
   (declare (ignore interface))
   ;; The poll loop owns submission; just flag the queue for a retry pass.
   (setf *retry-requested* t))
+
+(defun clear-list-callback (interface)
+  "Clear the runs list after confirmation. Only unsent runs stay (see
+CLEAR-RUNS!); drafts with a pending video go too - by the time someone
+reaches for this button, those are recordings they never meant to
+upload, and the site can still take a video for them."
+  (when (capi:confirm-yes-or-no "~a" (tr :clear-list-confirm))
+    (clear-runs!)
+    (refresh-runs-list interface)))
 
 (defun runs-list-action-callback (entry interface)
   "Double-click / Enter on a run: open it on the site (drafts get their
