@@ -266,9 +266,10 @@ so the detection state machine stays pure and testable."
         :key (lambda (player) (getf player :index))))
 
 ;;; Inventory. Ported from psostats inventory.go: the item array holds
-;;; the local inventory; equipped gear is resolved to display names via
-;;; the game's own ItemPMT and unitxt tables so no item database ships
-;;; with the client.
+;;; every item in the game world - all players' inventories plus floor
+;;; drops - so entries are filtered to the local player by the owner
+;;; byte. Equipped gear is resolved to display names via the game's own
+;;; ItemPMT and unitxt tables so no item database ships with the client.
 
 (defvar *item-name-cache* (make-hash-table :test 'eql)
   "unitxt index -> item name; unitxt data is static for a game session.")
@@ -412,9 +413,12 @@ so the detection state machine stays pure and testable."
   "Equipped gear and consumable counts:
 \(:equipment ((:id :type :display) ...) :weapon plist-or-nil
  :consumables (:monomate n ... :telepipe n))."
-  (let ((count (read-u32 reader +item-array-count+))
+  ;; The count field is u16 (psostats reads 2 bytes). The array covers
+  ;; the whole game world, so multiplayer counts run far past one
+  ;; 30-slot inventory; the bound only rejects garbage reads.
+  (let ((count (read-u16 reader +item-array-count+))
         (array (read-u32 reader +item-array-pointer+)))
-    (when (and count array (plusp array) (<= 0 count 60))
+    (when (and count array (plusp array) (<= 0 count 4096))
       (let ((pointers (read-block reader array (* 4 count)))
             (equipment '())
             (weapon nil)
@@ -437,7 +441,9 @@ so the detection state machine stays pure and testable."
                                (push item equipment)
                                (when (eq (getf item :type) :weapon)
                                  (setf weapon item)))))
-                          ((eql type 3)
+                          ;; Consumables also need the owner filter or
+                          ;; teammates' stacks would clobber ours.
+                          ((and (eql type 3) owner (= owner my-index))
                            (let ((key (consumable-key group index))
                                  (raw (read-u8 reader (+ item-addr
                                                          +item-tool-count-offset+))))
