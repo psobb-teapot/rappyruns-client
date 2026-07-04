@@ -211,6 +211,7 @@ poll loop re-reads it every iteration.")
    (main-tabs capi:tab-layout ()
               :items `((,(tr :tab-runs) runs-tab)
                        (,(tr :tab-settings) settings-tab))
+              :font *ui-font*
               :print-function 'first
               :visible-child-function 'second
               ;; First launch without a token lands on Settings (step 1

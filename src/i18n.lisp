@@ -64,7 +64,7 @@
     ;; Runs tab
     :tab-runs
     ("Runs"
-     "ラン")
+     "記録")
     :tab-settings
     ("Settings"
      "設定")
@@ -94,7 +94,7 @@
      "My Runs を開く (動画の追加)")
     :retry-button
     ("Submit pending runs"
-     "未送信のランを送信")
+     "未送信の記録を送信")
 
     ;; Settings tab
     :group-language
@@ -105,7 +105,7 @@
      "接続")
     :group-completion
     ("When a run completes"
-     "ラン完了時")
+     "計測完了時")
     :group-recording
     ("Recording"
      "録画")
@@ -123,10 +123,10 @@
      "保存して確認")
     :auto-submit-label
     ("Submit automatically on quest completion"
-     "クエスト完了時に自動でランを送信する")
+     "クエスト完了時に記録を自動送信する")
     :completion-sound-label
     ("Play a sound when a run completes"
-     "ラン完了時にサウンドを鳴らす")
+     "計測完了時にサウンドを鳴らす")
     :record-label
     ("Record quest videos automatically"
      "クエスト動画を自動で録画する")
@@ -155,7 +155,7 @@
      "ffmpeg が見つからないため、録画は無効のままです。~%~%ffmpeg を同梱したクライアント zip (exe の隣の ffmpeg\\ffmpeg.exe) を使うか、PATH の通る場所に ffmpeg をインストールしてください。")
     :no-recording-for-run
     ("This run has no saved recording.~%~%Videos are only saved when recording is enabled while the quest is played."
-     "このランには保存された録画がありません。~%~%動画は、クエストのプレイ中に録画が有効だった場合にのみ保存されます。")
+     "この記録には保存された録画がありません。~%~%動画は、クエストのプレイ中に録画が有効だった場合にのみ保存されます。")
     :no-recordings-yet
     ("No saved recordings to upload yet.~%~%Videos are saved automatically when a recorded quest completes."
      "アップロードできる録画はまだありません。~%~%録画中のクエストが完了すると、動画は自動で保存されます。")
@@ -164,16 +164,16 @@
      "録画ファイルが見つかりません:~%~%~a")
     :attach-choose
     ("A YouTube link was copied:~%~a~%~%Attach it to which run?"
-     "YouTube のリンクがコピーされました:~%~a~%~%どのランに紐付けますか?")
+     "YouTube のリンクがコピーされました:~%~a~%~%どの記録に紐付けますか?")
     :attach-confirm
     ("Attach the copied YouTube link to this run?~%~%~a~%~a"
-     "コピーされた YouTube のリンクをこのランに紐付けますか?~%~%~a~%~a")
+     "コピーされた YouTube のリンクをこの記録に紐付けますか?~%~%~a~%~a")
     :attach-failed
     ("Could not attach the video:~%~%~a"
      "動画を紐付けられませんでした:~%~%~a")
     :token-setup-offer
     ("No API token is set yet.~%~%Runs are still timed and listed below, but they can only be uploaded to the site with a token.~%~%Open the token page in your browser now?~%(~a - requires Discord login)"
-     "API トークンがまだ設定されていません。~%~%トークンがなくてもランの計測と一覧表示はできますが、サイトへのアップロードにはトークンが必要です。~%~%ブラウザでトークンページを開きますか?~%(~a - Discord ログインが必要です)")
+     "API トークンがまだ設定されていません。~%~%トークンがなくてもタイム計測と記録の一覧表示はできますが、サイトへのアップロードにはトークンが必要です。~%~%ブラウザでトークンページを開きますか?~%(~a - Discord ログインが必要です)")
     :token-paste-prompt
     ("Paste your API token here (Cancel to skip - you can also set it later in Settings):"
      "API トークンをここに貼り付けてください (キャンセルでスキップ。後から設定タブでも設定できます):")
