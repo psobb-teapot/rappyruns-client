@@ -75,11 +75,17 @@
    (auto-submit-check capi:check-button
                       :text "Submit automatically on quest completion"
                       :selected (config-value :auto-submit)
+                      :selection-callback 'toggle-auto-submit-callback
+                      :retract-callback 'toggle-auto-submit-callback
+                      :callback-type :interface
                       :font *ui-font*
                       :accessor auto-submit-check)
    (completion-sound-check capi:check-button
                            :text "Play a sound when a run completes"
                            :selected (config-value :completion-sound)
+                           :selection-callback 'toggle-completion-sound-callback
+                           :retract-callback 'toggle-completion-sound-callback
+                           :callback-type :interface
                            :font *ui-font*
                            :accessor completion-sound-check)
    (trigger-log-check capi:check-button
@@ -118,7 +124,7 @@
                       :callback-type :interface
                       :font *ui-font*)
    (save-button capi:push-button
-                :text "Save settings"
+                :text "Save & verify"
                 :callback 'save-settings-callback
                 :callback-type :interface
                 :font *ui-font*)
@@ -154,13 +160,28 @@
    (runs-tab capi:column-layout
              '(status-row quest-status runs-list actions-row)
              :adjust :left)
-   (settings-row capi:row-layout '(server-url-input api-token-input))
+   ;; Settings are grouped by how they behave: the Connection fields
+   ;; need Save & verify, every checkbox applies immediately.
+   (connection-group capi:column-layout
+                     '(server-url-input api-token-input save-button)
+                     :title "Connection" :title-position :frame
+                     :title-font *ui-font* :adjust :left)
+   (completion-group capi:column-layout
+                     '(auto-submit-check completion-sound-check)
+                     :title "When a run completes" :title-position :frame
+                     :title-font *ui-font* :adjust :left)
    (recording-row capi:row-layout '(record-dir-display record-dir-button)
                   :adjust :center)
+   (recording-group capi:column-layout
+                    '(record-check record-audio-check recording-row)
+                    :title "Recording" :title-position :frame
+                    :title-font *ui-font* :adjust :left)
+   (advanced-group capi:column-layout '(trigger-log-check)
+                   :title "Advanced" :title-position :frame
+                   :title-font *ui-font* :adjust :left)
    (settings-tab capi:column-layout
-                 '(settings-row auto-submit-check completion-sound-check
-                   record-check record-audio-check recording-row
-                   trigger-log-check save-button)
+                 '(connection-group completion-group recording-group
+                   advanced-group)
                  :adjust :left)
    (main-tabs capi:tab-layout ()
               :items '(("Runs" runs-tab) ("Settings" settings-tab))
@@ -175,25 +196,30 @@
    :visible-min-width '(:character 100)))
 
 (defun save-settings-callback (interface)
+  "Save the Connection fields and verify both against the server.
+The checkboxes are not read here: each one applies and saves itself
+when toggled."
   (setf (config-value :server-url)
         (string-right-trim "/ " (capi:text-input-pane-text
                                  (server-url-input interface)))
         (config-value :api-token)
         (normalize-token (capi:text-input-pane-text
-                          (api-token-input interface)))
-        (config-value :auto-submit)
-        (capi:button-selected (auto-submit-check interface))
-        (config-value :completion-sound)
-        (capi:button-selected (completion-sound-check interface))
-        (config-value :trigger-log)
-        (capi:button-selected (trigger-log-check interface))
-        (config-value :record-enabled)
-        (capi:button-selected (record-check interface))
-        (config-value :record-audio)
-        (capi:button-selected (record-audio-check interface)))
+                          (api-token-input interface))))
   (save-config!)
   (check-server interface)
   (check-token interface :notify t))
+
+(defun toggle-auto-submit-callback (interface)
+  "Apply the auto-submit toggle immediately (no Save needed)."
+  (setf (config-value :auto-submit)
+        (capi:button-selected (auto-submit-check interface)))
+  (save-config!))
+
+(defun toggle-completion-sound-callback (interface)
+  "Apply the completion-sound toggle immediately (no Save needed)."
+  (setf (config-value :completion-sound)
+        (capi:button-selected (completion-sound-check interface)))
+  (save-config!))
 
 (defun record-dir-label ()
   (format nil "Recordings folder: ~a" (namestring (resolve-record-dir))))
