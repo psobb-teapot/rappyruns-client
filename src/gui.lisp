@@ -95,6 +95,9 @@
    (record-audio-check capi:check-button
                        :text "Record game audio (only the game is heard, not Discord etc.)"
                        :selected (config-value :record-audio)
+                       :selection-callback 'toggle-record-audio-callback
+                       :retract-callback 'toggle-record-audio-callback
+                       :callback-type :interface
                        :font *ui-font*
                        :accessor record-audio-check)
    ;; ffmpeg itself is not a setting: the release bundles it next to the
@@ -262,6 +265,13 @@ snaps back off with instructions."
        "ffmpeg was not found, so recording stays off.~%~%Use the client zip that bundles it (ffmpeg\\ffmpeg.exe next to the exe), or install ffmpeg so it is on PATH."))
     (setf (config-value :record-enabled) on)
     (save-config!)))
+
+(defun toggle-record-audio-callback (interface)
+  "Apply the audio toggle immediately (no Save needed). Read at
+recording start, so it takes effect from the next quest."
+  (setf (config-value :record-audio)
+        (capi:button-selected (record-audio-check interface)))
+  (save-config!))
 
 (defun set-pane-text (interface accessor text &optional foreground)
   "Update a title pane's text and foreground color (NIL = default) from
