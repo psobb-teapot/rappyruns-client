@@ -41,6 +41,7 @@
               :columns '((:title "Quest" :width (:character 34))
                          (:title "Time" :width (:character 12))
                          (:title "Party" :width (:character 6))
+                         (:title "Video" :width (:character 10))
                          (:title "Status" :width (:character 40)))
               :items '()
               :column-function
@@ -49,6 +50,7 @@
                       (format-run-time (getf entry :time-ms))
                       (format nil "~dP~:[~;/PB~]"
                               (getf entry :party-size) (getf entry :pb))
+                      (run-video-label entry)
                       (run-status-label entry)))
               :accessor runs-list-pane
               :action-callback 'runs-list-action-callback
@@ -116,6 +118,11 @@
                 :callback 'save-settings-callback
                 :callback-type :interface
                 :font *ui-font*)
+   (upload-button capi:push-button
+                  :text "Upload to YouTube"
+                  :callback 'upload-video-callback
+                  :callback-type :interface
+                  :font *ui-font*)
    (recordings-folder-button capi:push-button
                              :text "Open recordings folder"
                              :callback 'open-recordings-folder-callback
@@ -135,9 +142,11 @@
   ;; the Runs tab for the daily play -> check video -> submit flow.
   (:layouts
    (status-row capi:row-layout '(game-status server-status))
-   ;; Flow order: grab the video, attach it on the site, resubmit stragglers.
+   ;; Flow order: upload the video (the copied URL is then attached
+   ;; right here), with the folder / site / resubmit as fallbacks.
    (actions-row capi:row-layout
-                '(recordings-folder-button my-runs-button retry-button))
+                '(upload-button recordings-folder-button my-runs-button
+                  retry-button))
    (runs-tab capi:column-layout
              '(status-row quest-status runs-list actions-row)
              :adjust :left)
@@ -212,6 +221,94 @@ do nothing."
 (defun open-my-runs-callback (interface)
   (declare (ignore interface))
   (open-in-browser (api-url (config-value :server-url) "/my/runs")))
+
+;;; The upload flow: one click opens YouTube plus an Explorer window
+;;; with the recording selected; when the uploaded video's URL is copied
+;;; the poll loop notices (CHECK-CLIPBOARD in main.lisp) and offers to
+;;; attach it to the draft, so the site never has to be opened.
+
+(defvar *last-upload-run* nil
+  "The entry whose Upload to YouTube button was pressed last: the
+preferred target when a copied URL could belong to several runs.")
+
+(defun open-file-in-explorer (path)
+  "Open an Explorer window with PATH's file already selected. Explorer
+only accepts backslashes and a quoted path after /select,."
+  (let ((windows-path (substitute #\\ #\/ (namestring path))))
+    (> (fli:pointer-address
+        (%shell-execute-args fli:*null-pointer* "open" "explorer.exe"
+                             (format nil "/select,\"~a\"" windows-path)
+                             fli:*null-pointer* +sw-shownormal+))
+       32)))
+
+(defun upload-video-callback (interface)
+  "Open the YouTube upload page and an Explorer window with the run's
+recording selected. Uses the selected row; with no selection, the newest
+run whose video is still unattached (the just-finished-playing case)."
+  (let* ((selected (capi:choice-selected-item (runs-list-pane interface)))
+         (entry (cond ((and selected (getf selected :video-path)) selected)
+                      ((null selected)
+                       (find-if (lambda (e)
+                                  (and (getf e :video-path)
+                                       (not (getf e :video-attached))))
+                                (queued-runs))))))
+    (cond
+      ((and selected (not (getf selected :video-path)))
+       (capi:display-message "This run has no saved recording.~%~%Videos are only saved when recording is enabled while the quest is played."))
+      ((null entry)
+       (capi:display-message "No saved recordings to upload yet.~%~%Videos are saved automatically when a recorded quest completes."))
+      ((not (ignore-errors (probe-file (getf entry :video-path))))
+       (capi:display-message "The recording file is missing:~%~%~a"
+                             (getf entry :video-path)))
+      (t
+       (setf *last-upload-run* entry)
+       (open-file-in-explorer (getf entry :video-path))
+       (open-in-browser "https://www.youtube.com/upload")))))
+
+(defun run-choice-label (entry)
+  (format nil "~a  ~a"
+          (or (getf entry :quest-name) (getf entry :quest-slug))
+          (format-run-time (getf entry :time-ms))))
+
+(defun attach-video-in-background (interface entry url)
+  "Network round trip off the GUI thread; result lands back on it."
+  (mp:process-run-function
+   "eta-client-attach-video" '()
+   (lambda ()
+     (multiple-value-bind (updated error) (attach-video-url! entry url)
+       (declare (ignore updated))
+       (refresh-runs-list interface)
+       (when error
+         (capi:execute-with-interface
+          interface
+          (lambda ()
+            (capi:display-message "Could not attach the video:~%~%~a"
+                                  error))))))))
+
+(defun offer-clipboard-url (interface url)
+  "Confirm (on the GUI thread) which run the copied URL belongs to,
+then attach it in a worker process."
+  (capi:execute-with-interface
+   interface
+   (lambda ()
+     (let ((target (resolve-video-target (video-candidates)
+                                         *last-upload-run*)))
+       (cond
+         ((null target))
+         ((eq target :choose)
+          (multiple-value-bind (entry okp)
+              (capi:prompt-with-list
+               (video-candidates)
+               (format nil "A YouTube link was copied:~%~a~%~%Attach it to which run?"
+                       url)
+               :print-function 'run-choice-label)
+            (when (and okp entry)
+              (attach-video-in-background interface entry url))))
+         (t
+          (when (capi:confirm-yes-or-no
+                 "Attach the copied YouTube link to this run?~%~%~a~%~a"
+                 (run-choice-label target) url)
+            (attach-video-in-background interface target url))))))))
 
 (defun open-recordings-folder-callback (interface)
   "Open the recordings folder in Explorer (created on demand so the

@@ -20,14 +20,23 @@ and, once submitted, :url and :reason on rejection.")
 
 (defparameter +max-finished-runs+ 50
   "How many finished entries (submitted/duplicate/rejected) to keep in
-the list; unfinished ones (:queued/:failed) are never dropped.")
+the list; active ones (see ENTRY-ACTIVE-P) are never dropped.")
+
+(defun entry-active-p (entry)
+  "Unfinished business that must survive trimming and restarts: entries
+awaiting (re)submission, and entries whose saved video has not been
+attached to their server draft yet."
+  (or (member (getf entry :status) '(:queued :failed))
+      (and (getf entry :video-path)
+           (getf entry :server-id)
+           (not (getf entry :video-attached)))))
 
 (defun trim-finished-runs (runs limit)
-  "RUNS is newest first: keep every :queued/:failed entry and only the
-newest LIMIT finished ones, preserving order."
+  "RUNS is newest first: keep every active entry and only the newest
+LIMIT finished ones, preserving order."
   (let ((finished 0))
     (remove-if (lambda (entry)
-                 (and (not (member (getf entry :status) '(:queued :failed)))
+                 (and (not (entry-active-p entry))
                       (> (incf finished) limit)))
                runs)))
 
@@ -40,24 +49,44 @@ newest LIMIT finished ones, preserving order."
       (format nil "~d:~2,'0d.~3,'0d" minutes seconds msec))))
 
 (defun run-status-label (entry)
-  (case (getf entry :status)
-    (:queued "queued")
-    (:submitted "draft - double-click to add video")
-    (:duplicate "duplicate (already on server)")
-    (:rejected (format nil "rejected: ~a" (or (getf entry :reason) "?")))
-    (:failed (format nil "failed: ~a" (or (getf entry :reason) "?")))
-    (t "?")))
+  (if (getf entry :video-attached)
+      "video attached - awaiting review"
+      (case (getf entry :status)
+        (:queued "queued")
+        (:submitted (if (getf entry :video-path)
+                        "draft - use Upload to YouTube"
+                        "draft - double-click to add video"))
+        (:duplicate "duplicate (already on server)")
+        (:rejected (format nil "rejected: ~a" (or (getf entry :reason) "?")))
+        (:failed (format nil "failed: ~a" (or (getf entry :reason) "?")))
+        (t "?"))))
+
+(defun run-video-label (entry)
+  "The Video column: the recording's journey from disk to the site."
+  (cond ((getf entry :video-attached) "attached")
+        ((getf entry :video-path) "saved")
+        (t "")))
+
+(defvar *queue-path* nil
+  "Override for tests; NIL means the real %APPDATA% location.")
 
 (defun queue-path ()
-  (merge-pathnames "queue.sexp" (config-dir)))
+  (or *queue-path* (merge-pathnames "queue.sexp" (config-dir))))
 
-(defun persistable (run)
-  ;; Only unfinished business needs to survive a restart.
-  (member (getf run :status) '(:queued :failed)))
+(defun persistable-entry (entry)
+  "ENTRY as written to disk. Entries kept only for their pending video
+link were already submitted, so the (large) telemetry payload is dropped."
+  (if (member (getf entry :status) '(:queued :failed))
+      entry
+      (let ((copy (copy-list entry)))
+        (remf copy :telemetry)
+        copy)))
 
 (defun save-queue! ()
   (write-sexp-file (queue-path)
-                   (with-runs-lock (remove-if-not #'persistable *runs*))))
+                   (mapcar #'persistable-entry
+                           (with-runs-lock
+                             (remove-if-not #'entry-active-p *runs*)))))
 
 (defun load-queue! ()
   (let ((saved (read-sexp-file (queue-path))))
@@ -90,21 +119,26 @@ are not already present.)"
     (save-queue!)
     new))
 
+(defun submission-updates (outcome payload)
+  "SUBMIT-RUN's result -> the plist of updates for the queue entry. The
+server id is kept so a video can later be attached over the API."
+  (let ((server-id (and (hash-table-p payload) (gethash "id" payload)))
+        (url (and (hash-table-p payload) (gethash "url" payload)))
+        (errors (and (hash-table-p payload) (gethash "errors" payload)))
+        (message (and (hash-table-p payload) (gethash "message" payload))))
+    (ecase outcome
+      (:created (list :status :submitted :url url :server-id server-id))
+      (:duplicate (list :status :duplicate :url url :server-id server-id))
+      (:rejected (list :status :rejected
+                       :reason (format nil "~@[~a ~]~@[~{~a~^; ~}~]"
+                                       message
+                                       (and errors (coerce errors 'list))))))))
+
 (defun submit-entry! (entry)
   "Submit one queue entry. Returns the updated entry."
   (handler-case
       (multiple-value-bind (outcome payload) (submit-run entry)
-        (let ((url (and (hash-table-p payload) (gethash "url" payload)))
-              (errors (and (hash-table-p payload) (gethash "errors" payload)))
-              (message (and (hash-table-p payload) (gethash "message" payload))))
-          (ecase outcome
-            (:created (update-run! entry :status :submitted :url url))
-            (:duplicate (update-run! entry :status :duplicate :url url))
-            (:rejected
-             (update-run! entry :status :rejected
-                          :reason (format nil "~@[~a ~]~@[~{~a~^; ~}~]"
-                                          message
-                                          (and errors (coerce errors 'list))))))))
+        (apply #'update-run! entry (submission-updates outcome payload)))
     (api-error (condition)
       (update-run! entry :status :failed
                    :reason (api-error-message condition)))))
@@ -117,3 +151,56 @@ entries (the pre-submission plists would show stale statuses)."
                                     (member (getf entry :status) '(:queued :failed)))
                                   *runs*))))
     (mapcar #'submit-entry! pending)))
+
+;;; Linking recordings to queue entries and attaching their YouTube URL.
+;;; UPDATE-RUN! replaces entries with copies, so identity across updates
+;;; is the run's natural key rather than EQ.
+
+(defun same-run-p (a b)
+  (and (equal (getf a :quest-slug) (getf b :quest-slug))
+       (eql (getf a :time-ms) (getf b :time-ms))
+       (eql (getf a :finished-at) (getf b :finished-at))))
+
+(defun link-video-file! (run video-path)
+  "Record VIDEO-PATH on the queue entry for RUN. Returns the updated
+entry, or NIL when the run is no longer in the list."
+  (let ((entry (find run (queued-runs) :test #'same-run-p)))
+    (when entry
+      (update-run! entry :video-path (namestring video-path)))))
+
+(defun video-candidates ()
+  "Entries a copied video URL could belong to: on the server (they have
+an id) and no video attached yet."
+  (remove-if-not (lambda (entry)
+                   (and (getf entry :server-id)
+                        (not (getf entry :video-attached))))
+                 (queued-runs)))
+
+(defun resolve-video-target (candidates preferred)
+  "Which of CANDIDATES a copied video URL should go to: the only one,
+PREFERRED when it is still among them, :choose when it is ambiguous, or
+NIL when there are none."
+  (cond
+    ((null candidates) nil)
+    ((null (rest candidates)) (first candidates))
+    ((and preferred (find preferred candidates :test #'same-run-p)))
+    (t :choose)))
+
+(defun attach-video-url! (entry video-url)
+  "Attach VIDEO-URL to ENTRY's server draft, promoting it to pending
+review. Returns (values updated-entry error-message); exactly one is
+non-NIL."
+  (handler-case
+      (multiple-value-bind (outcome payload)
+          (attach-run-video (getf entry :server-id) video-url)
+        (ecase outcome
+          (:attached
+           (values (update-run! entry :video-attached t :video-url video-url)
+                   nil))
+          (:rejected
+           (values nil
+                   (or (and (hash-table-p payload) (gethash "message" payload))
+                       (and (hash-table-p payload) (gethash "error" payload))
+                       "the server rejected the video URL")))))
+    (api-error (condition)
+      (values nil (api-error-message condition)))))

@@ -314,3 +314,75 @@ authentication and transport failures (worth retrying / reconfiguring)."
         (403 (values :rejected payload))
         (t (error 'api-error
                   :message (format nil "POST /api/runs -> ~a: ~a" status body)))))))
+
+(defun attach-run-video (server-id video-url
+                         &key (server-url (config-value :server-url))
+                              (token (config-value :api-token)))
+  "POST /api/runs/:id/video: attach VIDEO-URL to the draft SERVER-ID,
+promoting it to pending review. Returns (values outcome payload) where
+outcome is :attached or :rejected; PAYLOAD is the parsed JSON response.
+Signals API-ERROR on authentication and transport failures."
+  (let ((request-body (let ((object (make-hash-table :test 'equal)))
+                        (setf (gethash "video_url" object) video-url)
+                        (jzon:stringify object))))
+    (multiple-value-bind (status body)
+        (http-request "POST" (api-url server-url
+                                      (format nil "/api/runs/~d/video" server-id))
+                      :body request-body :token token)
+      (let ((payload (ignore-errors (jzon:parse body))))
+        (case status
+          (200 (values :attached payload))
+          ((400 403 404) (values :rejected payload))
+          (401 (error 'api-error :message "Invalid or revoked API token"))
+          (t (error 'api-error
+                    :message (format nil "POST /api/runs/~d/video -> ~a: ~a"
+                                     server-id status body))))))))
+
+;;; Recognizing YouTube links on the clipboard. Deliberately simple
+;;; string matching (no regex dependency); the server's validator has
+;;; the final say, this only decides when to offer the attach prompt.
+
+(defun youtube-id-char-p (char)
+  (or (char<= #\a char #\z) (char<= #\A char #\Z)
+      (char<= #\0 char #\9) (char= char #\-) (char= char #\_)))
+
+(defun youtube-id-at-p (url start)
+  "True when an 11-character video id sits at START in URL, ending the
+string or followed by a URL delimiter (so longer id-like runs fail)."
+  (let ((end (+ start 11)))
+    (and (<= end (length url))
+         (loop :for i :from start :below end
+               :always (youtube-id-char-p (char url i)))
+         (or (= end (length url))
+             (member (char url end) '(#\? #\& #\# #\/))))))
+
+(defun youtube-video-url (text)
+  "Trimmed TEXT when it looks like a link to a single YouTube video
+\(watch?v=..., youtu.be/..., /shorts/..., /live/...), else NIL."
+  (let* ((url (string-trim '(#\Space #\Tab #\Return #\Linefeed) (or text "")))
+         (host-start (cond ((eql 0 (search "https://" url)) 8)
+                           ((eql 0 (search "http://" url)) 7))))
+    (when (and host-start
+               (notany (lambda (char) (char<= char #\Space)) url))
+      (let* ((host-end (or (position #\/ url :start host-start) (length url)))
+             (host (string-downcase (subseq url host-start host-end))))
+        (flet ((id-after (prefix)
+                 "Id right after PREFIX when the path starts with it."
+                 (let ((end (+ host-end (length prefix))))
+                   (and (<= end (length url))
+                        (string= prefix url :start2 host-end :end2 end)
+                        (youtube-id-at-p url end)))))
+          (cond
+            ((string= host "youtu.be")
+             (and (youtube-id-at-p url (1+ host-end)) url))
+            ((member host '("www.youtube.com" "youtube.com" "m.youtube.com")
+                     :test #'string=)
+             (cond
+               ((or (id-after "/shorts/") (id-after "/live/")) url)
+               (t ;; /watch: the v= parameter may sit anywhere in the query.
+                (let ((v (search "v=" url :start2 host-end)))
+                  (and v
+                       (member (char url (1- v)) '(#\? #\&))
+                       (eql (search "/watch?" url :start2 host-end) host-end)
+                       (youtube-id-at-p url (+ v 2))
+                       url)))))))))))

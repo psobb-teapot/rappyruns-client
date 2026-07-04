@@ -205,7 +205,9 @@ known once the audio session is activated)."
   (last-detector-state :idle)
   stop-deadline        ; internal real time to give up on "q" and kill
   pending-keep-p       ; decided when the stop begins
+  pending-run          ; the kept file's best run, for ON-KEEP
   final-path           ; rename target when keeping
+  on-keep              ; (lambda (final-path run)) after a successful save
   last-error)          ; string for the GUI, or NIL
 
 (defun start-recording (recorder window-title)
@@ -234,6 +236,7 @@ known once the audio session is activated)."
 best completed run's name, or delete it when nothing completed."
   (let ((best (best-session-run (recorder-session-runs recorder))))
     (setf (recorder-pending-keep-p recorder) (and best t)
+          (recorder-pending-run recorder) best
           (recorder-final-path recorder)
           (and best (namestring (merge-pathnames (run-video-filename best)
                                                  (resolve-record-dir))))
@@ -250,8 +253,14 @@ best completed run's name, or delete it when nothing completed."
     (ignore-errors (backend-close-capture backend (recorder-capture recorder)))
     (if (and (recorder-pending-keep-p recorder) (recorder-final-path recorder))
         (handler-case
-            (backend-rename-file backend (recorder-tmp-path recorder)
-                                 (recorder-final-path recorder))
+            (progn
+              (backend-rename-file backend (recorder-tmp-path recorder)
+                                   (recorder-final-path recorder))
+              (when (recorder-on-keep recorder)
+                (ignore-errors
+                  (funcall (recorder-on-keep recorder)
+                           (recorder-final-path recorder)
+                           (recorder-pending-run recorder)))))
           (error (condition)
             (setf (recorder-last-error recorder)
                   (format nil "could not save recording: ~a" condition))))
@@ -261,6 +270,7 @@ best completed run's name, or delete it when nothing completed."
         (recorder-tmp-path recorder) nil
         (recorder-session-runs recorder) '()
         (recorder-pending-keep-p recorder) nil
+        (recorder-pending-run recorder) nil
         (recorder-final-path recorder) nil
         (recorder-stop-deadline recorder) nil
         (recorder-state recorder) :idle))
@@ -274,6 +284,7 @@ best completed run's name, or delete it when nothing completed."
         (recorder-tmp-path recorder) nil
         (recorder-session-runs recorder) '()
         (recorder-pending-keep-p recorder) nil
+        (recorder-pending-run recorder) nil
         (recorder-final-path recorder) nil
         (recorder-stop-deadline recorder) nil
         (recorder-state recorder) :idle

@@ -54,12 +54,38 @@ failed/rejected. Two sounds correctly say: timed OK, upload did not."
                         results))
       (%message-beep +mb-iconhand+))))
 
+(defvar *clipboard-seen-seq* nil
+  "Last clipboard sequence number examined, so the poll loop only reads
+the clipboard when its contents actually changed.")
+
+(defvar *clipboard-last-offered* nil
+  "Last URL the attach prompt was shown for; never offered twice.")
+
+#+lispworks
+(defun check-clipboard (interface)
+  "Offer to attach a freshly copied YouTube URL to a draft. Cheap when
+nothing changed: just a sequence-number read, no clipboard open."
+  (let ((seq (clipboard-sequence-number)))
+    (unless (eql seq *clipboard-seen-seq*)
+      (setf *clipboard-seen-seq* seq)
+      (let ((url (youtube-video-url (clipboard-text))))
+        (when (and url
+                   (not (equal url *clipboard-last-offered*))
+                   (video-candidates))
+          (setf *clipboard-last-offered* url)
+          (offer-clipboard-url interface url))))))
+
 #+lispworks
 (defun poll-loop (interface)
   (let ((reader nil)
         (detector (make-detector))
         (recorder (make-recorder
-                   :backend (make-instance 'win32-ffmpeg-backend)))
+                   :backend (make-instance 'win32-ffmpeg-backend)
+                   ;; The kept file is tied to its queue entry so the
+                   ;; Upload button and clipboard attach can find it.
+                   :on-keep (lambda (path run)
+                              (link-video-file! run path)
+                              (refresh-runs-list interface))))
         (previous-snapshot nil)
         (last-gui-update 0))
     (ignore-errors (cleanup-stale-recordings recorder))
@@ -86,6 +112,9 @@ failed/rejected. Two sounds correctly say: timed OK, upload did not."
                               (setf *retry-requested* nil)
                               (submit-queued!)
                               (refresh-runs-list interface))
+                            ;; Uploads happen while the game is closed
+                            ;; too, so watch the clipboard here as well.
+                            (ignore-errors (check-clipboard interface))
                             (update-game-status interface nil detector nil
                                                 recorder)
                             (mp:process-wait-with-timeout
@@ -127,6 +156,7 @@ failed/rejected. Two sounds correctly say: timed OK, upload did not."
                                    (* +gui-update-interval+
                                       internal-time-units-per-second))
                             (setf last-gui-update now)
+                            (ignore-errors (check-clipboard interface))
                             (update-game-status interface (and reader t)
                                                 detector snapshot recorder)
                             (when (eq (detector-state detector) :in-quest)

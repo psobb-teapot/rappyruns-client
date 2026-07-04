@@ -4,9 +4,13 @@ Desktop companion app for the ephinea-ta leaderboard site. It attaches to
 a running Ephinea PSOBB client (read-only, via `ReadProcessMemory`),
 detects quest starts and completions from quest registers / floor switches
 (trigger data transcribed from [psostats-client], MIT), and auto-submits
-finished runs to the site as **drafts** via `POST /api/runs`. You then
-attach the video URL on the site (My Runs → Drafts) to send the run to
-the moderation queue.
+finished runs to the site as **drafts** via `POST /api/runs`. The video
+then goes to the moderation queue with two clicks and no site visit:
+"Upload to YouTube" opens the upload page plus an Explorer window with
+the run's recording selected; once YouTube's share URL is copied, the
+client notices it on the clipboard, asks which run it belongs to and
+attaches it via `POST /api/runs/:id/video`. (Attaching the URL by hand
+on the site - My Runs → Drafts - still works as a fallback.)
 
 [psostats-client]: https://github.com/phelix-/psostats-client
 

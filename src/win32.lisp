@@ -86,6 +86,94 @@
   :calling-convention :stdcall
   :module :shell32)
 
+;; Same entry point with a real lpParameters string, for the rare case
+;; where arguments are needed (explorer.exe /select). The primary
+;; %shell-execute keeps :pointer there so URLs stay single-argument.
+(fli:define-foreign-function (%shell-execute-args "ShellExecuteW")
+    ((hwnd :pointer)
+     (operation (:reference-pass :ef-wc-string))
+     (file (:reference-pass :ef-wc-string))
+     (parameters (:reference-pass :ef-wc-string))
+     (directory :pointer)
+     (show-cmd :int))
+  :result-type :pointer
+  :calling-convention :stdcall
+  :module :shell32)
+
+;;; Clipboard access, for noticing a copied YouTube URL. The sequence
+;;; number changes on every clipboard update, so the poll loop only pays
+;;; for OpenClipboard when there is something new to look at.
+
+(fli:define-foreign-function (%get-clipboard-sequence-number
+                              "GetClipboardSequenceNumber")
+    ()
+  :result-type (:unsigned :long)
+  :calling-convention :stdcall
+  :module :user32)
+
+(fli:define-foreign-function (%open-clipboard "OpenClipboard")
+    ((hwnd :pointer))
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :user32)
+
+(fli:define-foreign-function (%close-clipboard "CloseClipboard")
+    ()
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :user32)
+
+(fli:define-foreign-function (%is-clipboard-format-available
+                              "IsClipboardFormatAvailable")
+    ((format (:unsigned :int)))
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :user32)
+
+(fli:define-foreign-function (%get-clipboard-data "GetClipboardData")
+    ((format (:unsigned :int)))
+  :result-type :pointer
+  :calling-convention :stdcall
+  :module :user32)
+
+(fli:define-foreign-function (%global-lock "GlobalLock")
+    ((handle :pointer))
+  :result-type (:pointer (:unsigned :short))
+  :calling-convention :stdcall
+  :module :kernel32)
+
+(fli:define-foreign-function (%global-unlock "GlobalUnlock")
+    ((handle :pointer))
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :kernel32)
+
+(defconstant +cf-unicodetext+ 13)
+
+(defun clipboard-sequence-number ()
+  (%get-clipboard-sequence-number))
+
+(defun clipboard-text (&key (max-chars 2048))
+  "The clipboard's unicode text (BMP only, MAX-CHARS cap), or NIL.
+Never signals: this is polled from the GUI loop, and a slow or hostile
+clipboard owner must not take the client down with it."
+  (ignore-errors
+    (when (and (%is-clipboard-format-available +cf-unicodetext+)
+               (%open-clipboard fli:*null-pointer*))
+      (unwind-protect
+           (let ((handle (%get-clipboard-data +cf-unicodetext+)))
+             (unless (fli:null-pointer-p handle)
+               (let ((chars (%global-lock handle)))
+                 (unless (fli:null-pointer-p chars)
+                   (unwind-protect
+                        (with-output-to-string (out)
+                          (loop :for i :from 0 :below max-chars
+                                :for code := (fli:dereference chars :index i)
+                                :until (zerop code)
+                                :do (write-char (code-char code) out)))
+                     (%global-unlock handle))))))
+        (%close-clipboard)))))
+
 ;; Asynchronous and thread-safe, so the poll loop can call it directly;
 ;; plays the user's sound scheme (and respects mute).
 (fli:define-foreign-function (%message-beep "MessageBeep")

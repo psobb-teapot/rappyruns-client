@@ -889,6 +889,209 @@ over the defaults. Restores the global config afterwards (it is bound)."
                (null (fifth (first (events-of backend :start)))))))))
 
 ;;; ------------------------------------------------------------------
+;;; Video attach flow: recordings linked to queue entries, clipboard
+;;; URL recognition and target resolution
+;;; ------------------------------------------------------------------
+
+(defmacro with-test-store ((&rest initial-runs) &body body)
+  "Run BODY against a private *RUNS* list and a throwaway queue file, so
+store functions that persist never touch the real %APPDATA% queue."
+  `(let ((ephinea-ta-client::*runs* (list ,@initial-runs))
+         (ephinea-ta-client::*queue-path*
+           (merge-pathnames (format nil "eta-test-queue-~d.sexp"
+                                    (get-internal-real-time))
+                            (uiop:temporary-directory))))
+     (unwind-protect (progn ,@body)
+       (ignore-errors (delete-file ephinea-ta-client::*queue-path*)))))
+
+(defun run-video-flow-tests ()
+  (format t "~&--- video attach flow ---~%")
+  ;; Recorder: ON-KEEP fires exactly when a video is saved.
+  (with-recording-config (:record-enabled t)
+    (let* ((kept '())
+           (backend (make-instance 'mock-backend))
+           (rec (make-recorder :backend backend
+                               :on-keep (lambda (path run)
+                                          (push (list path run) kept)))))
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (recorder-step rec :idle (list (make-test-run)) "Ephinea PSOBB")
+      (setf (mock-alive backend) nil)
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "on-keep is called once with the final path and best run"
+             (and (= 1 (length kept))
+                  (search "9'59.123" (first (first kept)))
+                  (equal "ep1-test-quest"
+                         (getf (second (first kept)) :quest-slug)))))
+    (let* ((kept '())
+           (backend (make-instance 'mock-backend))
+           (rec (make-recorder :backend backend
+                               :on-keep (lambda (path run)
+                                          (push (list path run) kept)))))
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (recorder-step rec :idle '() "Ephinea PSOBB") ; abandoned
+      (setf (mock-alive backend) nil)
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "on-keep is not called for abandoned captures" (null kept)))
+    (let* ((kept '())
+           (backend (make-instance 'mock-backend))
+           (rec (make-recorder :backend backend
+                               :on-keep (lambda (path run)
+                                          (push (list path run) kept)))))
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (setf (mock-alive backend) nil)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB") ; ffmpeg died
+      (check "on-keep is not called when the capture aborts" (null kept)))
+    (let* ((backend (make-instance 'mock-backend))
+           (rec (make-recorder :backend backend
+                               :on-keep (lambda (path run)
+                                          (declare (ignore path run))
+                                          (error "callback boom")))))
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (recorder-step rec :idle (list (make-test-run)) "Ephinea PSOBB")
+      (setf (mock-alive backend) nil)
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "an erroring on-keep neither sticks nor reports"
+             (and (eq (recorder-state rec) :idle)
+                  (null (recorder-last-error rec))))))
+  ;; Submission updates carry the server id for later video attachment.
+  (let ((payload (make-hash-table :test 'equal)))
+    (setf (gethash "id" payload) 42
+          (gethash "url" payload) "https://x/runs/42")
+    (check "created runs remember their server id"
+           (equal '(:status :submitted :url "https://x/runs/42" :server-id 42)
+                  (ephinea-ta-client::submission-updates :created payload)))
+    (check "duplicate runs remember their server id too"
+           (eql 42 (getf (ephinea-ta-client::submission-updates
+                          :duplicate payload)
+                         :server-id))))
+  (check "rejected runs carry a reason, not a server id"
+         (let ((payload (make-hash-table :test 'equal)))
+           (setf (gethash "message" payload) "nope")
+           (let ((updates (ephinea-ta-client::submission-updates
+                           :rejected payload)))
+             (and (null (getf updates :server-id))
+                  (search "nope" (getf updates :reason))))))
+  ;; Linking a saved video to its (copy-replaced) queue entry.
+  (with-test-store ()
+    (let* ((run (make-test-run))
+           (entry (enqueue-run! run)))
+      (ephinea-ta-client::update-run! entry :status :submitted :server-id 7)
+      (let ((linked (ephinea-ta-client::link-video-file! run "C:/v/run.mp4")))
+        (check "link-video-file! matches by natural key after updates"
+               (and linked (search "run.mp4" (getf linked :video-path))))
+        (check "linked entry still carries its server id"
+               (eql 7 (getf linked :server-id))))
+      (check "link-video-file! returns NIL for unknown runs"
+             (null (ephinea-ta-client::link-video-file!
+                    (make-test-run :slug "ep1-other") "C:/v/x.mp4")))))
+  ;; Active entries survive trimming and restarts; attached ones do not.
+  (let* ((unattached (list :status :submitted :server-id 1 :video-path "v.mp4"))
+         (attached (list :status :submitted :server-id 2 :video-path "w.mp4"
+                         :video-attached t))
+         ;; Newest first; the attached entry is the oldest of 61 finished.
+         (runs (cons unattached
+                     (append (loop :for i :below 60
+                                   :collect (list :status :submitted :n i))
+                             (list attached))))
+         (trimmed (ephinea-ta-client::trim-finished-runs runs 50)))
+    (check "unattached video survives the finished-run cap"
+           (member unattached trimmed))
+    (check "attached video counts as finished and trims away"
+           (not (member attached trimmed))))
+  (check "attached entries are not active"
+         (not (ephinea-ta-client::entry-active-p
+               (list :status :submitted :server-id 2 :video-path "w.mp4"
+                     :video-attached t))))
+  (check "rejected runs without a server id are not kept for video"
+         (not (ephinea-ta-client::entry-active-p
+               (list :status :rejected :video-path "v.mp4"))))
+  (with-test-store ((list :status :submitted :server-id 1 :video-path "v.mp4"
+                          :telemetry '(:frames ()))
+                    (list :status :queued :telemetry '(:frames ())))
+    (ephinea-ta-client::save-queue!)
+    (let ((saved (ephinea-ta-client::read-sexp-file
+                  ephinea-ta-client::*queue-path*)))
+      (check "queue file keeps both active entries" (= 2 (length saved)))
+      (check "persisted video entry drops its telemetry"
+             (null (getf (first saved) :telemetry)))
+      (check "persisted queued entry keeps its telemetry"
+             (getf (second saved) :telemetry))))
+  ;; Which run does a copied URL belong to?
+  (let ((a (list :quest-slug "a" :time-ms 1 :finished-at 1 :server-id 1))
+        (b (list :quest-slug "b" :time-ms 2 :finished-at 2 :server-id 2)))
+    (check "no candidates -> NIL"
+           (null (ephinea-ta-client::resolve-video-target '() nil)))
+    (check "a single candidate needs no preference"
+           (eq a (ephinea-ta-client::resolve-video-target (list a) b)))
+    (check "the preferred run wins among several"
+           (eq b (ephinea-ta-client::resolve-video-target
+                  (list a b) (copy-list b))))
+    (check "several candidates without a preference -> :choose"
+           (eq :choose (ephinea-ta-client::resolve-video-target (list a b) nil)))
+    (check "a stale preference falls back to :choose"
+           (eq :choose (ephinea-ta-client::resolve-video-target
+                        (list a b)
+                        (list :quest-slug "gone" :time-ms 9 :finished-at 9)))))
+  (with-test-store ((list :status :submitted :server-id 1)
+                    (list :status :queued)
+                    (list :status :submitted :server-id 3 :video-attached t))
+    (check "video candidates need a server id and no attached video"
+           (equal '(1)
+                  (mapcar (lambda (entry) (getf entry :server-id))
+                          (ephinea-ta-client::video-candidates)))))
+  ;; Labels for the new Video column and statuses.
+  (check "video label: saved recording"
+         (equal "saved" (ephinea-ta-client::run-video-label
+                         (list :video-path "v.mp4"))))
+  (check "video label: attached"
+         (equal "attached" (ephinea-ta-client::run-video-label
+                            (list :video-path "v.mp4" :video-attached t))))
+  (check "video label: no recording"
+         (equal "" (ephinea-ta-client::run-video-label (list :status :queued))))
+  (check "status label: saved video points at the Upload button"
+         (search "Upload" (ephinea-ta-client::run-status-label
+                           (list :status :submitted :video-path "v.mp4"))))
+  (check "status label: attached video says awaiting review"
+         (search "awaiting review"
+                 (ephinea-ta-client::run-status-label
+                  (list :status :submitted :video-attached t))))
+  ;; Clipboard URL recognition.
+  (check "watch URLs are recognized"
+         (ephinea-ta-client::youtube-video-url
+          "https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+  (check "watch URLs with extra query params are recognized"
+         (ephinea-ta-client::youtube-video-url
+          "https://www.youtube.com/watch?app=desktop&v=dQw4w9WgXcQ&t=10s"))
+  (check "youtu.be share URLs are recognized"
+         (ephinea-ta-client::youtube-video-url
+          "https://youtu.be/dQw4w9WgXcQ?si=abc"))
+  (check "shorts and live URLs are recognized"
+         (and (ephinea-ta-client::youtube-video-url
+               "https://www.youtube.com/shorts/dQw4w9WgXcQ")
+              (ephinea-ta-client::youtube-video-url
+               "https://m.youtube.com/live/dQw4w9WgXcQ")))
+  (check "surrounding whitespace is trimmed"
+         (equal "https://youtu.be/dQw4w9WgXcQ"
+                (ephinea-ta-client::youtube-video-url
+                 " https://youtu.be/dQw4w9WgXcQ
+")))
+  (check "non-video YouTube pages are not recognized"
+         (notany #'ephinea-ta-client::youtube-video-url
+                 (list "https://www.youtube.com/"
+                       "https://www.youtube.com/@somechannel"
+                       "https://www.youtube.com/playlist?list=PLx"
+                       "https://www.youtube.com/watch?v=tooshort"
+                       "https://www.youtube.com/watch?v=muchtoolongid")))
+  (check "non-YouTube text is not recognized"
+         (notany #'ephinea-ta-client::youtube-video-url
+                 (list "https://example.com/watch?v=dQw4w9WgXcQ"
+                       "https://twitch.tv/videos/123456"
+                       "watch?v=dQw4w9WgXcQ"
+                       "just some words"
+                       nil
+                       ""))))
+
+;;; ------------------------------------------------------------------
 ;;; UX helpers: status labels, list trimming, URL and error text
 ;;; ------------------------------------------------------------------
 
@@ -972,6 +1175,7 @@ over the defaults. Restores the global config afterwards (it is bound)."
   (run-gdv-segment-test)
   (run-trigger-log-tests)
   (run-recorder-tests)
+  (run-video-flow-tests)
   (run-ux-helper-tests)
   (format t "~&=== client tests: ~d failure~:p ===~%" *failures*)
   *failures*)
