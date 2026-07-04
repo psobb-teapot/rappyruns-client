@@ -160,6 +160,81 @@ REGISTER-VALUES an alist of (register-id . value)."
     (check "floor switch clear" (not (snapshot-floor-switch-set-p snapshot 4 99)))))
 
 ;;; ------------------------------------------------------------------
+;;; Inventory reading
+;;; ------------------------------------------------------------------
+
+(defun make-item-block (addr &key (owner 0) (type 0) (group 0) (index 0)
+                                  equipped (id-high 0) (id-low 0) tool-count)
+  "Item struct bytes at ADDR; ADDR feeds the tool-count XOR obfuscation."
+  (let ((bytes (make-array #x200 :element-type '(unsigned-byte 8)
+                                 :initial-element 0)))
+    (put-u16 bytes #xD8 id-low)
+    (put-u16 bytes #xDA id-high)
+    (setf (aref bytes #xE4) owner
+          (aref bytes #xF2) type
+          (aref bytes #xF3) group
+          (aref bytes #xF4) index)
+    (when equipped (setf (aref bytes #x190) 1))
+    (when tool-count
+      (setf (aref bytes #x104)
+            (logxor tool-count (ldb (byte 8 0) (+ addr #x104)))))
+    (cons addr bytes)))
+
+(defun run-inventory-tests ()
+  (format t "~&--- inventory ---~%")
+  ;; The item array covers the whole game world, so a multiplayer count
+  ;; runs well past one 30-slot inventory. Regression: a 60-item cap
+  ;; made READ-INVENTORY bail out in multiplayer, losing all weapon and
+  ;; equipment telemetry (runs showed only "Bare Handed 0:00").
+  (let* ((array-base #x00610000)
+         (item-count 70)
+         (globals (make-array 8 :element-type '(unsigned-byte 8)
+                                :initial-element 0))
+         (pointers (make-array (* 4 item-count)
+                               :element-type '(unsigned-byte 8)
+                               :initial-element 0))
+         (my-weapon #x00600000)
+         (my-mate #x00600400)
+         (their-weapon #x00600800)
+         (their-mate #x00600C00))
+    (put-u32 globals 0 array-base)      ; +item-array-pointer+
+    (put-u16 globals 4 item-count)      ; +item-array-count+
+    (put-u32 pointers (* 4 0) my-weapon)
+    (put-u32 pointers (* 4 63) their-weapon)
+    (put-u32 pointers (* 4 65) my-mate)
+    (put-u32 pointers (* 4 69) their-mate)
+    (let* ((reader (make-mock-reader
+                    (cons #x00A8D81C globals)
+                    (cons array-base pointers)
+                    (make-item-block my-weapon :owner 0 :type 0 :group 2
+                                               :index 5 :equipped t
+                                               :id-high #x0001 :id-low #x0203)
+                    (make-item-block my-mate :owner 0 :type 3 :group 0
+                                             :index 0 :tool-count 5)
+                    (make-item-block their-weapon :owner 1 :type 0 :group 2
+                                                  :index 5 :equipped t)
+                    (make-item-block their-mate :owner 1 :type 3 :group 0
+                                                :index 0 :tool-count 99)))
+           (inventory (read-inventory reader 0)))
+      (check "inventory read past 60 items" (not (null inventory)))
+      (check "only my equipment listed"
+             (= 1 (length (getf inventory :equipment))))
+      (check "equipped weapon resolved"
+             (equal "00010203" (getf (getf inventory :weapon) :id)))
+      (check "equipped weapon typed"
+             (eq :weapon (getf (getf inventory :weapon) :type)))
+      (check "my consumables counted"
+             (= 5 (getf (getf inventory :consumables) :monomate)))))
+  ;; Garbage counts still bail out instead of reading megabytes.
+  (let ((globals (make-array 8 :element-type '(unsigned-byte 8)
+                               :initial-element 0)))
+    (put-u32 globals 0 #x00610000)
+    (put-u16 globals 4 #xFFFF)
+    (check "garbage item count -> NIL"
+           (null (read-inventory (make-mock-reader (cons #x00A8D81C globals))
+                                 0)))))
+
+;;; ------------------------------------------------------------------
 ;;; Extended player stats (psostats parity fields)
 ;;; ------------------------------------------------------------------
 
@@ -1166,6 +1241,7 @@ store functions that persist never touch the real %APPDATA% queue."
   (setf *failures* 0)
   (load-quest-defs)
   (run-memory-tests)
+  (run-inventory-tests)
   (run-extended-player-tests)
   (run-telemetry-tests)
   (run-payload-tests)
