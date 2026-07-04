@@ -40,10 +40,10 @@ reaching ShellExecute."
 (defun connection-error-hint (code)
   "Plain-language hint for the common WinHTTP error codes."
   (case code
-    (12007 "server address not found - check the Server URL")
-    ((12029 12030) "could not connect - server down, or no internet?")
-    (12002 "connection timed out")
-    ((12157 12175) "secure connection (https) failed")
+    (12007 (tr :hint-address))
+    ((12029 12030) (tr :hint-connect))
+    (12002 (tr :hint-timeout))
+    ((12157 12175) (tr :hint-tls))
     (t nil)))
 
 (defun server-status-error-text (condition)
@@ -52,14 +52,13 @@ humans instead of echoing the raw condition."
   (if (typep condition 'api-error)
       (let* ((message (api-error-message condition))
              (hint (connection-error-hint (windows-error-code message))))
-        (cond (hint (format nil "Server: ~a" hint))
+        (cond (hint (tr :server-error-prefix hint))
               ((search "Bad URL" message)
-               "Server: the Server URL looks wrong - fix it and press Save settings")
+               (tr :server-bad-url))
               ((search "-> " message)
-               (format nil "Server: unexpected response (~a) - is the URL right?"
-                       message))
-              (t (format nil "Server: ~a" message))))
-      (format nil "Server: check failed (~a)" condition)))
+               (tr :server-unexpected message))
+              (t (tr :server-error-prefix message))))
+      (tr :server-check-failed condition)))
 
 (defun token-status-error-text (condition)
   "The token-status line when /api/me could not be reached at all (as
@@ -67,8 +66,8 @@ opposed to a definite 401, which the caller words itself)."
   (if (typep condition 'api-error)
       (let* ((message (api-error-message condition))
              (hint (connection-error-hint (windows-error-code message))))
-        (format nil "Token: could not verify (~a)" (or hint message)))
-      (format nil "Token: could not verify (~a)" condition)))
+        (tr :token-could-not-verify (or hint message)))
+      (tr :token-could-not-verify condition)))
 
 (defun parse-url (url)
   "Returns (values scheme host port path)."

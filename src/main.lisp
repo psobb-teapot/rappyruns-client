@@ -76,7 +76,10 @@ nothing changed: just a sequence-number read, no clipboard open."
           (offer-clipboard-url interface url))))))
 
 #+lispworks
-(defun poll-loop (interface)
+(defun poll-loop ()
+  ;; INTERFACE is re-read from *INTERFACE* every iteration: the language
+  ;; toggle replaces the window (REBUILD-INTERFACE), and updates must
+  ;; land on the current one.
   (let ((reader nil)
         (detector (make-detector))
         (recorder (make-recorder
@@ -85,12 +88,13 @@ nothing changed: just a sequence-number read, no clipboard open."
                    ;; Upload button and clipboard attach can find it.
                    :on-keep (lambda (path run)
                               (link-video-file! run path)
-                              (refresh-runs-list interface))))
+                              (refresh-runs-list *interface*))))
         (previous-snapshot nil)
         (last-gui-update 0))
     (ignore-errors (cleanup-stale-recordings recorder))
     (unwind-protect
-         (loop :until *stop-requested*
+         (loop :for interface := *interface*
+               :until *stop-requested*
                :do (cond
                      ;; Not attached: look for the game once per second.
                      ((null reader)
@@ -172,16 +176,17 @@ nothing changed: just a sequence-number read, no clipboard open."
 (defun main ()
   (setf *stop-requested* nil)
   (load-config!)
+  (setf *language* (valid-language (config-value :language)))
   (load-queue!)
   (load-quest-defs)
   (let ((interface (make-instance 'client-window)))
+    (setf *interface* interface)
     (capi:display interface)
     (refresh-runs-list interface)
     (check-server interface)
     (check-token interface)
     (prompt-for-token-setup interface)
-    (mp:process-run-function "eta-client-poll" '()
-                             (lambda () (poll-loop interface)))
+    (mp:process-run-function "eta-client-poll" '() 'poll-loop)
     interface))
 
 #-lispworks

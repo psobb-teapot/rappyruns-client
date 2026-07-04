@@ -5,13 +5,15 @@
 (defparameter *default-config*
   (list :server-url "https://ephinea-ta-production.up.railway.app"
         :api-token ""
+        :language :en      ; UI language, :en or :ja (i18n.lisp)
         :auto-submit t
         :completion-sound t
         :trigger-log nil
         :record-enabled t
         :record-audio t     ; game-only capture (process loopback; see audio-win32)
         :ffmpeg-path ""     ; blank = bundled copy next to the exe, or PATH
-        :record-dir ""))    ; blank = <user home>/Videos/EphineaTA/
+        :record-dir ""      ; blank = <user home>/Videos/EphineaTA/
+        :debug nil))        ; developer knobs in the GUI (see DEBUG-MODE-P)
 
 (defvar *config* nil)
 
@@ -53,6 +55,17 @@
 
 (defun save-config! ()
   (write-sexp-file (config-path) *config*))
+
+(defun debug-mode-p ()
+  "Debug mode shows developer settings (currently the Server URL field,
+which normal users must never change). Enabled by :debug t in
+config.sexp or by launching the client with --debug."
+  (or (config-value :debug)
+      (and (member "--debug"
+                   #+lispworks sys:*line-arguments-list*
+                   #-lispworks (uiop:command-line-arguments)
+                   :test #'string-equal)
+           t)))
 
 (defun config-value (key)
   (unless *config* (load-config!))

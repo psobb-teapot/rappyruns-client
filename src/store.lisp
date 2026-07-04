@@ -50,21 +50,21 @@ LIMIT finished ones, preserving order."
 
 (defun run-status-label (entry)
   (if (getf entry :video-attached)
-      "video attached - awaiting review"
+      (tr :status-video-attached)
       (case (getf entry :status)
-        (:queued "queued")
+        (:queued (tr :status-queued))
         (:submitted (if (getf entry :video-path)
-                        "draft - use Upload to YouTube"
-                        "draft - double-click to add video"))
-        (:duplicate "duplicate (already on server)")
-        (:rejected (format nil "rejected: ~a" (or (getf entry :reason) "?")))
-        (:failed (format nil "failed: ~a" (or (getf entry :reason) "?")))
+                        (tr :status-draft-upload)
+                        (tr :status-draft-add)))
+        (:duplicate (tr :status-duplicate))
+        (:rejected (tr :status-rejected (or (getf entry :reason) "?")))
+        (:failed (tr :status-failed (or (getf entry :reason) "?")))
         (t "?"))))
 
 (defun run-video-label (entry)
   "The Video column: the recording's journey from disk to the site."
-  (cond ((getf entry :video-attached) "attached")
-        ((getf entry :video-path) "saved")
+  (cond ((getf entry :video-attached) (tr :video-attached))
+        ((getf entry :video-path) (tr :video-saved))
         (t "")))
 
 (defvar *queue-path* nil

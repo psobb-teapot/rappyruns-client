@@ -1206,6 +1206,13 @@ store functions that persist never touch the real %APPDATA% queue."
     (check "trim keeps the newest finished entries in order"
            (equal (subseq (mapcar (lambda (e) (getf e :n)) runs) 0 10)
                   (subseq (mapcar (lambda (e) (getf e :n)) trimmed) 0 10))))
+  ;; Debug mode gates developer-only settings (the Server URL field).
+  (check "debug mode is off by default"
+         (with-recording-config ()
+           (not (ephinea-ta-client::debug-mode-p))))
+  (check "debug mode can be enabled in config"
+         (with-recording-config (:debug t)
+           (ephinea-ta-client::debug-mode-p)))
   ;; Browser URL guard.
   (check "http and https URLs are openable"
          (and (ephinea-ta-client::valid-http-url-p "http://x/y")
@@ -1227,7 +1234,7 @@ store functions that persist never touch the real %APPDATA% queue."
            (search "could not connect"
                    (text-for "WinHttpConnect failed (Windows error 12029)")))
     (check "bad URL points at the settings fix"
-           (search "Save settings" (text-for "Bad URL: nonsense")))
+           (search "Save & verify" (text-for "Bad URL: nonsense")))
     (check "unexpected HTTP status mentions the response"
            (search "unexpected response"
                    (text-for "GET /api/quests -> 500"))))
@@ -1254,9 +1261,47 @@ store functions that persist never touch the real %APPDATA% queue."
                   (make-condition 'ephinea-ta-client::api-error
                                   :message "WinHttpConnect failed (Windows error 12029)")))))
 
+;;; ------------------------------------------------------------------
+;;; i18n: the UI string table and TR
+;;; ------------------------------------------------------------------
+
+(defun run-i18n-tests ()
+  (format t "~&--- i18n ---~%")
+  (check "every key has an English and a Japanese string"
+         (loop :for (key entry) :on ephinea-ta-client::*strings* :by #'cddr
+               :always (and (keywordp key)
+                            (= 2 (length entry))
+                            (stringp (first entry))
+                            (stringp (second entry)))))
+  (check "default language is English"
+         (string= "Settings" (ephinea-ta-client::tr :tab-settings)))
+  (check "tr switches to Japanese"
+         (let ((ephinea-ta-client::*language* :ja))
+           (string= "設定" (ephinea-ta-client::tr :tab-settings))))
+  (check "tr formats arguments"
+         (search "teapot" (ephinea-ta-client::tr :token-ok "teapot")))
+  (check "labels follow the language too"
+         (let ((ephinea-ta-client::*language* :ja))
+           (string= "保存済み" (ephinea-ta-client::run-video-label
+                                (list :video-path "v.mp4")))))
+  (check "an invalid configured language falls back to English"
+         (and (eq :en (ephinea-ta-client::valid-language "nonsense"))
+              (eq :ja (ephinea-ta-client::valid-language :ja))))
+  ;; Directive mismatches between the two columns would error at
+  ;; runtime in one language only; format every entry in both.
+  (check "every entry formats cleanly in both languages"
+         (loop :for language :in ephinea-ta-client::*languages*
+               :always (let ((ephinea-ta-client::*language* language))
+                         (loop :for (key entry) :on ephinea-ta-client::*strings*
+                               :by #'cddr
+                               :always (stringp
+                                        (ignore-errors
+                                          (ephinea-ta-client::tr key 1 2 3))))))))
+
 (defun run-client-tests ()
   (setf *failures* 0)
   (load-quest-defs)
+  (run-i18n-tests)
   (run-memory-tests)
   (run-inventory-tests)
   (run-extended-player-tests)
