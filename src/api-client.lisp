@@ -61,6 +61,15 @@ humans instead of echoing the raw condition."
               (t (format nil "Server: ~a" message))))
       (format nil "Server: check failed (~a)" condition)))
 
+(defun token-status-error-text (condition)
+  "The token-status line when /api/me could not be reached at all (as
+opposed to a definite 401, which the caller words itself)."
+  (if (typep condition 'api-error)
+      (let* ((message (api-error-message condition))
+             (hint (connection-error-hint (windows-error-code message))))
+        (format nil "Token: could not verify (~a)" (or hint message)))
+      (format nil "Token: could not verify (~a)" condition)))
+
 (defun parse-url (url)
   "Returns (values scheme host port path)."
   (let* ((scheme-end (or (search "://" url)
@@ -191,6 +200,24 @@ server, used to sanity-check local trigger definitions."
     (unless (eql status 200)
       (error 'api-error :message (format nil "GET /api/quests -> ~a" status)))
     (jzon:parse body)))
+
+(defun normalize-token (string)
+  "A pasted token, trimmed of the whitespace (including newlines) that
+tends to come along when copying from a browser. NIL becomes \"\"."
+  (string-trim '(#\Space #\Tab #\Return #\Linefeed) (or string "")))
+
+(defun fetch-me (&key (server-url (config-value :server-url))
+                      (token (config-value :api-token)))
+  "Verify TOKEN against GET /api/me.
+Returns (values :ok user-hash) on 200 and (values :unauthorized nil) on
+401, so a bad token is distinguishable from the API-ERROR signalled on
+transport failures and unexpected statuses."
+  (multiple-value-bind (status body)
+      (http-request "GET" (api-url server-url "/api/me") :token token)
+    (case status
+      (200 (values :ok (jzon:parse body)))
+      (401 (values :unauthorized nil))
+      (t (error 'api-error :message (format nil "GET /api/me -> ~a" status))))))
 
 (defun alist-json (alist &key (key #'string-downcase))
   "Alist -> JSON object hash table, dropping zero counts."

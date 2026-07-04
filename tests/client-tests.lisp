@@ -1235,7 +1235,24 @@ store functions that persist never touch the real %APPDATA% queue."
          (search "check failed"
                  (ephinea-ta-client::server-status-error-text
                   (make-condition 'simple-error
-                                  :format-control "boom")))))
+                                  :format-control "boom"))))
+  ;; Token paste normalization (browser copies drag whitespace along).
+  (check "normalize-token trims spaces and CRLF"
+         (string= "eta_abc123"
+                  (normalize-token (format nil "  eta_abc123~c~c" #\Return #\Linefeed))))
+  (check "normalize-token trims tabs"
+         (string= "eta_abc123"
+                  (normalize-token (format nil "~ceta_abc123~c" #\Tab #\Tab))))
+  (check "normalize-token maps nil to empty"
+         (string= "" (normalize-token nil)))
+  (check "normalize-token keeps empty empty"
+         (string= "" (normalize-token "   ")))
+  ;; Token check errors read like sentences too.
+  (check "token transport failure reads like a sentence"
+         (search "could not connect"
+                 (ephinea-ta-client::token-status-error-text
+                  (make-condition 'ephinea-ta-client::api-error
+                                  :message "WinHttpConnect failed (Windows error 12029)")))))
 
 (defun run-client-tests ()
   (setf *failures* 0)

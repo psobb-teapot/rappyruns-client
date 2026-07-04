@@ -32,8 +32,12 @@ on the site - My Runs → Drafts - still works as a fallback.)
 
 First-time setup in the GUI:
 
-1. Create an API token on the site (`/my/tokens`, requires Discord login).
-2. Paste the server URL and token into the settings row, "Save settings".
+1. On first launch (until a token is set) the client offers to open the
+   token page (`/my/tokens`, requires Discord login) and asks for the
+   token right there; paste it and it is saved and verified immediately
+   (`Token: OK (name)` in the status row).
+2. The token can also be pasted later in Settings ("Save settings"
+   verifies it the same way).
 3. Leave "Submit automatically" checked; finished quests appear in the
    list and are uploaded as drafts.
 

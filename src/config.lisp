@@ -7,7 +7,6 @@
         :api-token ""
         :auto-submit t
         :completion-sound t
-        :token-prompt-shown nil ; the one-time "no API token yet" dialog
         :trigger-log nil
         :record-enabled t
         :record-audio t     ; game-only capture (process loopback; see audio-win32)
@@ -47,6 +46,9 @@
 (defun load-config! ()
   (setf *config* (or (read-sexp-file (config-path))
                      (copy-list *default-config*)))
+  ;; Dropped key: the token nudge now repeats until a token is set, so
+  ;; the old one-time flag is scrubbed from older config files.
+  (remf *config* :token-prompt-shown)
   *config*)
 
 (defun save-config! ()

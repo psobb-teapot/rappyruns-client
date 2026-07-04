@@ -39,6 +39,6 @@
            ;; trigger discovery
            #:log-trigger-changes #:start-trigger-log #:close-trigger-log
            ;; api
-           #:fetch-quests #:submit-run
+           #:fetch-quests #:fetch-me #:normalize-token #:submit-run
            ;; store
            #:enqueue-run! #:submit-queued! #:queued-runs))

@@ -31,6 +31,10 @@
                   :text "Server: not checked"
                   :font *ui-font*
                   :accessor server-status-pane)
+   (token-status capi:title-pane
+                 :text "Token: not checked"
+                 :font *ui-font*
+                 :accessor token-status-pane)
    (quest-status capi:title-pane
                  :text "No active quest"
                  :font *ui-font*
@@ -141,7 +145,7 @@
   ;; Two tabs mirror how the app is used: Settings once up front, then
   ;; the Runs tab for the daily play -> check video -> submit flow.
   (:layouts
-   (status-row capi:row-layout '(game-status server-status))
+   (status-row capi:row-layout '(game-status server-status token-status))
    ;; Flow order: upload the video (the copied URL is then attached
    ;; right here), with the folder / site / resubmit as fallbacks.
    (actions-row capi:row-layout
@@ -175,7 +179,7 @@
         (string-right-trim "/ " (capi:text-input-pane-text
                                  (server-url-input interface)))
         (config-value :api-token)
-        (string-trim " " (capi:text-input-pane-text
+        (normalize-token (capi:text-input-pane-text
                           (api-token-input interface)))
         (config-value :auto-submit)
         (capi:button-selected (auto-submit-check interface))
@@ -188,7 +192,8 @@
         (config-value :record-audio)
         (capi:button-selected (record-audio-check interface)))
   (save-config!)
-  (check-server interface))
+  (check-server interface)
+  (check-token interface :notify t))
 
 (defun record-dir-label ()
   (format nil "Recordings folder: ~a" (namestring (resolve-record-dir))))
@@ -319,21 +324,45 @@ button works before the first recording exists)."
     (%shell-execute fli:*null-pointer* "open" (namestring dir)
                     fli:*null-pointer* fli:*null-pointer* +sw-shownormal+)))
 
-(defun maybe-prompt-for-token (interface)
-  "One-time nudge when no API token is configured: without it runs are
-timed but can never be uploaded. Never shown again once answered."
-  (when (and (string= (config-value :api-token) "")
-             (not (config-value :token-prompt-shown)))
-    (setf (config-value :token-prompt-shown) t)
-    (save-config!)
+(defun prompt-for-token-setup (interface)
+  "First-run setup: while no API token is configured, offer to open the
+token page, take the pasted token right here, save it and verify it
+against /api/me. Shown again on every launch until a token is set;
+Cancel (or an empty paste) skips it for this launch."
+  (when (string= (normalize-token (config-value :api-token)) "")
     (capi:execute-with-interface
      interface
      (lambda ()
        (let ((url (api-url (config-value :server-url) "/my/tokens")))
          (when (capi:confirm-yes-or-no
-                "No API token is set yet.~%~%Runs are still timed and listed below, but they can only be uploaded to the site once a token is pasted into \"API token\" (then press Save settings).~%~%Open the token page in your browser now?~%(~a - requires Discord login)"
+                "No API token is set yet.~%~%Runs are still timed and listed below, but they can only be uploaded to the site with a token.~%~%Open the token page in your browser now?~%(~a - requires Discord login)"
                 url)
-           (open-in-browser url)))))))
+           (open-in-browser url))
+         (labels ((ask ()
+                    (multiple-value-bind (text okp)
+                        (capi:prompt-for-string
+                         "Paste your API token here (Cancel to skip - you can also set it later in Settings):")
+                      (let ((token (and okp (normalize-token text))))
+                        (if (or (null token) (string= token ""))
+                            (set-pane-text interface #'token-status-pane
+                                           "Token: not set")
+                            (progn
+                              (setf (config-value :api-token) token)
+                              (save-config!)
+                              (setf (capi:text-input-pane-text
+                                     (api-token-input interface))
+                                    token)
+                              (check-token
+                               interface
+                               :on-invalid
+                               (lambda ()
+                                 (capi:execute-with-interface
+                                  interface
+                                  (lambda ()
+                                    (when (capi:confirm-yes-or-no
+                                           "The server rejected that token (unauthorized).~%~%Paste it again?")
+                                      (ask))))))))))))
+           (ask)))))))
 
 (defvar *retry-requested* nil)
 
@@ -407,6 +436,47 @@ cross-check the builtin trigger slugs against the server."
        (error (condition)
          (set-pane-text interface #'server-status-pane
                         (server-status-error-text condition) :red))))))
+
+(defun check-token (interface &key on-invalid notify)
+  "Verify the configured API token against /api/me on a background
+thread and reflect the outcome in the token-status pane. ON-INVALID
+runs only on a definite 401 - not on transport errors, where the token
+itself may well be fine. NOTIFY also pops the outcome as a dialog, for
+the Save settings flow."
+  (let ((token (normalize-token (config-value :api-token))))
+    (if (string= token "")
+        (set-pane-text interface #'token-status-pane "Token: not set")
+        (progn
+          (set-pane-text interface #'token-status-pane "Token: checking...")
+          (mp:process-run-function
+           "eta-client-token-check" '()
+           (lambda ()
+             (handler-case
+                 (multiple-value-bind (outcome user) (fetch-me :token token)
+                   (ecase outcome
+                     (:ok
+                      (let ((name (gethash "username" user)))
+                        (set-pane-text interface #'token-status-pane
+                                       (format nil "Token: OK (~a)" name))
+                        (when notify
+                          (capi:execute-with-interface
+                           interface
+                           (lambda ()
+                             (capi:display-message
+                              "Token OK - authenticated as ~a." name))))))
+                     (:unauthorized
+                      (set-pane-text interface #'token-status-pane
+                                     "Token: invalid or revoked" :red)
+                      (when notify
+                        (capi:execute-with-interface
+                         interface
+                         (lambda ()
+                           (capi:display-message
+                            "The server rejected the API token (unauthorized).~%~%Paste a fresh one from the site's token page."))))
+                      (when on-invalid (funcall on-invalid)))))
+               (error (condition)
+                 (set-pane-text interface #'token-status-pane
+                                (token-status-error-text condition) :red)))))))))
 
 (defvar *last-window-title* nil
   "Cache so the 4x-per-second GUI tick only calls SetWindowText on change.")
