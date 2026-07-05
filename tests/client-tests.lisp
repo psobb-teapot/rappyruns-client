@@ -1069,10 +1069,11 @@ over the defaults. Restores the global config afterwards (it is bound)."
                    (copy-list ephinea-ta-client::*default-config*))))
      ,@body))
 
-(defun make-test-run (&key (slug "ep1-test-quest") (time-ms 599123))
-  (list :quest-slug slug
-        :time-ms time-ms
-        :finished-at (encode-universal-time 0 30 21 4 7 2026)))
+(defun make-test-run (&key (slug "ep1-test-quest") (time-ms 599123) aborted)
+  (append (list :quest-slug slug
+                :time-ms time-ms
+                :finished-at (encode-universal-time 0 30 21 4 7 2026))
+          (when aborted (list :aborted t))))
 
 (defun make-test-recorder ()
   (let ((backend (make-instance 'mock-backend)))
@@ -1158,6 +1159,24 @@ over the defaults. Restores the global config afterwards (it is bound)."
       (recorder-step rec :idle '() "Ephinea PSOBB")
       (check "full clear (longest run) names the video"
              (search "ep1-full 9'59.123"
+                     (first (last (third (first (events-of backend :remux))))))))
+    ;; Completed segment inside an aborted quest (a GDV reset): the
+    ;; segment is the only run that can take the video on the site, so
+    ;; it must outrank the slightly longer aborted stay.
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (recorder-step rec :in-quest
+                     (list (make-test-run :slug "ep2-gdv-reset"
+                                          :time-ms 145160))
+                     "Ephinea PSOBB")
+      (recorder-step rec :idle
+                     (list (make-test-run :slug "ep2-gdv" :time-ms 148594
+                                          :aborted t))
+                     "Ephinea PSOBB")
+      (setf (mock-alive backend) nil)
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "a completed segment outranks a longer aborted run"
+             (search "ep2-gdv-reset 2'25.160"
                      (first (last (third (first (events-of backend :remux))))))))
     ;; ffmpeg fails to start: error surfaced, retried on the NEXT quest.
     (multiple-value-bind (rec backend) (make-test-recorder)
@@ -1290,6 +1309,19 @@ over the defaults. Restores the global config afterwards (it is bound)."
                   (getf (best-session-run
                          (list (list :quest-slug "short" :time-ms 10)
                                (list :quest-slug "long" :time-ms 20)))
+                        :quest-slug)))
+  (check "best-session-run prefers a completed run over a longer aborted one"
+         (string= "seg"
+                  (getf (best-session-run
+                         (list (list :quest-slug "seg" :time-ms 10)
+                               (list :quest-slug "abort" :time-ms 20
+                                     :aborted t)))
+                        :quest-slug)))
+  (check "best-session-run falls back to the longest aborted run"
+         (string= "ab2"
+                  (getf (best-session-run
+                         (list (list :quest-slug "ab1" :time-ms 10 :aborted t)
+                               (list :quest-slug "ab2" :time-ms 20 :aborted t)))
                         :quest-slug)))
   (let ((args (build-ffmpeg-args :window-title "T" :output-path "out.mp4")))
     (check "ffmpeg args use fragmented mp4"

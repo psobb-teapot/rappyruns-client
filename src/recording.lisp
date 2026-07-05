@@ -157,10 +157,15 @@ recognizes when browsing the folder), not the site slug."
                  minutes seconds msec year month day hour min))))))
 
 (defun best-session-run (runs)
-  "The run that names the video: longest time-ms, i.e. the full clear
-when segments completed alongside it."
-  (first (sort (copy-list runs) #'>
-               :key (lambda (run) (getf run :time-ms 0)))))
+  "The run that names the video and receives it on the site: the
+longest COMPLETED run, i.e. the full clear when segments completed
+alongside it. Aborted runs are considered only when nothing completed:
+their entries never upload the recording, so a completed segment must
+win over the (slightly longer) aborted quest stay it was cut from -
+e.g. a finished gdv-reset segment inside an abandoned GDV."
+  (let ((completed (remove-if (lambda (run) (getf run :aborted)) runs)))
+    (first (sort (copy-list (or completed runs)) #'>
+                 :key (lambda (run) (getf run :time-ms 0))))))
 
 (defun build-ffmpeg-args (&key window-title output-path audio-pipe
                                (framerate +record-framerate+))
