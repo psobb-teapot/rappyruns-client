@@ -212,6 +212,25 @@ the GUI to validate the recording checkbox; -version exits on its own."
 
 (defclass win32-ffmpeg-backend () ())
 
+(defun recording-log (fmt &rest args)
+  "Append a timestamped line to %TEMP%\\ephinea-ta-recording.log. The
+GUI can only show a one-line error label; capture-start failures in
+the field (e.g. \"pointer out of memory bounds\" right after a game
+crash, 2026-07-06) need the full story to be diagnosable after the
+fact. Never signals."
+  (ignore-errors
+    (with-open-file (s (merge-pathnames "ephinea-ta-recording.log"
+                                        (uiop:temporary-directory))
+                       :direction :output :if-exists :append
+                       :if-does-not-exist :create
+                       :external-format :utf-8)
+      (multiple-value-bind (sec min hour day month)
+          (decode-universal-time (get-universal-time))
+        (format s "~2,'0d-~2,'0d ~2,'0d:~2,'0d:~2,'0d "
+                month day hour min sec))
+      (apply #'format s fmt args)
+      (terpri s))))
+
 (defmethod backend-start-capture ((backend win32-ffmpeg-backend)
                                   ffmpeg-path args output-path
                                   &key audio-pipe audio-pid)
@@ -219,11 +238,19 @@ the GUI to validate the recording checkbox; -version exits on its own."
       (progn
         (ensure-directories-exist output-path)
         ;; The pipe server end must exist before ffmpeg opens its
-        ;; inputs. If the session cannot start at all, drop the audio
-        ;; arguments and record video-only rather than fail the run;
-        ;; otherwise point ffmpeg at the session's actual capture format.
+        ;; inputs. Any audio-side failure - returning NIL or signaling
+        ;; (a COM/FLI error right after a game crash was seen in the
+        ;; field) - drops the audio arguments and records video-only
+        ;; rather than fail the capture; otherwise point ffmpeg at the
+        ;; session's actual capture format.
         (let ((audio (and audio-pipe
-                          (start-audio-session audio-pipe audio-pid))))
+                          (handler-case
+                              (start-audio-session audio-pipe audio-pid)
+                            (error (condition)
+                              (recording-log
+                               "audio session failed (video-only fallback), pid=~a: ~a"
+                               audio-pid condition)
+                              nil)))))
           (setf args
                 (if audio
                     (retarget-audio-args
@@ -235,11 +262,16 @@ the GUI to validate the recording checkbox; -version exits on its own."
           (handler-case
               (let ((capture (spawn-process ffmpeg-path args)))
                 (setf (ffmpeg-capture-audio capture) audio)
+                (recording-log "capture started: audio=~a ffmpeg=~a"
+                               (and audio (audio-session-scope audio))
+                               ffmpeg-path)
                 capture)
             (error (condition)
               (when audio (stop-audio-session audio))
               (error condition)))))
     (error (condition)
+      (recording-log "capture start FAILED: ~a~%  ffmpeg=~a output=~a pid=~a"
+                     condition ffmpeg-path output-path audio-pid)
       (values nil (format nil "~a" condition)))))
 
 (defmethod backend-capture-alive-p ((backend win32-ffmpeg-backend) capture)
@@ -251,6 +283,7 @@ the GUI to validate the recording checkbox; -version exits on its own."
   ;; harmless and keeps the capture token uniform.
   (handler-case (spawn-process ffmpeg-path args)
     (error (condition)
+      (recording-log "remux start FAILED: ~a" condition)
       (values nil (format nil "~a" condition)))))
 
 (defmethod backend-capture-succeeded-p ((backend win32-ffmpeg-backend) capture)
