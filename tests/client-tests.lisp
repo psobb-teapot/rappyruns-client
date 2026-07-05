@@ -1650,6 +1650,19 @@ store functions that persist never touch the real %APPDATA% queue."
          (not (update-available-p nil "v0.6.0")))
   (check "no update when the latest tag is malformed"
          (not (update-available-p "0.5.0" "release-2")))
+  ;; The pre-GUI startup pass: only :apply downloads before the main
+  ;; window shows; everything else starts the client normally.
+  (let ((release (parse-release-json *release-json-sample*)))
+    (check "startup decision applies a newer release"
+           (eq :apply (startup-update-decision release "0.5.0" t)))
+    (check "startup decision defers to the manual page when not writable"
+           (eq :not-writable (startup-update-decision release "0.5.0" nil)))
+    (check "startup decision is up-to-date on the same version"
+           (eq :up-to-date (startup-update-decision release "0.6.0" t)))
+    (check "startup decision never updates a dev build"
+           (eq :up-to-date (startup-update-decision release nil t))))
+  (check "startup decision reports a failed release check"
+         (eq :check-failed (startup-update-decision nil "0.5.0" t)))
   ;; Release JSON -> plist.
   (let ((release (parse-release-json *release-json-sample*)))
     (check "release json yields the tag"

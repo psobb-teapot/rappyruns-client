@@ -144,12 +144,15 @@ client's own MIT license.
 
 ## Auto-update
 
-The client updates itself from the releases repo. At startup (and via
-**Settings → Updates → Check for updates now**) it fetches
-`releases/latest` from the GitHub API, compares the tag against the
-version baked in at build time (`client/VERSION` → `*client-version*`),
-and, when a newer release exists, downloads and installs it without
-asking. The zip is verified (asset size + zip magic)
+The client updates itself from the releases repo. At startup - before
+the main window is created, so an outdated build never opens just to
+restart - and via **Settings → Updates → Check for updates now**, it
+fetches `releases/latest` from the GitHub API, compares the tag against
+the version baked in at build time (`client/VERSION` →
+`*client-version*`), and, when a newer release exists, downloads and
+installs it without asking. At startup only a small progress splash is
+shown while the zip downloads; the main window first appears already on
+the new build. The zip is verified (asset size + zip magic)
 in `%TEMP%`, then a PowerShell helper script takes over: it waits for
 the client to exit, unpacks to a staging folder, verifies the new exe,
 moves the old exe to `EphineaTAClient.exe.old` (restored automatically
@@ -159,10 +162,13 @@ the next startup.
 
 Notes:
 
-- An update is never applied while a run or recording is in flight;
-  it is applied automatically once the client is idle.
-- Startup checks fail silently (offline, rate limited, no releases);
-  the manual button reports every outcome.
+- A mid-session (manual) update is never applied while a run or
+  recording is in flight; it is applied automatically once the client
+  is idle.
+- A failed startup check (offline, rate limited, no releases) stays
+  silent and the client starts normally; a failed startup download is
+  reported once the main window is up. The manual button reports every
+  outcome.
 - Dev images (run from source) never self-update: `*client-version*`
   is NIL there.
 - Config keys: `:auto-update` (the Settings checkbox); `:update-repo`

@@ -2,7 +2,8 @@
 
 ;;; Self-update via the public releases repository on GitHub.
 ;;;
-;;; The flow (check-for-updates in gui.lisp drives it): fetch
+;;; The flow (gui.lisp drives it: STARTUP-AUTO-UPDATE before the main
+;;; window exists, CHECK-FOR-UPDATES behind the Settings button): fetch
 ;;; /releases/latest, compare tags against the baked-in *CLIENT-VERSION*
 ;;; (version.lisp), download the zip to %TEMP%, then hand over to a
 ;;; PowerShell helper script that waits for this process to exit, swaps
@@ -48,6 +49,17 @@ release published between check and download cannot mismatch them."
                                     :asset-size (and (integerp size)
                                                      (plusp size)
                                                      size))))))))))
+
+(defun startup-update-decision (release current-version writable-p)
+  "What the pre-GUI update pass (STARTUP-AUTO-UPDATE in gui.lisp) should
+do: :APPLY (download and hand over before any window shows), :UP-TO-DATE,
+:NOT-WRITABLE (the main window offers the manual download instead) or
+:CHECK-FAILED. Pure so the tests can pin the boundaries."
+  (cond ((null release) :check-failed)
+        ((not (update-available-p current-version (getf release :tag)))
+         :up-to-date)
+        ((not writable-p) :not-writable)
+        (t :apply)))
 
 (defun valid-update-zip-p (path expected-size)
   "Cheap corruption check on a downloaded zip: the byte size the API
@@ -156,6 +168,12 @@ applied then (poll-loop maintains this).")
 (defvar *update-ready-zip* nil
   "(zip-pathname . tag) of a verified download waiting for the client
 to go idle before the automatic restart.")
+
+(defvar *startup-update-note* nil
+  "Outcome of the pre-GUI update pass (a STARTUP-UPDATE-DECISION value,
+or :DOWNLOAD-FAILED), surfaced on the settings pane once the main
+window exists. NIL when the pass did not run (auto-update off, dev
+build).")
 
 #+lispworks
 (defun windows-temp-dir ()

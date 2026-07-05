@@ -646,13 +646,17 @@ the Save settings flow."
                                 (token-status-error-text condition) :red)))))))))
 
 ;;; Self-update flow. The mechanics (release fetch, download, helper
-;;; script handover) live in updater.lisp; this is the GUI choreography:
-;;; a startup check fails silently, the Settings button reports every
-;;; outcome, and once a newer release is found the download and restart
-;;; run unattended - no confirmation dialogs. The only guard is that
-;;; nothing is ever applied while a run or recording is in flight
-;;; (note-poll-activity in main.lisp applies the deferred update once
-;;; idle).
+;;; script handover) live in updater.lisp; this is the GUI choreography.
+;;; The automatic leg runs BEFORE the main window exists
+;;; (STARTUP-AUTO-UPDATE, called from MAIN): launching the outdated
+;;; build just to watch it quit and relaunch reads as a glitch, so the
+;;; update downloads behind a small progress splash and the client only
+;;; ever comes up on the new build. The Settings button
+;;; (CHECK-FOR-UPDATES) covers mid-session checks and reports every
+;;; outcome; downloads and restarts run unattended - no confirmation
+;;; dialogs. The only guard is that nothing is ever applied while a run
+;;; or recording is in flight (note-poll-activity in main.lisp applies
+;;; the deferred update once idle).
 
 (defun toggle-auto-update-callback (interface)
   "Apply the auto-update toggle immediately (no Save needed)."
@@ -661,7 +665,7 @@ the Save settings flow."
   (save-config!))
 
 (defun check-updates-callback (interface)
-  (check-for-updates interface :manual t))
+  (check-for-updates interface))
 
 (defun set-version-status (interface &optional note color)
   (set-pane-text interface #'update-status-pane
@@ -674,15 +678,13 @@ the Save settings flow."
    interface
    (lambda () (capi:display-message "~a" text))))
 
-(defun check-for-updates (interface &key manual)
-  "Look for a newer release on a background thread and walk the user
-through downloading and installing it. MANUAL marks the Settings
-button, which reports every outcome; the startup check only ever
-surfaces an actual update."
+(defun check-for-updates (interface)
+  "The Settings button: look for a newer release on a background thread,
+report every outcome and install unattended when there is one. (The
+automatic startup check runs before the main window exists -
+STARTUP-AUTO-UPDATE.)"
   (cond
-    ((and (null *client-version*) (not manual))
-     nil)                               ; dev image: never self-checks
-    ((and (null *client-version*) manual)
+    ((null *client-version*)
      (update-note interface (tr :update-dev-build (update-release-page-url))))
     (t
      (set-version-status interface (tr :update-checking))
@@ -692,46 +694,54 @@ surfaces an actual update."
         (let ((release (fetch-latest-release)))
           (cond
             ((null release)
-             (set-version-status interface
-                                 (and manual (tr :update-check-failed)))
-             (when manual
-               (update-note interface (tr :update-check-failed-dialog))))
+             (set-version-status interface (tr :update-check-failed))
+             (update-note interface (tr :update-check-failed-dialog)))
             ((not (update-available-p *client-version* (getf release :tag)))
              (set-version-status interface (tr :update-up-to-date))
-             (when manual
-               (update-note interface
-                            (tr :update-latest-dialog (client-version)))))
+             (update-note interface
+                          (tr :update-latest-dialog (client-version))))
             (t
              ;; Already on the check's background thread; download
              ;; right away, no confirmation.
              (run-update-download interface release)))))))))
 
+(defun offer-manual-download (interface)
+  "The install dir refuses writes (e.g. Program Files without
+elevation): flag it and offer the release page instead."
+  (set-version-status interface (tr :update-not-writable) :red)
+  (capi:execute-with-interface-if-alive
+   interface
+   (lambda ()
+     (when (capi:confirm-yes-or-no
+            "~a" (tr :update-not-writable-confirm))
+       (open-in-browser (update-release-page-url))))))
+
+(defun download-release-with-progress (release show)
+  "DOWNLOAD-UPDATE! with the standard progress line handed to SHOW (a
+function of one status string). Returns the verified zip path or NIL."
+  (let ((tag (getf release :tag))
+        (last-shown -1))
+    (download-update!
+     release (update-zip-path)
+     :on-progress
+     (lambda (done total)
+       ;; Once per MB: this runs per 64KB chunk, and every line shown
+       ;; is a message to the GUI thread.
+       (let ((mb (floor done 1048576)))
+         (when (> mb last-shown)
+           (setf last-shown mb)
+           (funcall show (tr :update-downloading
+                             tag mb (and total (ceiling total 1048576))))))))))
+
 (defun run-update-download (interface release)
   (cond
     ((not (install-dir-writable-p))
-     (set-version-status interface (tr :update-not-writable) :red)
-     (capi:execute-with-interface-if-alive
-      interface
-      (lambda ()
-        (when (capi:confirm-yes-or-no
-               "~a" (tr :update-not-writable-confirm))
-          (open-in-browser (update-release-page-url))))))
+     (offer-manual-download interface))
     (t
-     (let* ((tag (getf release :tag))
-            (last-shown -1)
-            (zip (download-update!
-                  release (update-zip-path)
-                  :on-progress
-                  (lambda (done total)
-                    ;; Once per MB: this runs per 64KB chunk, and every
-                    ;; update is a message to the GUI thread.
-                    (let ((mb (floor done 1048576)))
-                      (when (> mb last-shown)
-                        (setf last-shown mb)
-                        (set-version-status
-                         interface
-                         (tr :update-downloading
-                             tag mb (and total (ceiling total 1048576))))))))))
+     (let ((tag (getf release :tag))
+           (zip (download-release-with-progress
+                 release
+                 (lambda (text) (set-version-status interface text)))))
        (cond
          ((null zip)
           (set-version-status interface (tr :update-download-failed) :red)
@@ -755,6 +765,65 @@ the poll loop (for updates deferred past a run)."
      ;; *INTERFACE*, not the captured window: a language switch may
      ;; have rebuilt it, and the teardown must destroy the live one.
      (launch-updater-and-quit *interface* zip))))
+
+(capi:define-interface update-splash ()
+  ()
+  (:panes
+   (message capi:title-pane
+            :text ""
+            :font *ui-font*
+            :visible-min-width '(:character 44)
+            :accessor splash-message-pane))
+  (:layouts
+   (main capi:column-layout '(message)
+         :internal-border 24))
+  (:default-initargs
+   :title "Ephinea TA Client"))
+
+(defun startup-auto-update ()
+  "The automatic update pass, run from MAIN before the main window is
+created. When a newer release is out and the folder is writable, the
+zip downloads behind a small splash and LAUNCH-UPDATER-AND-QUIT takes
+over - this call never returns and the main window of the old build
+never shows. In every other case it returns with the outcome in
+*STARTUP-UPDATE-NOTE* for REPORT-STARTUP-UPDATE to surface."
+  (let* ((release (fetch-latest-release))
+         (decision (startup-update-decision
+                    release *client-version* (install-dir-writable-p))))
+    (setf *startup-update-note* decision)
+    (when (eq decision :apply)
+      (let ((tag (getf release :tag))
+            (splash (capi:display (make-instance 'update-splash))))
+        ;; Something to read while the connection is still coming up.
+        (set-pane-text splash #'splash-message-pane
+                       (tr :update-downloading tag 0 nil))
+        (let ((zip (download-release-with-progress
+                    release
+                    (lambda (text)
+                      (set-pane-text splash #'splash-message-pane text)))))
+          (cond
+            (zip
+             (set-pane-text splash #'splash-message-pane
+                            (tr :update-restarting tag))
+             ;; Does not return: hands over to the helper and quits.
+             (launch-updater-and-quit splash zip))
+            (t
+             (setf *startup-update-note* :download-failed)
+             (capi:execute-with-interface-if-alive
+              splash
+              (lambda () (capi:destroy splash))))))))))
+
+(defun report-startup-update (interface)
+  "Reflect the pre-GUI update pass on the settings pane once the main
+window is up. The two failures the user can act on also get the same
+dialogs the Settings-button check shows; a failed release check stays
+silent, exactly like the old silent startup check."
+  (case *startup-update-note*
+    (:up-to-date (set-version-status interface (tr :update-up-to-date)))
+    (:not-writable (offer-manual-download interface))
+    (:download-failed
+     (set-version-status interface (tr :update-download-failed) :red)
+     (update-note interface (tr :update-download-failed-dialog)))))
 
 (defun set-window-title (interface title)
   (unless (equal title *last-window-title*)

@@ -42,6 +42,7 @@
            ;; version / self-update (pure parts, used by tests)
            #:client-version #:parse-version #:version< #:update-available-p
            #:parse-release-json #:updater-script-text #:valid-update-zip-p
+           #:startup-update-decision
            ;; api
            #:fetch-quests #:fetch-me #:normalize-token #:submit-run
            ;; store

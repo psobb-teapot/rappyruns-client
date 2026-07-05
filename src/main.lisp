@@ -276,6 +276,11 @@ update exactly once."
   (load-config!)
   (setf *language* (valid-language (config-value :language)))
   (cleanup-old-update-files)
+  ;; Self-update BEFORE the main window exists, so an outdated build
+  ;; never flashes at the user just to quit and relaunch. Does not
+  ;; return when an update applies (helper handover + LW:QUIT).
+  (when (and (config-value :auto-update) *client-version*)
+    (startup-auto-update))
   (load-queue!)
   (load-quest-defs)
   (let ((interface (make-instance 'client-window)))
@@ -285,8 +290,7 @@ update exactly once."
     (check-server interface)
     (check-token interface)
     (prompt-for-token-setup interface)
-    (when (config-value :auto-update)
-      (check-for-updates interface))
+    (report-startup-update interface)
     (setf *poll-process*
           (mp:process-run-function "eta-client-poll" '() 'poll-loop))
     interface))
