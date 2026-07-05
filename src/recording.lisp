@@ -60,20 +60,24 @@ BACKEND-CLOSE-CAPTURE, or (values nil error-string)."))
 (defgeneric backend-list-stale-files (backend dir)
   (:documentation "Leftover rec-tmp-*.mp4 files from a previous session."))
 
-;;; Encoder settings. Not user-facing config: veryfast/28 capped at
+;;; Encoder settings. Not user-facing config: veryfast/29 capped at
 ;;; 1080p costs a few percent CPU at PSOBB resolutions and the quality
 ;;; is fine for run verification. Measured on a real 3200x1800 capture:
 ;;; CRF 23 uncapped produced ~90 MB per minute (a 10-minute quest stay
 ;;; was ~1 GB, and the 2 GiB upload cap was only ~22 minutes away);
-;;; 1080p + CRF 28 is ~21 MB per minute at the same frame count. CRF
-;;; 28 rather than 26 offsets the frames regained by the loudnorm fix
-;;; (a full 30 fps carries ~25% more encoded frames than the throttled
-;;; capture did), keeping hosted-video sizes level: smoothness beats
-;;; sharpness here, and the HUD stays legible either way.
+;;; 1080p + CRF 29 without B-frames is ~21 MB per minute at the same
+;;; frame count. No B-frames (-bf 0) because the fragmented-MP4 live
+;;; capture bakes the reorder delay in as a 2-frame video start offset
+;;; that local players honor and browsers normalize away - the same
+;;; recording played 67 ms differently on the site than on disk (the
+;;; whole run-92 saga). pts = dts from zero is the one timestamp shape
+;;; every player agrees on; CRF 29 rather than 28 pays for the ~14%
+;;; B-frames used to save, keeping sizes level. Smoothness and sync
+;;; beat sharpness here, and the HUD stays legible.
 
 (defparameter +record-framerate+ 30)
 (defparameter +record-preset+ "veryfast")
-(defparameter +record-crf+ 28)
+(defparameter +record-crf+ 29)
 (defparameter +record-max-height+ 1080
   "Downscale cap. Windows larger than this record at 1080p; smaller
 ones are left alone (min(), never an upscale). Height is forced even
@@ -205,6 +209,11 @@ named pipe as a second input and is encoded as AAC."
    (list "-c:v" "libx264"
          "-preset" +record-preset+
          "-crf" (princ-to-string +record-crf+)
+         ;; No B-frames: see the encoder-settings note. The fragmented
+         ;; muxer would bake their reorder delay in as a video start
+         ;; offset that browsers and local players interpret
+         ;; differently, skewing A/V sync by 2 frames on the site.
+         "-bf" "0"
          "-pix_fmt" "yuv420p"
          "-vf" (record-scale-filter))
    (when audio-pipe
@@ -218,16 +227,6 @@ named pipe as a second input and is encoded as AAC."
    (list "-movflags" "+frag_keyframe+empty_moov"
          output-path)))
 
-(defparameter +remux-audio-lead-ms+ 67
-  "How much the remux advances the audio track. Captures carry a small
-constant audio lag - the capture-side latency of the loopback path
-plus the game's own sound latency (a DirectSound game renders a hit
-sound tens of ms after the hit frame). Cross-correlating a real
-recording measured +67 ms, and the submitter confirmed by ear that a
--67 ms shifted clip is the natural-feeling one (A/B/C comparison,
-2026-07-06). Two video frames' worth; adjust only against both a
-measurement and an ear check.")
-
 (defun build-remux-args (input-path output-path)
   "ffmpeg argv rewriting the fragmented recording as a regular MP4 with
 the moov (duration + seek index) at the front. Video is stream-copied;
@@ -235,18 +234,17 @@ audio is loudness-normalized here, NOT during capture (loudnorm's
 lookahead throttled the live pipeline, see BUILD-FFMPEG-ARGS): loopback
 capture is post-mixer, so a low per-app volume slider (observed at 5%
 in the field) would otherwise leave recordings inaudible. loudnorm
-outputs 192 kHz internally; resample back down. The audio also moves
-+REMUX-AUDIO-LEAD-MS+ earlier by TRIMMING that much off its head -
-NOT with -itsoffset, whose leading negative timestamps browsers
-clamp or drop, which silently undid the shift on the hosted player
-(field-observed on run 88). The offline pass runs far faster than
-real time."
+outputs 192 kHz internally; resample back down. NO timestamp games
+here: an -itsoffset shift died in browsers (leading negative pts,
+run 88), and the 67 ms atrim that replaced it turned out to be
+compensating the B-frame video start offset that only SOME players
+honored - that offset is gone at the source now (-bf 0 in
+BUILD-FFMPEG-ARGS), so the streams need no correction. The offline
+pass runs far faster than real time."
   (list "-y" "-loglevel" "error"
         "-i" input-path
         "-c:v" "copy"
-        "-af" (format nil "atrim=start=~,3f,asetpts=PTS-STARTPTS,~
-                           loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
-                      (/ +remux-audio-lead-ms+ 1000.0))
+        "-af" "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
         "-c:a" "aac" "-b:a" "160k"
         "-movflags" "+faststart"
         output-path))

@@ -1355,9 +1355,12 @@ over the defaults. Restores the global config afterwards (it is bound)."
              (and probe grab
                   (equal "32" (nth (1+ probe) args))
                   (< probe grab))))
-    (check "ffmpeg args encode at crf 28"
+    (check "ffmpeg args encode at crf 29"
            (let ((crf (position "-crf" args :test #'equal)))
-             (and crf (equal "28" (nth (1+ crf) args)))))
+             (and crf (equal "29" (nth (1+ crf) args)))))
+    (check "ffmpeg args disable B-frames (zero-based video timestamps)"
+           (let ((bf (position "-bf" args :test #'equal)))
+             (and bf (equal "0" (nth (1+ bf) args)))))
     (check "ffmpeg args cap the height at 1080 without upscaling"
            (let ((vf (position "-vf" args :test #'equal)))
              (and vf
@@ -1377,13 +1380,11 @@ over the defaults. Restores the global config afterwards (it is bound)."
              (and af
                   (search "loudnorm" (nth (1+ af) args))
                   (member "aac" args :test #'equal))))
-    (check "remux advances the audio by trimming the measured lead"
+    (check "remux applies no timestamp correction (sync fixed at the source)"
            (let ((af (position "-af" args :test #'equal)))
              (and af
-                  (search "atrim=start=0.067" (nth (1+ af) args))
-                  (search "asetpts=PTS-STARTPTS" (nth (1+ af) args)))))
-    (check "remux never uses itsoffset (negative ts break browser playback)"
-           (not (member "-itsoffset" args :test #'equal)))
+                  (not (search "atrim" (nth (1+ af) args)))
+                  (not (member "-itsoffset" args :test #'equal)))))
     (check "remux reads the input and writes the output last"
            (and (member "in.mp4" args :test #'equal)
                 (equal "out.mp4" (first (last args))))))
