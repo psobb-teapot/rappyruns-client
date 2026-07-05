@@ -278,7 +278,7 @@ poll loop re-reads it every iteration.")
               ;; of the flow); otherwise straight to the Runs tab.
               :selection (if (string= (config-value :api-token) "") 1 0)))
   (:default-initargs
-   :title "Ephinea TA Client"
+   :title "RappyRuns Client"
    :layout 'main-tabs
    :help-callback 'client-help-callback
    :visible-min-width '(:character 100)))
@@ -794,7 +794,7 @@ the poll loop (for updates deferred past a run)."
    (main capi:column-layout '(message)
          :internal-border 24))
   (:default-initargs
-   :title "Ephinea TA Client"))
+   :title "RappyRuns Client"))
 
 (defun startup-auto-update ()
   "The automatic update pass, run from MAIN before the main window is
@@ -883,7 +883,7 @@ silent, exactly like the old silent startup check."
     (set-window-title
      interface
      (if in-quest-p
-         (format nil "~a~:[~; [REC]~] - Ephinea TA Client"
+         (format nil "~a~:[~; [REC]~] - RappyRuns Client"
                  (format-run-time (detector-elapsed-ms detector))
                  recording-p)
-         "Ephinea TA Client"))))
+         "RappyRuns Client"))))

@@ -14,8 +14,16 @@
 (defparameter *update-repo* "psobb-teapot/ephinea-ta-client-releases"
   "owner/name of the public repository whose releases carry the client.")
 
-(defparameter +update-asset-name+ "EphineaTAClient.zip"
-  "The release asset the site's download button also points at.")
+(defparameter +update-asset-name+ "RappyRunsClient.zip"
+  "The release asset the site's download button also points at.
+Releases also carry a legacy EphineaTAClient.zip (same build, old exe
+name inside) so pre-rename clients (<= v0.15.0) can still self-update;
+see client/package.ps1 and issue #15.")
+
+(defparameter +client-exe-name+ "RappyRunsClient.exe"
+  "The canonical exe name. The helper script always installs the update
+under this name, so an install still running the pre-rename
+EphineaTAClient.exe is renamed by its next update.")
 
 (defun resolve-update-repo ()
   "A :update-repo config override (a power-user/testing key, like
@@ -83,15 +91,19 @@ embedded quotes doubled), so paths with spaces survive."
               (write-char char out))
     (write-char #\' out)))
 
-(defun updater-script-text (&key pid exe-path install-dir zip-path
-                                 stage-dir log-path)
+(defun updater-script-text (&key pid exe-path target-exe-path install-dir
+                                 zip-path stage-dir log-path)
   "The helper script that performs the actual swap, as a string (pure,
 so the tests can check its shape). It stages the zip and verifies the
 new exe BEFORE touching the install, so a bad download can never break
-the existing client; any later failure rolls the .old exe back."
+the existing client; any later failure rolls the .old exe back.
+TARGET-EXE-PATH is where the new exe lands (+CLIENT-EXE-NAME+ in the
+install dir): when the running exe still carries the pre-rename name,
+the update doubles as the rename migration."
   (format nil "$ErrorActionPreference = 'Stop'~%~
 Start-Transcript -Path ~a -Force | Out-Null~%~
 $exe = ~a~%~
+$target = ~a~%~
 $installDir = ~a~%~
 $zip = ~a~%~
 $stage = ~a~%~
@@ -107,8 +119,8 @@ try {~%~
     }~%~
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }~%~
     Expand-Archive -Path $zip -DestinationPath $stage -Force~%~
-    $newExe = Join-Path $stage 'EphineaTAClient.exe'~%~
-    if (-not (Test-Path $newExe)) { throw \"no EphineaTAClient.exe in the update zip\" }~%~
+    $newExe = Join-Path $stage 'RappyRunsClient.exe'~%~
+    if (-not (Test-Path $newExe)) { throw \"no RappyRunsClient.exe in the update zip\" }~%~
     # A file of the running image may linger locked briefly; retry the move.~%~
     $moved = $false~%~
     for ($i = 0; $i -lt 10; $i++) {~%~
@@ -116,7 +128,7 @@ try {~%~
         catch { Start-Sleep -Seconds 1 }~%~
     }~%~
     if (-not $moved) { throw \"could not move the old exe aside\" }~%~
-    Copy-Item $newExe $exe -Force~%~
+    Copy-Item $newExe $target -Force~%~
     $newData = Join-Path $stage 'data'~%~
     if (Test-Path $newData) {~%~
         New-Item -ItemType Directory -Force (Join-Path $installDir 'data') | Out-Null~%~
@@ -130,12 +142,16 @@ try {~%~
             Copy-Item (Join-Path $newFfmpeg '*') (Join-Path $installDir 'ffmpeg') -Recurse -Force~%~
         } catch { Write-Output \"ffmpeg update skipped: $_\" }~%~
     }~%~
-    Start-Process -FilePath $exe -WorkingDirectory $installDir~%~
+    Start-Process -FilePath $target -WorkingDirectory $installDir~%~
     Remove-Item -Force $zip -ErrorAction SilentlyContinue~%~
     Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue~%~
 } catch {~%~
     Write-Output \"update failed: $_\"~%~
-    if ((Test-Path $old) -and -not (Test-Path $exe)) { Move-Item $old $exe }~%~
+    if ((Test-Path $old) -and -not (Test-Path $exe)) {~%~
+        # On a rename migration, drop the half-installed new-name exe too.~%~
+        if ($target -ne $exe) { Remove-Item -Force $target -ErrorAction SilentlyContinue }~%~
+        Move-Item $old $exe~%~
+    }~%~
     if ((-not $stillRunning) -and (Test-Path $exe)) {~%~
         Start-Process -FilePath $exe -WorkingDirectory $installDir~%~
     }~%~
@@ -144,6 +160,7 @@ try {~%~
 }~%"
           (ps-quote log-path)
           (ps-quote exe-path)
+          (ps-quote target-exe-path)
           (ps-quote install-dir)
           (ps-quote zip-path)
           (ps-quote stage-dir)
@@ -183,7 +200,7 @@ build).")
 
 #+lispworks
 (defun update-zip-path ()
-  (merge-pathnames "EphineaTAClient-update.zip" (windows-temp-dir)))
+  (merge-pathnames "RappyRunsClient-update.zip" (windows-temp-dir)))
 
 #+lispworks
 (defun client-exe-path ()
@@ -246,34 +263,44 @@ fails."
   "Sweep the leftovers of a previous self-update (the .old exe the
 helper cannot delete itself, plus anything a failed run left in %TEMP%).
 Safe to call on every startup."
-  (ignore-errors
-    (let ((old (merge-pathnames "EphineaTAClient.exe.old" (install-dir))))
-      (when (probe-file old) (delete-file old))))
+  ;; Both .old names: the rename migration parks the pre-rename exe as
+  ;; EphineaTAClient.exe.old, and the pre-rename temp names linger after
+  ;; the first post-rename start (the migrating helper was written by
+  ;; the OLD client).
+  (dolist (name '("RappyRunsClient.exe.old" "EphineaTAClient.exe.old"))
+    (ignore-errors
+      (let ((old (merge-pathnames name (install-dir))))
+        (when (probe-file old) (delete-file old)))))
   (let ((temp (windows-temp-dir)))
-    (dolist (name '("ephinea-ta-update.ps1" "EphineaTAClient-update.zip"))
+    (dolist (name '("rappyruns-update.ps1" "RappyRunsClient-update.zip"
+                    "ephinea-ta-update.ps1" "EphineaTAClient-update.zip"))
       (ignore-errors
         (let ((path (merge-pathnames name temp)))
           (when (probe-file path) (delete-file path)))))
-    (ignore-errors
-      (uiop:delete-directory-tree
-       (merge-pathnames "ephinea-ta-update-stage/" temp)
-       :validate t :if-does-not-exist :ignore))))
+    (dolist (dir '("rappyruns-update-stage/" "ephinea-ta-update-stage/"))
+      (ignore-errors
+        (uiop:delete-directory-tree
+         (merge-pathnames dir temp)
+         :validate t :if-does-not-exist :ignore)))))
 
 #+lispworks
 (defun launch-updater-and-quit (interface zip-path)
   "Hand over to the helper script and exit: the script waits for this
 process to die, swaps the exe and restarts the new build."
   (let* ((temp (windows-temp-dir))
-         (script-path (merge-pathnames "ephinea-ta-update.ps1" temp))
+         (script-path (merge-pathnames "rappyruns-update.ps1" temp))
          (text (updater-script-text
                 :pid (%get-current-process-id)
                 :exe-path (namestring (client-exe-path))
+                :target-exe-path (namestring
+                                  (merge-pathnames +client-exe-name+
+                                                   (install-dir)))
                 :install-dir (namestring (install-dir))
                 :zip-path (namestring zip-path)
                 :stage-dir (namestring
-                            (merge-pathnames "ephinea-ta-update-stage/" temp))
+                            (merge-pathnames "rappyruns-update-stage/" temp))
                 :log-path (namestring
-                           (merge-pathnames "ephinea-ta-update.log" temp)))))
+                           (merge-pathnames "rappyruns-update.log" temp)))))
     (with-open-file (out script-path :direction :output :if-exists :supersede
                                      :external-format :utf-8)
       ;; BOM first: PowerShell 5.1 reads a BOM-less .ps1 as ANSI (cp932

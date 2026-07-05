@@ -1,4 +1,4 @@
-;;; LispWorks delivery script. Produces client/dist/EphineaTAClient.exe:
+;;; LispWorks delivery script. Produces client/dist/RappyRunsClient.exe:
 ;;;
 ;;;   "C:/Program Files/LispWorks/lispworks-8-1-0-x64-windows.exe" ^
 ;;;       -build client/deliver.lisp
@@ -54,7 +54,7 @@
 (ensure-directories-exist (merge-pathnames "dist/" *client-root*))
 
 (deliver (intern "MAIN" "EPHINEA-TA-CLIENT")
-         (namestring (merge-pathnames "dist/EphineaTAClient" *client-root*))
+         (namestring (merge-pathnames "dist/RappyRunsClient" *client-root*))
          0                       ; delivery level: start low, raise once stable
          :interface :capi
          :startup-bitmap-file nil) ; no "built with LispWorks" splash

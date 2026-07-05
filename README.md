@@ -1,6 +1,6 @@
-# ephinea-ta client
+# RappyRuns client
 
-Desktop companion app for the ephinea-ta leaderboard site. It attaches to
+Desktop companion app for the RappyRuns leaderboard site. It attaches to
 a running Ephinea PSOBB client (read-only, via `ReadProcessMemory`),
 detects quest starts and completions from quest registers / floor switches
 (trigger data transcribed from [psostats-client], MIT), and auto-submits
@@ -58,7 +58,7 @@ Config and the offline retry queue live in `%APPDATA%/ephinea-ta-client/`.
 "C:/Program Files/LispWorks/lispworks-8-1-0-x64-windows.exe" -build client/deliver.lisp
 ```
 
-Output: `client/dist/EphineaTAClient.exe`. Distribute together with
+Output: `client/dist/RappyRunsClient.exe`. Distribute together with
 `data/quest-triggers.sexp` (looked up next to the exe). `https` needs no
 extra DLLs: on LispWorks the client speaks HTTP(S) through the Windows
 WinHTTP API (`src/winhttp.lisp`), so TLS comes from the OS. (LispWorks'
@@ -129,10 +129,14 @@ powershell -File client/package.ps1
 ```
 
 Bundles the exe and `data/quest-triggers.sexp` (from `client/data/`, the
-source of truth) into `client/dist/EphineaTAClient.zip`, plus
+source of truth) into `client/dist/RappyRunsClient.zip`, plus
 `ffmpeg/ffmpeg.exe` when `client/vendor/ffmpeg/` is populated (see
 below); without it the zip is built with a warning and recording needs a
-user-installed ffmpeg.
+user-installed ffmpeg. A second, legacy `client/dist/EphineaTAClient.zip`
+(same build, exe named `EphineaTAClient.exe` inside) is produced for
+pre-rename clients (<= v0.15.0), whose updater looks for that asset name
+and exe name; drop it once the pre-rename install base is gone
+(issue #15).
 
 ### Bundling ffmpeg
 
@@ -164,9 +168,12 @@ shown while the zip downloads; the main window first appears already on
 the new build. The zip is verified (asset size + zip magic)
 in `%TEMP%`, then a PowerShell helper script takes over: it waits for
 the client to exit, unpacks to a staging folder, verifies the new exe,
-moves the old exe to `EphineaTAClient.exe.old` (restored automatically
-if anything fails), copies the new exe + `data\` (+ `ffmpeg\`, best
-effort) and restarts. The `.old` file and temp leftovers are swept on
+moves the old exe to `<name>.exe.old` (restored automatically if
+anything fails), copies the new exe + `data\` (+ `ffmpeg\`, best
+effort) and restarts. The new exe is always installed as
+`RappyRunsClient.exe`, so an install still running the pre-rename
+`EphineaTAClient.exe` is renamed by its next update. The `.old` file
+and temp leftovers (both the pre- and post-rename names) are swept on
 the next startup.
 
 Notes:
@@ -183,8 +190,9 @@ Notes:
 - Config keys: `:auto-update` (the Settings checkbox); `:update-repo`
   in `config.sexp` overrides the releases repo (`owner/name`) for
   testing the flow against a scratch repo.
-- The helper's transcript lands in `%TEMP%\ephinea-ta-update.log` -
-  first place to look when an update did not stick.
+- The helper's transcript lands in `%TEMP%\rappyruns-update.log`
+  (`%TEMP%\ephinea-ta-update.log` for updates applied by a pre-rename
+  client) - first place to look when an update did not stick.
 
 ## Releasing
 
@@ -198,7 +206,7 @@ One-time setup:
 
 ```
 gh repo create psobb-teapot/ephinea-ta-client-releases --public \
-  --description "Binary releases of the Ephinea TA desktop client"
+  --description "Binary releases of the RappyRuns desktop client"
 ```
 
 Give it a single README commit (releases need at least one commit); no
@@ -218,11 +226,14 @@ the exe, packages the zip and publishes it in one go:
 Without `-NotesFile` the notes are just the version; write real notes
 in a file (passing quotes on the `gh` command line is unreliable).
 
-The asset must be named `EphineaTAClient.zip` - the site's download
-button points at
-`https://github.com/psobb-teapot/ephinea-ta-client-releases/releases/latest/download/EphineaTAClient.zip`
-(override with `ETA_CLIENT_DOWNLOAD_URL` on the server). Pre-releases
-are excluded from `latest`, so they are safe for test builds.
+The main asset must be named `RappyRunsClient.zip` - the site's
+download button points at
+`https://github.com/psobb-teapot/ephinea-ta-client-releases/releases/latest/download/RappyRunsClient.zip`
+(override with `ETA_CLIENT_DOWNLOAD_URL` on the server) - and every
+release must also carry the legacy `EphineaTAClient.zip` until the
+pre-rename install base is gone (release.ps1 uploads both).
+Pre-releases are excluded from `latest`, so they are safe for test
+builds.
 
 ## Quest coverage
 

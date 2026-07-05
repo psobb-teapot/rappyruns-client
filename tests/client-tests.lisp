@@ -1793,7 +1793,10 @@ store functions that persist never touch the real %APPDATA% queue."
        \"browser_download_url\": \"https://example.com/notes.txt\"},
       {\"name\": \"EphineaTAClient.zip\",
        \"size\": 12345678,
-       \"browser_download_url\": \"https://github.com/x/y/releases/download/v0.6.0/EphineaTAClient.zip\"}]}")
+       \"browser_download_url\": \"https://github.com/x/y/releases/download/v0.6.0/EphineaTAClient.zip\"},
+      {\"name\": \"RappyRunsClient.zip\",
+       \"size\": 12345678,
+       \"browser_download_url\": \"https://github.com/x/y/releases/download/v0.6.0/RappyRunsClient.zip\"}]}")
 
 (defun run-updater-tests ()
   (format t "~&--- updater ---~%")
@@ -1845,7 +1848,8 @@ store functions that persist never touch the real %APPDATA% queue."
     (check "release json yields the tag"
            (equal "v0.6.0" (getf release :tag)))
     (check "release json picks the client zip asset, not other assets"
-           (search "EphineaTAClient.zip" (getf release :asset-url)))
+           (search "download/v0.6.0/RappyRunsClient.zip"
+                   (getf release :asset-url)))
     (check "release json carries the asset size"
            (eql 12345678 (getf release :asset-size))))
   (check "release without the zip asset is ignored"
@@ -1881,13 +1885,17 @@ store functions that persist never touch the real %APPDATA% queue."
                (merge-pathnames "eta-no-such-file.zip"
                                 (uiop:temporary-directory))
                nil)))
-  ;; The helper script: staging, verification, rollback, quoting.
+  ;; The helper script: staging, verification, rollback, quoting. The
+  ;; exe paths mimic a pre-rename install so the rename-migration side
+  ;; (running EphineaTAClient.exe, installing RappyRunsClient.exe) is
+  ;; pinned too.
   (let ((script (updater-script-text
                  :pid 4242
                  :exe-path "C:\\Program Files\\Ephinea TA\\EphineaTAClient.exe"
+                 :target-exe-path "C:\\Program Files\\Ephinea TA\\RappyRunsClient.exe"
                  :install-dir "C:\\Program Files\\Ephinea TA\\"
-                 :zip-path "C:\\Temp\\EphineaTAClient-update.zip"
-                 :stage-dir "C:\\Temp\\ephinea-ta-update-stage\\"
+                 :zip-path "C:\\Temp\\RappyRunsClient-update.zip"
+                 :stage-dir "C:\\Temp\\rappyruns-update-stage\\"
                  :log-path "C:\\Temp\\it's a log.txt")))
     (check "script waits for the old process"
            (and (search "Wait-Process -Id 4242" script)
@@ -1897,10 +1905,20 @@ store functions that persist never touch the real %APPDATA% queue."
                  (move (search "Move-Item -Force $exe $old" script)))
              (and expand move (< expand move))))
     (check "script verifies the staged exe"
-           (search "no EphineaTAClient.exe in the update zip" script))
+           (search "no RappyRunsClient.exe in the update zip" script))
+    (check "script installs under the canonical exe name"
+           (and (search "$target = 'C:\\Program Files\\Ephinea TA\\RappyRunsClient.exe'"
+                        script)
+                (search "Copy-Item $newExe $target -Force" script)))
     (check "script rolls the .old exe back on failure"
            (search "Move-Item $old $exe" script))
-    (check "script restarts the client"
+    (check "a failed rename migration drops the half-installed new exe"
+           (let ((remove (search "Remove-Item -Force $target" script))
+                 (rollback (search "Move-Item $old $exe" script)))
+             (and remove rollback (< remove rollback))))
+    (check "script restarts the new exe"
+           (search "Start-Process -FilePath $target" script))
+    (check "a failed update restarts the old exe"
            (search "Start-Process -FilePath $exe" script))
     (check "script updates the data folder"
            (search "Join-Path $stage 'data'" script))
