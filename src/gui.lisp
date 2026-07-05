@@ -617,8 +617,11 @@ the Save settings flow."
 ;;; Self-update flow. The mechanics (release fetch, download, helper
 ;;; script handover) live in updater.lisp; this is the GUI choreography:
 ;;; a startup check fails silently, the Settings button reports every
-;;; outcome, and nothing is ever applied while a run or recording is in
-;;; flight (note-poll-activity in main.lisp re-offers once idle).
+;;; outcome, and once a newer release is found the download and restart
+;;; run unattended - no confirmation dialogs. The only guard is that
+;;; nothing is ever applied while a run or recording is in flight
+;;; (note-poll-activity in main.lisp applies the deferred update once
+;;; idle).
 
 (defun toggle-auto-update-callback (interface)
   "Apply the auto-update toggle immediately (no Save needed)."
@@ -668,20 +671,9 @@ surfaces an actual update."
                (update-note interface
                             (tr :update-latest-dialog (client-version)))))
             (t
-             (offer-update-download interface release)))))))))
-
-(defun offer-update-download (interface release)
-  (capi:execute-with-interface-if-alive
-   interface
-   (lambda ()
-     (if (capi:confirm-yes-or-no
-          "~a" (tr :update-available-confirm
-                   (getf release :tag) (client-version)))
-         (mp:process-run-function
-          "eta-client-update-download" '()
-          (lambda () (run-update-download interface release)))
-         (set-version-status interface
-                             (tr :update-skipped (getf release :tag)))))))
+             ;; Already on the check's background thread; download
+             ;; right away, no confirmation.
+             (run-update-download interface release)))))))))
 
 (defun run-update-download (interface release)
   (cond
@@ -719,22 +711,19 @@ surfaces an actual update."
           (setf *update-ready-zip* (cons zip tag))
           (set-version-status interface (tr :update-after-run tag)))
          (t
-          (offer-update-restart interface zip tag)))))))
+          (apply-update-restart interface zip tag)))))))
 
-(defun offer-update-restart (interface zip tag)
-  "Final confirmation; on yes the app exits and the helper script swaps
-the exe and restarts. Called from the download thread and from the poll
-loop (for updates deferred past a run)."
-  (set-version-status interface (tr :update-downloaded tag))
+(defun apply-update-restart (interface zip tag)
+  "Exit and let the helper script swap the exe and restart - no prompt;
+auto-update means unattended. Called from the download thread and from
+the poll loop (for updates deferred past a run)."
+  (set-version-status interface (tr :update-restarting tag))
   (capi:execute-with-interface-if-alive
    interface
    (lambda ()
-     (if (capi:confirm-yes-or-no
-          "~a" (tr :update-restart-confirm tag))
-         ;; *INTERFACE*, not the captured window: a language switch may
-         ;; have rebuilt it, and the teardown must destroy the live one.
-         (launch-updater-and-quit *interface* zip)
-         (set-version-status interface (tr :update-restart-skipped tag))))))
+     ;; *INTERFACE*, not the captured window: a language switch may
+     ;; have rebuilt it, and the teardown must destroy the live one.
+     (launch-updater-and-quit *interface* zip))))
 
 (defun set-window-title (interface title)
   (unless (equal title *last-window-title*)

@@ -139,7 +139,8 @@ The client updates itself from the releases repo. At startup (and via
 **Settings → Updates → Check for updates now**) it fetches
 `releases/latest` from the GitHub API, compares the tag against the
 version baked in at build time (`client/VERSION` → `*client-version*`),
-and offers to download. The zip is verified (asset size + zip magic)
+and, when a newer release exists, downloads and installs it without
+asking. The zip is verified (asset size + zip magic)
 in `%TEMP%`, then a PowerShell helper script takes over: it waits for
 the client to exit, unpacks to a staging folder, verifies the new exe,
 moves the old exe to `EphineaTAClient.exe.old` (restored automatically
@@ -150,7 +151,7 @@ the next startup.
 Notes:
 
 - An update is never applied while a run or recording is in flight;
-  it is offered again once the client is idle.
+  it is applied automatically once the client is idle.
 - Startup checks fail silently (offline, rate limited, no releases);
   the manual button reports every outcome.
 - Dev images (run from source) never self-update: `*client-version*`

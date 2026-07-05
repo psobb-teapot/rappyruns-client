@@ -7,7 +7,7 @@
         :api-token ""
         :language :en      ; UI language, :en or :ja (i18n.lisp)
         :auto-submit t
-        :auto-update t      ; check GitHub releases at startup (updater.lisp)
+        :auto-update t      ; install new GitHub releases at startup, unattended (updater.lisp)
         :completion-sound t
         :trigger-log nil
         :record-enabled t

@@ -80,15 +80,15 @@ nothing changed: just a sequence-number read, no clipboard open."
 #+lispworks
 (defun note-poll-activity (interface detector recorder)
   "Track whether a run or recording is in flight (the updater never
-swaps the exe mid-run) and, on return to idle, pop the deferred update
-prompt exactly once."
+swaps the exe mid-run) and, on return to idle, apply the deferred
+update exactly once."
   (setf *poll-busy-p* (or (eq (detector-state detector) :in-quest)
                           (eq (recorder-state recorder) :recording)))
   (unless *poll-busy-p*
     (let ((ready *update-ready-zip*))
       (when ready
         (setf *update-ready-zip* nil)
-        (offer-update-restart interface (car ready) (cdr ready))))))
+        (apply-update-restart interface (car ready) (cdr ready))))))
 
 #+lispworks
 (defun poll-loop ()

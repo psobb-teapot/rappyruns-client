@@ -154,8 +154,8 @@
     ("Version: ~a~@[ - ~a~]"
      "バージョン: ~a~@[ - ~a~]")
     :auto-update-label
-    ("Check for updates at startup"
-     "起動時にアップデートを確認する")
+    ("Update automatically at startup"
+     "起動時に自動でアップデートする")
     :check-updates-button
     ("Check for updates now"
      "今すぐアップデートを確認")
@@ -168,9 +168,6 @@
     :update-up-to-date
     ("up to date"
      "最新です")
-    :update-skipped
-    ("~a available (skipped)"
-     "~a が利用可能 (今回は見送り)")
     :update-downloading
     ("downloading ~a... ~d~@[ / ~d~] MB"
      "~a をダウンロード中... ~d~@[ / ~d~] MB")
@@ -183,12 +180,9 @@
     :update-after-run
     ("~a downloaded - installs after this run"
      "~a ダウンロード済み - このランの終了後にインストールします")
-    :update-downloaded
-    ("~a downloaded"
-     "~a ダウンロード済み")
-    :update-restart-skipped
-    ("~a downloaded - restart skipped; it will be offered again next launch"
-     "~a ダウンロード済み - 再起動は見送り。次回起動時に再度案内します")
+    :update-restarting
+    ("installing ~a - restarting..."
+     "~a をインストール中 - 再起動します...")
 
     ;; Dialogs
     :clear-list-confirm
@@ -245,18 +239,12 @@
     :update-latest-dialog
     ("You are on the latest version (~a)."
      "最新バージョン (~a) を使用しています。")
-    :update-available-confirm
-    ("Version ~a is available (you have ~a).~%~%Download and install it now?"
-     "バージョン ~a が利用可能です (現在のバージョンは ~a)。~%~%今すぐダウンロードしてインストールしますか?")
     :update-not-writable-confirm
     ("The client's folder is not writable, so the update cannot be applied automatically.~%~%Open the download page to update by hand?"
      "クライアントのフォルダに書き込めないため、アップデートを自動で適用できません。~%~%ダウンロードページを開いて手動で更新しますか?")
     :update-download-failed-dialog
     ("The update download failed or did not verify. Nothing was changed; try again later."
      "アップデートのダウンロードに失敗したか、検証を通りませんでした。何も変更されていません。後でもう一度お試しください。")
-    :update-restart-confirm
-    ("Update ~a is downloaded and verified.~%~%Restart now to finish installing?"
-     "アップデート ~a のダウンロードと検証が完了しました。~%~%今すぐ再起動してインストールを完了しますか?")
 
     ;; Runs list labels (store.lisp)
     :status-video-attached

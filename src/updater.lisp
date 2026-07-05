@@ -155,7 +155,7 @@ applied then (poll-loop maintains this).")
 
 (defvar *update-ready-zip* nil
   "(zip-pathname . tag) of a verified download waiting for the client
-to go idle before the restart prompt.")
+to go idle before the automatic restart.")
 
 #+lispworks
 (defun windows-temp-dir ()
