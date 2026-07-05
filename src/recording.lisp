@@ -13,10 +13,12 @@
 ;;; kept only when at least one run completed during the capture;
 ;;; abandoned quests are deleted. Output is fragmented MP4, so even a
 ;;; TerminateProcess leaves a playable file. A kept file is then
-;;; remuxed (stream copy) into a regular MP4 with the moov up front:
-;;; fragmented MP4 carries no duration/seek index, so browsers playing
-;;; the hosted video would show a seekbar that grows as it loads. The
-;;; fragmented original is kept as-is when the remux fails.
+;;; remuxed into a regular MP4 with the moov up front (fragmented MP4
+;;; carries no duration/seek index, so browsers playing the hosted
+;;; video would show a seekbar that grows as it loads); the same pass
+;;; loudness-normalizes the audio, which must not happen live (see
+;;; BUILD-FFMPEG-ARGS). The fragmented original is kept as-is when the
+;;; remux fails - playable, just quiet when the mixer volume is low.
 
 ;;; Capture-backend protocol
 
@@ -98,11 +100,12 @@ loopback), so only the game is heard - not Discord or system sounds.")
 killing it. Must exceed the audio drain delay (ffmpeg-win32) plus
 ffmpeg's own finalization time.")
 
-(defparameter +remux-grace-seconds+ 60
+(defparameter +remux-grace-seconds+ 180
   "How long the post-capture remux may run before it is killed and the
-fragmented original is kept instead. Stream copy is disk-bound, so even
-an hour-long recording finishes in seconds; the margin covers a slow
-HDD under load.")
+fragmented original is kept instead. The video is stream-copied but
+the audio re-encodes through loudnorm, which still runs far faster
+than real time; the margin covers an hour-long recording on a slow
+machine under load.")
 
 ;;; Paths and filenames
 
@@ -196,24 +199,31 @@ named pipe as a second input and is encoded as AAC."
          "-pix_fmt" "yuv420p"
          "-vf" (record-scale-filter))
    (when audio-pipe
-     ;; Loopback capture is post-mixer: a low per-app volume slider
-     ;; (observed at 5% in the field) makes the raw capture inaudible.
-     ;; Loudness normalization brings every recording to a consistent,
-     ;; audible level regardless of the player's mixer settings. The
-     ;; mix is float, so boosting quiet captures loses nothing.
-     ;; (loudnorm outputs 192 kHz internally; resample back down.)
-     (list "-af" "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
-           "-c:a" "aac" "-b:a" "160k"))
+     ;; NO -af here, and in particular no loudnorm: its multi-second
+     ;; lookahead makes the audio output lag the video permanently,
+     ;; and ffmpeg's A/V interleaving then throttles the video path -
+     ;; field-measured at 17 fps (vs 29 without) with second-long
+     ;; freezes. Loudness normalization happens offline in
+     ;; BUILD-REMUX-ARGS instead, where latency costs nothing.
+     (list "-c:a" "aac" "-b:a" "160k"))
    (list "-movflags" "+frag_keyframe+empty_moov"
          output-path)))
 
 (defun build-remux-args (input-path output-path)
   "ffmpeg argv rewriting the fragmented recording as a regular MP4 with
-the moov (duration + seek index) at the front. Stream copy - no
-re-encode - so this takes seconds even for long captures."
+the moov (duration + seek index) at the front. Video is stream-copied;
+audio is loudness-normalized here, NOT during capture (loudnorm's
+lookahead throttled the live pipeline, see BUILD-FFMPEG-ARGS): loopback
+capture is post-mixer, so a low per-app volume slider (observed at 5%
+in the field) would otherwise leave recordings inaudible. loudnorm
+outputs 192 kHz internally; resample back down. ffmpeg ignores the
+audio options for a video-only recording (verified), and the offline
+pass runs far faster than real time either way."
   (list "-y" "-loglevel" "error"
         "-i" input-path
-        "-c" "copy"
+        "-c:v" "copy"
+        "-af" "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
+        "-c:a" "aac" "-b:a" "160k"
         "-movflags" "+faststart"
         output-path))
 
@@ -232,8 +242,7 @@ start (the pipe would never be served, and ffmpeg would hang opening it)."
   (remove-subseq
    (remove-subseq args (list "-f" "s16le" "-ar" "48000" "-ac" "2"
                              "-thread_queue_size" "1024" "-i" audio-pipe))
-   (list "-af" "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
-         "-c:a" "aac" "-b:a" "160k")))
+   (list "-c:a" "aac" "-b:a" "160k")))
 
 (defun retarget-audio-args (args &key sample-format rate channels)
   "ARGS with the audio input's placeholder format tokens replaced by

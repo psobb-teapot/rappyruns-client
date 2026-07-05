@@ -1341,10 +1341,15 @@ over the defaults. Restores the global config afterwards (it is bound)."
     (check "video-only args carry no audio input"
            (not (member "s16le" args :test #'equal))))
   (let ((args (build-remux-args "in.mp4" "out.mp4")))
-    (check "remux args stream-copy with faststart"
+    (check "remux args stream-copy the video with faststart"
            (and (member "copy" args :test #'equal)
                 (member "+faststart" args :test #'equal)
                 (not (member "libx264" args :test #'equal))))
+    (check "remux args loudness-normalize the audio"
+           (let ((af (position "-af" args :test #'equal)))
+             (and af
+                  (search "loudnorm" (nth (1+ af) args))
+                  (member "aac" args :test #'equal))))
     (check "remux reads the input and writes the output last"
            (and (member "in.mp4" args :test #'equal)
                 (equal "out.mp4" (first (last args))))))
@@ -1356,6 +1361,8 @@ over the defaults. Restores the global config afterwards (it is bound)."
     (check "audio args add the pipe input and aac"
            (and (member pipe with-audio :test #'equal)
                 (member "aac" with-audio :test #'equal)))
+    (check "live capture args carry no loudnorm (it throttles the video)"
+           (notany (lambda (arg) (search "loudnorm" arg)) with-audio))
     (check "stripping audio args restores the video-only argv"
            (equal (build-ffmpeg-args :window-title "T" :output-path "out.mp4")
                   (ephinea-ta-client::strip-audio-args with-audio pipe)))

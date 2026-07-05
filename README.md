@@ -83,7 +83,10 @@ Two non-obvious details, learned the hard way: loopback observes the
 signal AFTER the Windows volume mixer, so a low per-app slider would
 make recordings inaudible - recordings are therefore captured in
 float32 and loudness-normalized (ffmpeg loudnorm) to stay audible
-regardless of mixer settings. And when debugging "no audio", check the
+regardless of mixer settings. Normalization runs in the post-capture
+remux, never live: loudnorm's multi-second lookahead makes ffmpeg's
+A/V interleaving throttle the video capture (field-measured at 17 fps
+with second-long freezes). And when debugging "no audio", check the
 mixer first: a working capture of a 5% slider looks exactly like a
 broken capture. Disable with "Record game audio" in Settings. Completed runs are saved under the
 in-game quest name, e.g.
@@ -106,11 +109,13 @@ on SBCL against a mock backend); `src/ffmpeg-win32.lisp` spawns
 ffmpeg.exe via `CreateProcessW` with a stdin pipe (`q` = graceful stop,
 `TerminateProcess` after 5 s as fallback). Output is fragmented MP4
 (`-movflags +frag_keyframe+empty_moov`), so even a killed capture stays
-playable. A kept recording is then remuxed in place (`-c copy -movflags
-+faststart`, seconds even for long captures) into a regular MP4 with
-the moov atom up front: fragmented MP4 carries no duration/seek index,
-so browsers streaming the hosted video would show a seekbar that grows
-while it loads. If the remux fails the fragmented original is kept.
+playable. A kept recording is then remuxed in place (video
+stream-copied, audio loudness-normalized, `-movflags +faststart`; far
+faster than real time) into a regular MP4 with the moov atom up front:
+fragmented MP4 carries no duration/seek index, so browsers streaming
+the hosted video would show a seekbar that grows while it loads. If
+the remux fails the fragmented original is kept (playable, but quiet
+when the mixer volume is low).
 
 Known limits: capture starts a few hundred ms after the start trigger
 (ffmpeg spin-up), gdigrab can't capture a minimized window, and the

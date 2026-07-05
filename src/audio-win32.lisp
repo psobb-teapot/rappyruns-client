@@ -15,7 +15,8 @@
 ;;; - Both loopback flavors observe the signal AFTER the Windows volume
 ;;;   mixer. A low per-app slider (5% observed in the field) makes a
 ;;;   perfectly working capture look like "no audio at all"; that is
-;;;   why recordings are loudness-normalized in ffmpeg (loudnorm) and
+;;;   why recordings are loudness-normalized (ffmpeg loudnorm, in the
+;;;   post-capture remux - never live, see BUILD-FFMPEG-ARGS) and
 ;;;   why capture requests float32 - boosting a quiet float mix loses
 ;;;   nothing, unlike 16-bit.
 ;;; - The COM interfaces are called through their raw vtables with FLI;
