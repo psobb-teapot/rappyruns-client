@@ -144,6 +144,13 @@ poll loop re-reads it every iteration.")
                        :callback-type :interface
                        :font *ui-font*
                        :accessor video-upload-check)
+   ;; The retention policy in one line, sitting under the upload
+   ;; toggle it applies to. Uploading defaults to on, but the first
+   ;; launch lands on this tab (no token yet), so it is seen before
+   ;; anything is uploaded.
+   (video-retention-note capi:title-pane
+                         :text (tr :video-retention-note)
+                         :font *ui-font*)
    ;; ffmpeg itself is not a setting: the release bundles it next to the
    ;; exe (an override still exists as :ffmpeg-path in config.sexp).
    (update-status-pane capi:title-pane
@@ -246,7 +253,7 @@ poll loop re-reads it every iteration.")
                   :adjust :center)
    (recording-group capi:column-layout
                     '(record-check record-audio-check video-upload-check
-                      recording-row)
+                      video-retention-note recording-row)
                     :title (tr :group-recording) :title-position :frame
                     :title-font *ui-font* :adjust :left)
    (updates-group capi:column-layout

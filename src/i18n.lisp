@@ -154,6 +154,9 @@
     :video-upload-label
     ("Upload recordings to the site automatically"
      "録画をサイトへ自動アップロードする")
+    :video-retention-note
+    ("Top-10 videos are kept; others are deleted after 90 days (see the site's Client page)."
+     "上位10位の動画は保持され、それ以外は90日で削除されます (詳細はサイトの Client ページ)。")
     :record-dir-label
     ("Recordings folder: ~a"
      "録画フォルダ: ~a")
