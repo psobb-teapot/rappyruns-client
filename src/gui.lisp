@@ -749,19 +749,22 @@ the poll loop (for updates deferred past a run)."
        (setf (capi:interface-title interface) title)))))
 
 (defun update-game-status (interface connected-p detector snapshot
-                           &optional recorder)
+                           &optional recorder rejection)
   (let ((recording-error (and recorder (recorder-last-error recorder)))
         (recording-p (and recorder
                           (eq (recorder-state recorder) :recording)))
         (in-quest-p (eq (detector-state detector) :in-quest)))
     (set-pane-text interface #'game-status-pane
-                   (let ((base (if connected-p
-                                   (tr :game-attached)
-                                   (tr :game-searching))))
+                   (let ((base (cond
+                                 (rejection
+                                  (tr :game-signature-refused
+                                      (signature-status-label rejection)))
+                                 (connected-p (tr :game-attached))
+                                 (t (tr :game-searching)))))
                      (if recording-error
                          (tr :game-status-with-error base recording-error)
                          base))
-                   (and recording-error :red))
+                   (and (or rejection recording-error) :red))
     (set-pane-text
      interface #'quest-status-pane
      (cond

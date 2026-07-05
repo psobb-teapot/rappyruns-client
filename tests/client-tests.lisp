@@ -1714,6 +1714,39 @@ store functions that persist never touch the real %APPDATA% queue."
            (not (search "Remove-Item -Force $exe" script)))))
 
 ;;; ------------------------------------------------------------------
+;;; Authenticode trust policy (the Win32 verification itself is
+;;; LispWorks-only; the decision and the GUI label are pure)
+;;; ------------------------------------------------------------------
+
+(defun run-signature-policy-tests ()
+  (format t "~&--- signature policy ---~%")
+  (check "the official signer is accepted"
+         (psobb-signature-trusted-p :valid "Terry Chatman"))
+  (check "a valid signature from an unknown signer is refused"
+         (not (psobb-signature-trusted-p :valid "Mallory")))
+  (check "an unsigned exe is refused"
+         (not (psobb-signature-trusted-p :unsigned nil)))
+  (check "a broken signature is refused even with the right name"
+         (not (psobb-signature-trusted-p :invalid "Terry Chatman")))
+  (check "a missing signer name is refused"
+         (not (psobb-signature-trusted-p :valid nil)))
+  (check "the rejection label names an untrusted signer"
+         (let ((ephinea-ta-client::*language* :en))
+           (search "Mallory"
+                   (ephinea-ta-client::signature-status-label
+                    '(:pid 1 :status :valid :signer "Mallory")))))
+  (check "the rejection label explains an unsigned exe"
+         (let ((ephinea-ta-client::*language* :en))
+           (string= "no signature"
+                    (ephinea-ta-client::signature-status-label
+                     '(:pid 1 :status :unsigned)))))
+  (check "any other status reads as unverifiable"
+         (let ((ephinea-ta-client::*language* :ja))
+           (string= "署名を検証できません"
+                    (ephinea-ta-client::signature-status-label
+                     '(:pid 1 :status :invalid))))))
+
+;;; ------------------------------------------------------------------
 ;;; i18n: the UI string table and TR
 ;;; ------------------------------------------------------------------
 
@@ -1754,6 +1787,7 @@ store functions that persist never touch the real %APPDATA% queue."
   (setf *failures* 0)
   (load-quest-defs)
   (run-i18n-tests)
+  (run-signature-policy-tests)
   (run-memory-tests)
   (run-inventory-tests)
   (run-extended-player-tests)

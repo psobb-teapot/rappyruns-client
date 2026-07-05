@@ -605,6 +605,27 @@ entity. INDEX is the absolute entity-array slot (players included)."
                 :when monster
                   :collect monster))))))
 
+;;; Client authenticity. Ephinea's PSOBB.exe carries an Authenticode
+;;; signature by Sodaboy (Terry Chatman); the Win32 verification lives
+;;; in win32.lisp (AUTHENTICODE-VERIFY), the accept/reject decision is
+;;; pure so it stays testable on SBCL. The client refuses to attach -
+;;; and therefore to record - when the exe fails this check.
+
+(defparameter +trusted-psobb-signers+ '("Terry Chatman")
+  "Signing-certificate subject CNs accepted as the official client.
+Matching the CN (not pinning a thumbprint) survives certificate
+renewals; the CA verifies the holder's identity for OV code-signing
+certificates, so the name cannot simply be claimed by someone else.")
+
+(defun psobb-signature-trusted-p (status signer)
+  "T when Authenticode STATUS/SIGNER (see AUTHENTICODE-VERIFY)
+identify an official Ephinea client: STATUS must be :VALID and SIGNER
+a trusted subject CN. Anything else - unsigned, broken signature,
+unknown signer, unreadable exe - is refused."
+  (and (eq status :valid)
+       (stringp signer)
+       (and (member signer +trusted-psobb-signers+ :test #'string=) t)))
+
 ;;; Boss identification, transcribed from psostats isBoss. INDEX is the
 ;;; absolute entity slot, players included, like Monster.Index there.
 

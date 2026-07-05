@@ -33,6 +33,18 @@
     :game-status-with-error
     ("~a / recording error: ~a"
      "~a / 録画エラー: ~a")
+    :game-signature-refused
+    ("Game: not the official Ephinea client (~a) - recording refused"
+     "ゲーム: Ephinea 公式クライアントではないため記録しません (~a)")
+    :signature-unsigned
+    ("no signature"
+     "署名なし")
+    :signature-invalid
+    ("signature could not be verified"
+     "署名を検証できません")
+    :signature-untrusted-signer
+    ("signed by \"~a\""
+     "署名者 \"~a\"")
     :server-not-checked
     ("Server: not checked"
      "サーバー: 未確認")
@@ -318,3 +330,13 @@ TR always formats, so ~% and friends are processed even without args.")
              (:en (first entry))
              (:ja (second entry)))
            args)))
+
+(defun signature-status-label (rejection)
+  "Human-readable reason the PSOBB exe failed Authenticode
+verification, from a REJECTION plist (:status :signer ...)."
+  (case (getf rejection :status)
+    (:unsigned (tr :signature-unsigned))
+    ;; A valid signature that still got rejected means the signer is
+    ;; not on +TRUSTED-PSOBB-SIGNERS+ - show who actually signed it.
+    (:valid (tr :signature-untrusted-signer (or (getf rejection :signer) "?")))
+    (t (tr :signature-invalid))))

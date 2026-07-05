@@ -13,6 +13,30 @@
 (defvar *last-heavy-sample* 0
   "Internal real time of the last inventory sample.")
 
+(defvar *psobb-rejection* nil
+  "Rejection plist (:pid :path :status :signer) for a running PSOBB
+whose exe failed Authenticode verification. The poll loop refuses to
+attach to that pid - so nothing is detected, recorded or submitted -
+and the GUI shows the reason.")
+
+#+lispworks
+(defun psobb-trust-rejection (reader)
+  "NIL when READER's exe is the signed official Ephinea client, else
+the rejection plist. The previous rejection is reused for the same
+pid, so the once-per-second search loop does not re-hash the exe."
+  (let ((pid (live-reader-pid reader))
+        (cached *psobb-rejection*))
+    (if (and cached (eql (getf cached :pid) pid))
+        cached
+        (let ((path (process-image-path reader)))
+          (multiple-value-bind (status signer)
+              (if path
+                  (authenticode-verify path)
+                  ;; No path means no verdict; fail closed.
+                  (values :invalid nil))
+            (unless (psobb-signature-trusted-p status signer)
+              (list :pid pid :path path :status status :signer signer)))))))
+
 (defun augment-snapshot (reader snapshot)
   "Attach :monsters (every poll: kill attribution and frame-1 detection
 need psostats' full sample rate; READ-MONSTERS is one block read per
@@ -121,6 +145,18 @@ update exactly once."
                      ;; Not attached: look for the game once per second.
                      ((null reader)
                       (setf reader (open-psobb-reader))
+                      (cond (reader
+                             ;; Refuse anything but the signed official
+                             ;; client - no attach, no recording.
+                             (let ((rejection (psobb-trust-rejection reader)))
+                               (setf *psobb-rejection* rejection)
+                               (when rejection
+                                 (close-reader reader)
+                                 (setf reader nil))))
+                            ;; The rejected process went away: back to
+                            ;; plain searching.
+                            ((and *psobb-rejection* (not (find-psobb-window)))
+                             (setf *psobb-rejection* nil)))
                       (setf *audio-target-pid*
                             (and reader (live-reader-pid reader)))
                       (if reader
@@ -142,7 +178,7 @@ update exactly once."
                             ;; too, so watch the clipboard here as well.
                             (ignore-errors (check-clipboard interface))
                             (update-game-status interface nil detector nil
-                                                recorder)
+                                                recorder *psobb-rejection*)
                             (mp:process-wait-with-timeout
                              "waiting for game" +search-interval+
                              (lambda () *stop-requested*)))))
