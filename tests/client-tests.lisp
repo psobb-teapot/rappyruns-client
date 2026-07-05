@@ -1122,6 +1122,27 @@ over the defaults. Restores the global config afterwards (it is bound)."
       (check "recorder returns to idle after finalize"
              (and (eq (recorder-state rec) :idle)
                   (= 2 (length (events-of backend :close))))))
+    ;; Completed runs are stamped with the video offset (capture start
+    ;; -> run start); the uploader forwards it as video_offset_ms so
+    ;; telemetry seeks land on the right video time.
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (declare (ignorable backend))
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      ;; Pretend the capture has been running for 700 s.
+      (setf (ephinea-ta-client::recorder-capture-start-real rec)
+            (- (get-internal-real-time)
+               (* 700 internal-time-units-per-second)))
+      (let ((run (make-test-run :time-ms 599123)))
+        (recorder-step rec :in-quest (list run) "Ephinea PSOBB")
+        (check "completed runs carry the video offset of their start"
+               (let ((offset (getf run :video-offset-ms)))
+                 ;; 700s elapsed - 599.123s run = ~100.9s into the video
+                 (and (integerp offset) (<= 100000 offset 102000)))))
+      (let ((run (append (make-test-run :time-ms 1)
+                         (list :video-offset-ms 42))))
+        (recorder-step rec :in-quest (list run) "Ephinea PSOBB")
+        (check "an existing video offset is left alone"
+               (eql 42 (getf run :video-offset-ms)))))
     ;; Abandoned quest: no completed runs, file deleted.
     (multiple-value-bind (rec backend) (make-test-recorder)
       (recorder-step rec :in-quest '() "Ephinea PSOBB")
@@ -1356,12 +1377,13 @@ over the defaults. Restores the global config afterwards (it is bound)."
              (and af
                   (search "loudnorm" (nth (1+ af) args))
                   (member "aac" args :test #'equal))))
-    (check "remux advances the audio by the measured lead"
-           (let ((offset (position "-itsoffset" args :test #'equal)))
-             (and offset
-                  (equal "-0.067" (nth (1+ offset) args))
-                  (member "0:v" args :test #'equal)
-                  (member "1:a?" args :test #'equal))))
+    (check "remux advances the audio by trimming the measured lead"
+           (let ((af (position "-af" args :test #'equal)))
+             (and af
+                  (search "atrim=start=0.067" (nth (1+ af) args))
+                  (search "asetpts=PTS-STARTPTS" (nth (1+ af) args)))))
+    (check "remux never uses itsoffset (negative ts break browser playback)"
+           (not (member "-itsoffset" args :test #'equal)))
     (check "remux reads the input and writes the output last"
            (and (member "in.mp4" args :test #'equal)
                 (equal "out.mp4" (first (last args))))))
@@ -2021,6 +2043,13 @@ store functions that persist never touch the real %APPDATA% queue."
              (check "an aborted-only queue has no upload candidate"
                     (null (ephinea-ta-client::upload-candidate :now now)))))
       (ignore-errors (delete-file video))))
+  ;; The upload URL carries the recorder's video offset when known.
+  (check "video-file url carries the offset when known"
+         (equal "/api/runs/7/video-file?offset_ms=1234"
+                (ephinea-ta-client::video-file-path 7 1234)))
+  (check "video-file url omits the offset when unknown"
+         (equal "/api/runs/7/video-file"
+                (ephinea-ta-client::video-file-path 7 nil)))
   ;; Given-up entries are finished: trimmed, not persisted.
   (check "a given-up upload is no longer active"
          (not (ephinea-ta-client::entry-active-p

@@ -271,6 +271,7 @@ was already on file, which is just as done. Returns the updated entry."
       (multiple-value-bind (outcome payload)
           (upload-run-video (getf entry :server-id)
                             (getf entry :video-path)
+                            :offset-ms (getf entry :video-offset-ms)
                             :on-progress on-progress)
         (ecase outcome
           ((:attached :duplicate)

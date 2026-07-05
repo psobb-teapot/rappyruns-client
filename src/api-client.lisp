@@ -443,11 +443,14 @@ Signals API-ERROR on authentication and transport failures."
                     :message (format nil "POST /api/runs/~d/video -> ~a: ~a"
                                      server-id status body))))))))
 
+(defun video-file-path (server-id offset-ms)
+  (format nil "/api/runs/~d/video-file~@[?offset_ms=~d~]" server-id offset-ms))
+
 #+lispworks
-(defun video-file-request (server-id file-path server-url token on-progress)
+(defun video-file-request (server-id file-path server-url token on-progress
+                           &optional offset-ms)
   (multiple-value-bind (scheme host port path)
-      (parse-url (api-url server-url
-                          (format nil "/api/runs/~d/video-file" server-id)))
+      (parse-url (api-url server-url (video-file-path server-id offset-ms)))
     (handler-case
         (multiple-value-bind (status response-body)
             (winhttp-upload-file "POST" scheme host port path file-path
@@ -462,11 +465,11 @@ Signals API-ERROR on authentication and transport failures."
         (error 'api-error :message (winhttp-error-message condition))))))
 
 #-lispworks
-(defun video-file-request (server-id file-path server-url token on-progress)
+(defun video-file-request (server-id file-path server-url token on-progress
+                           &optional offset-ms)
   "Test backend: buffers the whole file, fine for small fixtures."
   (multiple-value-bind (scheme host port path)
-      (parse-url (api-url server-url
-                          (format nil "/api/runs/~d/video-file" server-id)))
+      (parse-url (api-url server-url (video-file-path server-id offset-ms)))
     (let ((body (with-open-file (in file-path :element-type '(unsigned-byte 8))
                   (let ((bytes (make-array (file-length in)
                                            :element-type '(unsigned-byte 8))))
@@ -501,17 +504,22 @@ Signals API-ERROR on authentication and transport failures."
 (defun upload-run-video (server-id file-path
                          &key (server-url (config-value :server-url))
                               (token (config-value :api-token))
+                              offset-ms
                               on-progress)
   "POST /api/runs/:id/video-file: stream the recording at FILE-PATH up
 to the server, which relays it into hosted storage. Ordinary drafts are
-promoted to pending review; aborted runs stay drafts. Returns (values
+promoted to pending review; aborted runs stay drafts. OFFSET-MS, when
+known, is the video timestamp where the run's timer starts (the
+recorder measures it); the server stores it as video_offset_ms so the
+telemetry timeline seeks land where they should. Returns (values
 outcome payload): :attached, :duplicate (a video was already on file -
 both count as done) or :rejected (permanent, except the pending-limit
 error, which is worth retrying later); PAYLOAD is the parsed JSON
 response. Signals API-ERROR on authentication and transport failures
 \(worth retrying). ON-PROGRESS is called with (bytes-so-far total)."
   (multiple-value-bind (status body)
-      (video-file-request server-id file-path server-url token on-progress)
+      (video-file-request server-id file-path server-url token on-progress
+                          offset-ms)
     (let ((payload (ignore-errors (jzon:parse body))))
       (case status
         ((200 201) (values (if (and (hash-table-p payload)

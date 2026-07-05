@@ -236,16 +236,17 @@ lookahead throttled the live pipeline, see BUILD-FFMPEG-ARGS): loopback
 capture is post-mixer, so a low per-app volume slider (observed at 5%
 in the field) would otherwise leave recordings inaudible. loudnorm
 outputs 192 kHz internally; resample back down. The audio also moves
-+REMUX-AUDIO-LEAD-MS+ earlier (same INPUT-PATH opened twice: video
-from input 0, offset audio from input 1; the a? map keeps video-only
-recordings working). The offline pass runs far faster than real time."
++REMUX-AUDIO-LEAD-MS+ earlier by TRIMMING that much off its head -
+NOT with -itsoffset, whose leading negative timestamps browsers
+clamp or drop, which silently undid the shift on the hosted player
+(field-observed on run 88). The offline pass runs far faster than
+real time."
   (list "-y" "-loglevel" "error"
         "-i" input-path
-        "-itsoffset" (format nil "-~,3f" (/ +remux-audio-lead-ms+ 1000.0))
-        "-i" input-path
-        "-map" "0:v" "-map" "1:a?"
         "-c:v" "copy"
-        "-af" "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
+        "-af" (format nil "atrim=start=~,3f,asetpts=PTS-STARTPTS,~
+                           loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
+                      (/ +remux-audio-lead-ms+ 1000.0))
         "-c:a" "aac" "-b:a" "160k"
         "-movflags" "+faststart"
         output-path))
@@ -287,6 +288,7 @@ known once the audio session is activated)."
   backend              ; capture-backend protocol object
   (state :idle)        ; :idle | :recording | :stopping | :remuxing
   capture              ; backend token while :recording / :stopping
+  capture-start-real   ; internal real time when the capture started
   tmp-path             ; file ffmpeg is writing (namestring)
   session-runs         ; runs completed during this capture
   (last-detector-state :idle)
@@ -312,6 +314,7 @@ known once the audio session is activated)."
                                :audio-pipe audio-pipe :audio-pid audio-pid)
       (if capture
           (setf (recorder-capture recorder) capture
+                (recorder-capture-start-real recorder) (get-internal-real-time)
                 (recorder-tmp-path recorder) output
                 (recorder-session-runs recorder) '()
                 (recorder-last-error recorder) nil
@@ -319,6 +322,26 @@ known once the audio session is activated)."
           ;; Stay :idle; the edge trigger retries on the next quest.
           (setf (recorder-last-error recorder)
                 (or error "could not start ffmpeg"))))))
+
+(defun annotate-video-offsets (recorder runs)
+  "Stamp each of RUNS (completed this poll frame) with :VIDEO-OFFSET-MS,
+the video timestamp where the run's timer started: capture elapsed at
+completion minus the run's own duration. The site's telemetry timeline
+seeks the hosted video with this (video_offset_ms); without it a death
+at quest time T seeks to video time T, missing by however long the
+capture ran before the start trigger. NCONC, not (SETF GETF): the run
+plist is shared with the submission queue, which must see the key.
+Accuracy is ~the ffmpeg spin-up (a few hundred ms, video time 0 is the
+first grabbed frame); the run page's manual sync form can refine it."
+  (let ((start (recorder-capture-start-real recorder)))
+    (when start
+      (let ((elapsed-ms (round (* 1000 (- (get-internal-real-time) start))
+                               internal-time-units-per-second)))
+        (dolist (run runs)
+          (let ((offset (- elapsed-ms (getf run :time-ms 0))))
+            (when (and (>= offset 0)
+                       (null (getf run :video-offset-ms)))
+              (nconc run (list :video-offset-ms offset)))))))))
 
 (defun begin-stop (recorder)
   "Ask ffmpeg to finish and decide the file's fate: keep it under the
@@ -339,6 +362,7 @@ best completed run's name, or delete it when nothing completed."
 (defun reset-recorder (recorder)
   "Back to :idle with every per-capture field cleared."
   (setf (recorder-capture recorder) nil
+        (recorder-capture-start-real recorder) nil
         (recorder-tmp-path recorder) nil
         (recorder-session-runs recorder) '()
         (recorder-pending-keep-p recorder) nil
@@ -428,6 +452,9 @@ Runs are accumulated BEFORE the stop check because the detector flips
 to :idle on the very frame the full clear completes."
   (when (and completed-runs
              (member (recorder-state recorder) '(:recording :stopping)))
+    ;; The poll loop enqueues these same plists right after this call,
+    ;; so the offsets stamped here travel with the submission.
+    (annotate-video-offsets recorder completed-runs)
     (setf (recorder-session-runs recorder)
           (append (recorder-session-runs recorder) completed-runs)))
   (ecase (recorder-state recorder)
