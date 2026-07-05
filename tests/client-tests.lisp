@@ -1587,6 +1587,18 @@ store functions that persist never touch the real %APPDATA% queue."
            (equal '(1)
                   (mapcar (lambda (entry) (getf entry :server-id))
                           (ephinea-ta-client::video-candidates)))))
+  ;; The auto-uploaded hosted copy may still be swapped for the
+  ;; player's own link, so those entries stay candidates until an
+  ;; external URL is on file (issue #35).
+  (with-test-store ((list :status :submitted :server-id 4 :video-attached t
+                          :video-uploaded t)
+                    (list :status :submitted :server-id 5 :video-attached t
+                          :video-uploaded t :video-url "https://youtu.be/x")
+                    (list :status :submitted :server-id 6 :video-attached t))
+    (check "an auto-uploaded video can still take an external URL"
+           (equal '(4)
+                  (mapcar (lambda (entry) (getf entry :server-id))
+                          (ephinea-ta-client::video-candidates)))))
   ;; Labels for the new Video column and statuses.
   (check "video label: saved recording"
          (equal "saved" (ephinea-ta-client::run-video-label
