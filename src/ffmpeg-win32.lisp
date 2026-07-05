@@ -245,6 +245,19 @@ the GUI to validate the recording checkbox; -version exits on its own."
 (defmethod backend-capture-alive-p ((backend win32-ffmpeg-backend) capture)
   (capture-alive-p capture))
 
+(defmethod backend-start-remux ((backend win32-ffmpeg-backend)
+                                ffmpeg-path args)
+  ;; The remux ffmpeg reads no stdin, but SPAWN-PROCESS's pipe is
+  ;; harmless and keeps the capture token uniform.
+  (handler-case (spawn-process ffmpeg-path args)
+    (error (condition)
+      (values nil (format nil "~a" condition)))))
+
+(defmethod backend-capture-succeeded-p ((backend win32-ffmpeg-backend) capture)
+  (multiple-value-bind (ok code)
+      (%get-exit-code-process (ffmpeg-capture-process-handle capture) 0)
+    (and ok (zerop code))))
+
 (defun write-quit (capture)
   ;; A lone "q" on stdin makes ffmpeg finish the output cleanly. Two
   ;; bytes always fit the pipe buffer, so this never blocks.

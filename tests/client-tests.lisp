@@ -1003,6 +1003,10 @@ switch 0; room 2 cleared = floor 5 switch 2; full clear = register 254."
            :documentation "Chronological list of side-effect events.")
    (alive :initform t :accessor mock-alive)
    (start-result :initform :ok :accessor mock-start-result)
+   (remux-alive :initform nil :accessor mock-remux-alive
+                :documentation "NIL: the remux exits as soon as spawned.")
+   (remux-ok :initform t :accessor mock-remux-ok)
+   (remux-start-result :initform :ok :accessor mock-remux-start-result)
    (stale :initform '() :accessor mock-stale)))
 
 (defun record-event (backend &rest event)
@@ -1021,8 +1025,19 @@ switch 0; room 2 cleared = floor 5 switch 2; full clear = register 254."
       (values nil "mock start failure")))
 
 (defmethod backend-capture-alive-p ((backend mock-backend) capture)
+  (if (eq capture :mock-remux)
+      (mock-remux-alive backend)
+      (mock-alive backend)))
+
+(defmethod backend-start-remux ((backend mock-backend) ffmpeg-path args)
+  (record-event backend :remux ffmpeg-path args)
+  (if (eq (mock-remux-start-result backend) :ok)
+      :mock-remux
+      (values nil "mock remux failure")))
+
+(defmethod backend-capture-succeeded-p ((backend mock-backend) capture)
   (declare (ignore capture))
-  (mock-alive backend))
+  (mock-remux-ok backend))
 
 (defmethod backend-request-stop ((backend mock-backend) capture)
   (declare (ignore capture))
@@ -1086,17 +1101,26 @@ over the defaults. Restores the global config afterwards (it is bound)."
                   (= 1 (length (events-of backend :stop)))))
       (setf (mock-alive backend) nil)
       (recorder-step rec :idle '() "Ephinea PSOBB")
-      (let ((rename (first (events-of backend :rename))))
-        (check "completed run's video is renamed"
-               (and rename (search "rec-tmp-" (second rename))))
-        (check "final name has quest, time and date"
-               (and rename
+      (let ((remux (first (events-of backend :remux))))
+        (check "kept capture is remuxed with the moov up front"
+               (and (eq (recorder-state rec) :remuxing)
+                    remux
+                    (member "+faststart" (third remux) :test #'equal)))
+        (check "remux reads the tmp file"
+               (and remux (search "rec-tmp-" (nth 4 (third remux)))))
+        (check "remux writes the final name with quest, time and date"
+               (and remux
                     (search "ep1-test-quest 9'59.123 (2026-07-04 2130).mp4"
-                            (third rename)))))
+                            (first (last (third remux)))))))
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "successful remux deletes the tmp and skips the rename"
+             (let ((delete (first (events-of backend :delete))))
+               (and delete
+                    (search "rec-tmp-" (second delete))
+                    (null (events-of backend :rename)))))
       (check "recorder returns to idle after finalize"
              (and (eq (recorder-state rec) :idle)
-                  (null (events-of backend :delete))
-                  (= 1 (length (events-of backend :close))))))
+                  (= 2 (length (events-of backend :close))))))
     ;; Abandoned quest: no completed runs, file deleted.
     (multiple-value-bind (rec backend) (make-test-recorder)
       (recorder-step rec :in-quest '() "Ephinea PSOBB")
@@ -1120,7 +1144,7 @@ over the defaults. Restores the global config afterwards (it is bound)."
       (recorder-step rec :idle '() "Ephinea PSOBB")
       (check "segment-only capture is kept under the segment name"
              (search "ep1-seg 2'00.500"
-                     (third (first (events-of backend :rename))))))
+                     (first (last (third (first (events-of backend :remux))))))))
     ;; Full clear + segment: the longest run names the file.
     (multiple-value-bind (rec backend) (make-test-recorder)
       (recorder-step rec :in-quest '() "Ephinea PSOBB")
@@ -1134,7 +1158,7 @@ over the defaults. Restores the global config afterwards (it is bound)."
       (recorder-step rec :idle '() "Ephinea PSOBB")
       (check "full clear (longest run) names the video"
              (search "ep1-full 9'59.123"
-                     (third (first (events-of backend :rename))))))
+                     (first (last (third (first (events-of backend :remux))))))))
     ;; ffmpeg fails to start: error surfaced, retried on the NEXT quest.
     (multiple-value-bind (rec backend) (make-test-recorder)
       (setf (mock-start-result backend) :fail)
@@ -1171,9 +1195,56 @@ over the defaults. Restores the global config afterwards (it is bound)."
       (check "kill happens only once" (= 1 (length (events-of backend :kill))))
       (setf (mock-alive backend) nil)
       (recorder-step rec :idle '() "Ephinea PSOBB")
-      (check "killed capture is still kept (fragmented mp4)"
-             (= 1 (length (events-of backend :rename)))))
-    ;; Shutdown mid-recording finishes the capture synchronously.
+      (check "killed capture is still kept (remuxed from the fragments)"
+             (= 1 (length (events-of backend :remux)))))
+    ;; Remux fails: partial output dropped, fragmented original renamed.
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (setf (mock-remux-ok backend) nil)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (recorder-step rec :idle (list (make-test-run)) "Ephinea PSOBB")
+      (setf (mock-alive backend) nil)
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (let ((rename (first (events-of backend :rename))))
+        (check "failed remux falls back to the fragmented original"
+               (and rename
+                    (search "rec-tmp-" (second rename))
+                    (eq (recorder-state rec) :idle)))
+        (check "failed remux drops its partial output first"
+               (equal (third rename)
+                      (second (first (events-of backend :delete)))))))
+    ;; Remux cannot even start (ffmpeg gone): immediate rename fallback.
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (setf (mock-remux-start-result backend) :fail)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (recorder-step rec :idle (list (make-test-run)) "Ephinea PSOBB")
+      (setf (mock-alive backend) nil)
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "unstartable remux falls back to a rename at once"
+             (and (eq (recorder-state rec) :idle)
+                  (= 1 (length (events-of backend :rename))))))
+    ;; Remux hangs: killed after the grace period, fallback still kept.
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (setf (mock-remux-alive backend) t
+            (mock-remux-ok backend) nil)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (recorder-step rec :idle (list (make-test-run)) "Ephinea PSOBB")
+      (setf (mock-alive backend) nil)
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "healthy remux is not killed"
+             (null (events-of backend :kill)))
+      (setf (ephinea-ta-client::recorder-remux-deadline rec)
+            (1- (get-internal-real-time)))
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "hung remux is killed after the grace period"
+             (= 1 (length (events-of backend :kill))))
+      (setf (mock-remux-alive backend) nil)
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "killed remux still keeps the fragmented original"
+             (and (eq (recorder-state rec) :idle)
+                  (= 1 (length (events-of backend :rename))))))
+    ;; Shutdown mid-recording finishes capture and remux synchronously.
     (multiple-value-bind (rec backend) (make-test-recorder)
       (recorder-step rec :in-quest '() "Ephinea PSOBB")
       (recorder-step rec :in-quest (list (make-test-run)) "Ephinea PSOBB")
@@ -1181,7 +1252,8 @@ over the defaults. Restores the global config afterwards (it is bound)."
       (check "shutdown mid-recording kills and keeps the completed run"
              (and (eq (recorder-state rec) :idle)
                   (= 1 (length (events-of backend :kill)))
-                  (= 1 (length (events-of backend :rename))))))
+                  (= 1 (length (events-of backend :remux)))
+                  (null (events-of backend :rename)))))
     ;; No window title (mock reader / not attached): no capture.
     (multiple-value-bind (rec backend) (make-test-recorder)
       (recorder-step rec :in-quest '() nil)
@@ -1228,6 +1300,14 @@ over the defaults. Restores the global config afterwards (it is bound)."
            (equal "out.mp4" (first (last args))))
     (check "video-only args carry no audio input"
            (not (member "s16le" args :test #'equal))))
+  (let ((args (build-remux-args "in.mp4" "out.mp4")))
+    (check "remux args stream-copy with faststart"
+           (and (member "copy" args :test #'equal)
+                (member "+faststart" args :test #'equal)
+                (not (member "libx264" args :test #'equal))))
+    (check "remux reads the input and writes the output last"
+           (and (member "in.mp4" args :test #'equal)
+                (equal "out.mp4" (first (last args))))))
   ;; Audio arguments and their video-only fallback.
   (let* ((pipe (ephinea-ta-client::audio-pipe-name))
          (with-audio (build-ffmpeg-args :window-title "T"
@@ -1300,6 +1380,8 @@ store functions that persist never touch the real %APPDATA% queue."
       (recorder-step rec :idle (list (make-test-run)) "Ephinea PSOBB")
       (setf (mock-alive backend) nil)
       (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "on-keep waits for the remux" (null kept))
+      (recorder-step rec :idle '() "Ephinea PSOBB")
       (check "on-keep is called once with the final path and best run"
              (and (= 1 (length kept))
                   (search "9'59.123" (first (first kept)))
@@ -1332,6 +1414,7 @@ store functions that persist never touch the real %APPDATA% queue."
       (recorder-step rec :in-quest '() "Ephinea PSOBB")
       (recorder-step rec :idle (list (make-test-run)) "Ephinea PSOBB")
       (setf (mock-alive backend) nil)
+      (recorder-step rec :idle '() "Ephinea PSOBB")
       (recorder-step rec :idle '() "Ephinea PSOBB")
       (check "an erroring on-keep neither sticks nor reports"
              (and (eq (recorder-state rec) :idle)

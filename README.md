@@ -106,7 +106,11 @@ on SBCL against a mock backend); `src/ffmpeg-win32.lisp` spawns
 ffmpeg.exe via `CreateProcessW` with a stdin pipe (`q` = graceful stop,
 `TerminateProcess` after 5 s as fallback). Output is fragmented MP4
 (`-movflags +frag_keyframe+empty_moov`), so even a killed capture stays
-playable.
+playable. A kept recording is then remuxed in place (`-c copy -movflags
++faststart`, seconds even for long captures) into a regular MP4 with
+the moov atom up front: fragmented MP4 carries no duration/seek index,
+so browsers streaming the hosted video would show a seekbar that grows
+while it loads. If the remux fails the fragmented original is kept.
 
 Known limits: capture starts a few hundred ms after the start trigger
 (ffmpeg spin-up), gdigrab can't capture a minimized window, and the

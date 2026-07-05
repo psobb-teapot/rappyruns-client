@@ -12,7 +12,11 @@
 ;;; trackers done, quest unloaded, or the game vanished). The file is
 ;;; kept only when at least one run completed during the capture;
 ;;; abandoned quests are deleted. Output is fragmented MP4, so even a
-;;; TerminateProcess leaves a playable file.
+;;; TerminateProcess leaves a playable file. A kept file is then
+;;; remuxed (stream copy) into a regular MP4 with the moov up front:
+;;; fragmented MP4 carries no duration/seek index, so browsers playing
+;;; the hosted video would show a seekbar that grows as it loads. The
+;;; fragmented original is kept as-is when the remux fails.
 
 ;;; Capture-backend protocol
 
@@ -36,6 +40,16 @@ Returns a capture token, or (values nil error-string)."))
 
 (defgeneric backend-close-capture (backend capture)
   (:documentation "Release process/pipe handles once the process is dead."))
+
+(defgeneric backend-start-remux (backend ffmpeg-path args)
+  (:documentation
+   "Spawn ffmpeg with ARGS (see BUILD-REMUX-ARGS) to rewrite a finished
+recording. Returns a capture token usable with BACKEND-CAPTURE-ALIVE-P /
+BACKEND-CAPTURE-SUCCEEDED-P / BACKEND-KILL-CAPTURE /
+BACKEND-CLOSE-CAPTURE, or (values nil error-string)."))
+
+(defgeneric backend-capture-succeeded-p (backend capture)
+  (:documentation "Did the (dead) process exit with status 0?"))
 
 (defgeneric backend-rename-file (backend from to))
 
@@ -64,6 +78,12 @@ loopback), so only the game is heard - not Discord or system sounds.")
   "How long to wait for ffmpeg to exit after a stop request before
 killing it. Must exceed the audio drain delay (ffmpeg-win32) plus
 ffmpeg's own finalization time.")
+
+(defparameter +remux-grace-seconds+ 60
+  "How long the post-capture remux may run before it is killed and the
+fragmented original is kept instead. Stream copy is disk-bound, so even
+an hour-long recording finishes in seconds; the margin covers a slow
+HDD under load.")
 
 ;;; Paths and filenames
 
@@ -162,6 +182,16 @@ named pipe as a second input and is encoded as AAC."
    (list "-movflags" "+frag_keyframe+empty_moov"
          output-path)))
 
+(defun build-remux-args (input-path output-path)
+  "ffmpeg argv rewriting the fragmented recording as a regular MP4 with
+the moov (duration + seek index) at the front. Stream copy - no
+re-encode - so this takes seconds even for long captures."
+  (list "-y" "-loglevel" "error"
+        "-i" input-path
+        "-c" "copy"
+        "-movflags" "+faststart"
+        output-path))
+
 (defun remove-subseq (list subseq)
   "LIST without the first occurrence of the consecutive SUBSEQ."
   (let ((position (search subseq list :test #'equal)))
@@ -198,7 +228,7 @@ known once the audio session is activated)."
 
 (defstruct recorder
   backend              ; capture-backend protocol object
-  (state :idle)        ; :idle | :recording | :stopping
+  (state :idle)        ; :idle | :recording | :stopping | :remuxing
   capture              ; backend token while :recording / :stopping
   tmp-path             ; file ffmpeg is writing (namestring)
   session-runs         ; runs completed during this capture
@@ -206,7 +236,9 @@ known once the audio session is activated)."
   stop-deadline        ; internal real time to give up on "q" and kill
   pending-keep-p       ; decided when the stop begins
   pending-run          ; the kept file's best run, for ON-KEEP
-  final-path           ; rename target when keeping
+  final-path           ; remux/rename target when keeping
+  remux-capture        ; backend token while :remuxing
+  remux-deadline       ; internal real time to give up on the remux
   on-keep              ; (lambda (final-path run)) after a successful save
   last-error)          ; string for the GUI, or NIL
 
@@ -247,48 +279,91 @@ best completed run's name, or delete it when nothing completed."
     (ignore-errors (backend-request-stop (recorder-backend recorder)
                                          (recorder-capture recorder)))))
 
-(defun finalize-capture (recorder)
-  "The process is dead: release handles, then rename or delete the file."
-  (let ((backend (recorder-backend recorder)))
-    (ignore-errors (backend-close-capture backend (recorder-capture recorder)))
-    (if (and (recorder-pending-keep-p recorder) (recorder-final-path recorder))
-        (handler-case
-            (progn
-              (backend-rename-file backend (recorder-tmp-path recorder)
-                                   (recorder-final-path recorder))
-              (when (recorder-on-keep recorder)
-                (ignore-errors
-                  (funcall (recorder-on-keep recorder)
-                           (recorder-final-path recorder)
-                           (recorder-pending-run recorder)))))
-          (error (condition)
-            (setf (recorder-last-error recorder)
-                  (format nil "could not save recording: ~a" condition))))
-        (ignore-errors
-          (backend-delete-file backend (recorder-tmp-path recorder)))))
+(defun reset-recorder (recorder)
+  "Back to :idle with every per-capture field cleared."
   (setf (recorder-capture recorder) nil
         (recorder-tmp-path recorder) nil
         (recorder-session-runs recorder) '()
         (recorder-pending-keep-p recorder) nil
         (recorder-pending-run recorder) nil
         (recorder-final-path recorder) nil
+        (recorder-remux-capture recorder) nil
+        (recorder-remux-deadline recorder) nil
         (recorder-stop-deadline recorder) nil
         (recorder-state recorder) :idle))
+
+(defun finalize-capture (recorder)
+  "The recording process is dead: release handles, then remux a kept
+file (or delete an abandoned one)."
+  (let ((backend (recorder-backend recorder)))
+    (ignore-errors (backend-close-capture backend (recorder-capture recorder)))
+    (if (and (recorder-pending-keep-p recorder) (recorder-final-path recorder))
+        (begin-remux recorder)
+        (progn
+          (ignore-errors
+            (backend-delete-file backend (recorder-tmp-path recorder)))
+          (reset-recorder recorder)))))
+
+(defun begin-remux (recorder)
+  "Start the background ffmpeg rewriting the kept fragmented file into
+FINAL-PATH; SAVE-RECORDING runs once it exits. When ffmpeg cannot even
+start, keep the fragmented original rather than lose the recording."
+  (multiple-value-bind (capture error)
+      (backend-start-remux (recorder-backend recorder)
+                           (resolve-ffmpeg-path)
+                           (build-remux-args (recorder-tmp-path recorder)
+                                             (recorder-final-path recorder)))
+    (declare (ignore error))
+    (if capture
+        (setf (recorder-remux-capture recorder) capture
+              (recorder-remux-deadline recorder)
+              (+ (get-internal-real-time)
+                 (* +remux-grace-seconds+ internal-time-units-per-second))
+              (recorder-state recorder) :remuxing)
+        (save-recording recorder :remuxed nil))))
+
+(defun finish-remux (recorder)
+  "The remux process is dead: keep its output when it exited cleanly,
+else drop the partial output and fall back to the fragmented original."
+  (let* ((backend (recorder-backend recorder))
+         (capture (recorder-remux-capture recorder))
+         (ok (ignore-errors (backend-capture-succeeded-p backend capture))))
+    (ignore-errors (backend-close-capture backend capture))
+    (unless ok
+      (ignore-errors
+        (backend-delete-file backend (recorder-final-path recorder))))
+    (save-recording recorder :remuxed ok)))
+
+(defun save-recording (recorder &key remuxed)
+  "Put the final file in place - the remux already wrote FINAL-PATH
+when REMUXED (the tmp only needs deleting), otherwise the fragmented
+tmp is renamed onto it - and hand it to ON-KEEP."
+  (handler-case
+      (progn
+        (if remuxed
+            (ignore-errors
+              (backend-delete-file (recorder-backend recorder)
+                                   (recorder-tmp-path recorder)))
+            (backend-rename-file (recorder-backend recorder)
+                                 (recorder-tmp-path recorder)
+                                 (recorder-final-path recorder)))
+        (when (recorder-on-keep recorder)
+          (ignore-errors
+            (funcall (recorder-on-keep recorder)
+                     (recorder-final-path recorder)
+                     (recorder-pending-run recorder)))))
+    (error (condition)
+      (setf (recorder-last-error recorder)
+            (format nil "could not save recording: ~a" condition))))
+  (reset-recorder recorder))
 
 (defun abort-capture (recorder message)
   "ffmpeg died on its own mid-capture: clean up and surface the error."
   (let ((backend (recorder-backend recorder)))
     (ignore-errors (backend-close-capture backend (recorder-capture recorder)))
     (ignore-errors (backend-delete-file backend (recorder-tmp-path recorder))))
-  (setf (recorder-capture recorder) nil
-        (recorder-tmp-path recorder) nil
-        (recorder-session-runs recorder) '()
-        (recorder-pending-keep-p recorder) nil
-        (recorder-pending-run recorder) nil
-        (recorder-final-path recorder) nil
-        (recorder-stop-deadline recorder) nil
-        (recorder-state recorder) :idle
-        (recorder-last-error recorder) message))
+  (reset-recorder recorder)
+  (setf (recorder-last-error recorder) message))
 
 (defun recorder-step (recorder detector-state completed-runs window-title)
   "Feed one poll frame. COMPLETED-RUNS is DETECTOR-STEP's return value.
@@ -325,26 +400,47 @@ to :idle on the very frame the full clear completes."
         ;; "q" did not work; the fragmented MP4 survives the kill.
         (ignore-errors (backend-kill-capture (recorder-backend recorder)
                                              (recorder-capture recorder)))
-        (setf (recorder-stop-deadline recorder) nil)))))
+        (setf (recorder-stop-deadline recorder) nil))))
+    (:remuxing
+     (cond
+       ((not (backend-capture-alive-p (recorder-backend recorder)
+                                      (recorder-remux-capture recorder)))
+        (finish-remux recorder))
+       ((and (recorder-remux-deadline recorder)
+             (>= (get-internal-real-time) (recorder-remux-deadline recorder)))
+        ;; Runaway remux: kill it; the next frame falls back to the
+        ;; fragmented original via FINISH-REMUX.
+        (ignore-errors (backend-kill-capture (recorder-backend recorder)
+                                             (recorder-remux-capture recorder)))
+        (setf (recorder-remux-deadline recorder) nil)))))
   (setf (recorder-last-detector-state recorder) detector-state)
   recorder)
 
+(defun wait-for-capture (backend capture timeout)
+  "Poll CAPTURE until it exits or TIMEOUT seconds pass; kill it when
+the deadline hits."
+  (let ((deadline (+ (get-internal-real-time)
+                     (* timeout internal-time-units-per-second))))
+    (loop :while (and (backend-capture-alive-p backend capture)
+                      (< (get-internal-real-time) deadline))
+          :do (sleep 0.05))
+    (when (backend-capture-alive-p backend capture)
+      (ignore-errors (backend-kill-capture backend capture)))))
+
 (defun recorder-shutdown (recorder &key (timeout +stop-grace-seconds+))
   "Client is exiting: finish any capture in progress, waiting up to
-TIMEOUT seconds for a graceful stop before killing ffmpeg."
+TIMEOUT seconds for a graceful stop before killing ffmpeg, then up to
+TIMEOUT more for the remux of a kept file."
   (when (eq (recorder-state recorder) :recording)
     (begin-stop recorder))
   (when (eq (recorder-state recorder) :stopping)
-    (let ((backend (recorder-backend recorder))
-          (capture (recorder-capture recorder))
-          (deadline (+ (get-internal-real-time)
-                       (* timeout internal-time-units-per-second))))
-      (loop :while (and (backend-capture-alive-p backend capture)
-                        (< (get-internal-real-time) deadline))
-            :do (sleep 0.05))
-      (when (backend-capture-alive-p backend capture)
-        (ignore-errors (backend-kill-capture backend capture)))
-      (finalize-capture recorder))))
+    (wait-for-capture (recorder-backend recorder)
+                      (recorder-capture recorder) timeout)
+    (finalize-capture recorder))
+  (when (eq (recorder-state recorder) :remuxing)
+    (wait-for-capture (recorder-backend recorder)
+                      (recorder-remux-capture recorder) timeout)
+    (finish-remux recorder)))
 
 (defun cleanup-stale-recordings (recorder)
   "Delete rec-tmp-*.mp4 left behind by a crash of a previous session."
