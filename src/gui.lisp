@@ -181,10 +181,14 @@ poll loop re-reads it every iteration.")
                  :callback 'retry-callback
                  :callback-type :interface
                  :font *ui-font*)
+   ;; A bare x, like the clear button of a search field: it sits at the
+   ;; list's top right corner, so "clear the list" is read off the
+   ;; position (plus tooltip); the confirm dialog spells out the rest.
    (clear-list-button capi:push-button
-                      :text (tr :clear-list-button)
+                      :text "×"
                       :callback 'clear-list-callback
                       :callback-type :interface
+                      :help-key :clear-list
                       :font *ui-font*))
   ;; Two tabs mirror how the app is used: Settings once up front, then
   ;; the Runs tab for the daily play -> check video -> submit flow.
@@ -194,9 +198,13 @@ poll loop re-reads it every iteration.")
    ;; right here), with the folder / site / resubmit as fallbacks.
    (actions-row capi:row-layout
                 '(upload-button recordings-folder-button my-runs-button
-                  retry-button clear-list-button))
+                  retry-button))
+   ;; The x rides the quest-status row (NIL = stretchable gap), landing
+   ;; in the list's top right corner away from the everyday buttons.
+   (quest-row capi:row-layout '(quest-status nil clear-list-button)
+              :adjust :center)
    (runs-tab capi:column-layout
-             '(status-row quest-status runs-list actions-row)
+             '(status-row quest-row runs-list actions-row)
              :adjust :left)
    ;; Settings are grouped by how they behave: the Connection fields
    ;; need Save & verify, every checkbox applies immediately.
@@ -247,7 +255,17 @@ poll loop re-reads it every iteration.")
   (:default-initargs
    :title "Ephinea TA Client"
    :layout 'main-tabs
+   :help-callback 'client-help-callback
    :visible-min-width '(:character 100)))
+
+(defun client-help-callback (interface pane type key)
+  "Tooltips for panes whose looks alone do not say what they do (the
+bare x button). CAPI calls this for every help interaction; anything
+but a known tooltip key returns NIL (= no tooltip)."
+  (declare (ignore interface pane))
+  (when (eq type :tooltip)
+    (case key
+      (:clear-list (tr :clear-list-tooltip)))))
 
 (defun save-settings-callback (interface)
   "Save the Connection fields and verify both against the server.

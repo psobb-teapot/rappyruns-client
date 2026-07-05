@@ -95,7 +95,7 @@
     :retry-button
     ("Submit pending runs"
      "未送信の記録を送信")
-    :clear-list-button
+    :clear-list-tooltip
     ("Clear list"
      "一覧をクリア")
 
