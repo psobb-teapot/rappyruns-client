@@ -258,6 +258,11 @@ process to die, swaps the exe and restarts the new build."
                            (merge-pathnames "ephinea-ta-update.log" temp)))))
     (with-open-file (out script-path :direction :output :if-exists :supersede
                                      :external-format :utf-8)
+      ;; BOM first: PowerShell 5.1 reads a BOM-less .ps1 as ANSI (cp932
+      ;; on Japanese Windows), garbling non-ASCII install paths - e.g.
+      ;; a OneDrive desktop folder - so every path check in the script
+      ;; missed and the swap failed.
+      (write-char (code-char #xfeff) out)
       (write-string text out))
     (close-capture-handles
      (spawn-process "powershell.exe"
