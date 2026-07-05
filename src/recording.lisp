@@ -75,7 +75,14 @@ ones are left alone (min(), never an upscale). Height is forced even
 for yuv420p, and -2 keeps the aspect ratio with an even width.")
 
 (defun record-scale-filter ()
-  (format nil "scale=-2:trunc(min(~d\\,ih)/2)*2:flags=lanczos"
+  ;; fast_bilinear, NOT lanczos: the grab -> scale -> encode loop is
+  ;; serial per frame, and under live game load the window BitBlt
+  ;; alone runs ~30 ms. Lanczos added ~16 ms per 3200x1800 frame
+  ;; (field-measured: average frame interval went 40 ms -> 56 ms,
+  ;; i.e. 25 fps -> 18 fps with second-long stalls), which starved
+  ;; the capture and desynced the audio. The sharpness difference at
+  ;; a 1080p downscale is negligible for run verification.
+  (format nil "scale=-2:trunc(min(~d\\,ih)/2)*2:flags=fast_bilinear"
           +record-max-height+))
 
 (defvar *audio-target-pid* nil
