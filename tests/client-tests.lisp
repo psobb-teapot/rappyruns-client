@@ -1356,6 +1356,12 @@ over the defaults. Restores the global config afterwards (it is bound)."
              (and af
                   (search "loudnorm" (nth (1+ af) args))
                   (member "aac" args :test #'equal))))
+    (check "remux advances the audio by the measured lead"
+           (let ((offset (position "-itsoffset" args :test #'equal)))
+             (and offset
+                  (equal "-0.067" (nth (1+ offset) args))
+                  (member "0:v" args :test #'equal)
+                  (member "1:a?" args :test #'equal))))
     (check "remux reads the input and writes the output last"
            (and (member "in.mp4" args :test #'equal)
                 (equal "out.mp4" (first (last args))))))

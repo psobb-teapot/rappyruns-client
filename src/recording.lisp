@@ -218,6 +218,16 @@ named pipe as a second input and is encoded as AAC."
    (list "-movflags" "+frag_keyframe+empty_moov"
          output-path)))
 
+(defparameter +remux-audio-lead-ms+ 67
+  "How much the remux advances the audio track. Captures carry a small
+constant audio lag - the capture-side latency of the loopback path
+plus the game's own sound latency (a DirectSound game renders a hit
+sound tens of ms after the hit frame). Cross-correlating a real
+recording measured +67 ms, and the submitter confirmed by ear that a
+-67 ms shifted clip is the natural-feeling one (A/B/C comparison,
+2026-07-06). Two video frames' worth; adjust only against both a
+measurement and an ear check.")
+
 (defun build-remux-args (input-path output-path)
   "ffmpeg argv rewriting the fragmented recording as a regular MP4 with
 the moov (duration + seek index) at the front. Video is stream-copied;
@@ -225,11 +235,15 @@ audio is loudness-normalized here, NOT during capture (loudnorm's
 lookahead throttled the live pipeline, see BUILD-FFMPEG-ARGS): loopback
 capture is post-mixer, so a low per-app volume slider (observed at 5%
 in the field) would otherwise leave recordings inaudible. loudnorm
-outputs 192 kHz internally; resample back down. ffmpeg ignores the
-audio options for a video-only recording (verified), and the offline
-pass runs far faster than real time either way."
+outputs 192 kHz internally; resample back down. The audio also moves
++REMUX-AUDIO-LEAD-MS+ earlier (same INPUT-PATH opened twice: video
+from input 0, offset audio from input 1; the a? map keeps video-only
+recordings working). The offline pass runs far faster than real time."
   (list "-y" "-loglevel" "error"
         "-i" input-path
+        "-itsoffset" (format nil "-~,3f" (/ +remux-audio-lead-ms+ 1000.0))
+        "-i" input-path
+        "-map" "0:v" "-map" "1:a?"
         "-c:v" "copy"
         "-af" "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
         "-c:a" "aac" "-b:a" "160k"
