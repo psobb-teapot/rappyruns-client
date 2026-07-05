@@ -280,6 +280,9 @@
     :status-draft-add
     ("draft - double-click to add video"
      "下書き - ダブルクリックで動画を追加")
+    :status-draft-aborted
+    ("aborted - private, recording kept locally"
+     "中断 - 非公開・録画はローカル保存のみ")
     :status-duplicate
     ("duplicate (already on server)"
      "重複 (サーバーに登録済み)")

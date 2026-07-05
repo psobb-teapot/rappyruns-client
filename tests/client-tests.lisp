@@ -1954,6 +1954,20 @@ store functions that persist never touch the real %APPDATA% queue."
                           :upload-given-up)))
            (with-test-store ((list :status :queued :video-path path))
              (check "entries without a server draft cannot upload yet"
+                    (null (ephinea-ta-client::upload-candidate :now now))))
+           ;; Aborted runs keep their recording locally but never
+           ;; auto-upload it (reset-farming would flood hosted storage).
+           (with-test-store ((list :status :submitted :server-id 2
+                                   :video-path path)
+                             (list :status :submitted :server-id 1
+                                   :video-path path :aborted t))
+             (check "an aborted run's recording never uploads"
+                    (eql 2 (getf (ephinea-ta-client::upload-candidate
+                                  :now now)
+                                 :server-id))))
+           (with-test-store ((list :status :submitted :server-id 1
+                                   :video-path path :aborted t))
+             (check "an aborted-only queue has no upload candidate"
                     (null (ephinea-ta-client::upload-candidate :now now)))))
       (ignore-errors (delete-file video))))
   ;; Given-up entries are finished: trimmed, not persisted.
@@ -1961,6 +1975,14 @@ store functions that persist never touch the real %APPDATA% queue."
          (not (ephinea-ta-client::entry-active-p
                (list :status :submitted :server-id 1 :video-path "v.mp4"
                      :upload-given-up t))))
+  (check "an aborted run with a pending video is not active"
+         (not (ephinea-ta-client::entry-active-p
+               (list :status :submitted :server-id 1 :video-path "v.mp4"
+                     :aborted t))))
+  (check "status label: aborted drafts say the recording stays local"
+         (search "aborted" (ephinea-ta-client::run-status-label
+                            (list :status :submitted :aborted t
+                                  :video-path "v.mp4"))))
   ;; Labels around the upload lifecycle.
   (let ((ephinea-ta-client::*upload-progress* (list 7 50 200)))
     (check "video label: in-flight upload shows its percent"

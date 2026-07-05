@@ -26,10 +26,13 @@ the list; active ones (see ENTRY-ACTIVE-P) are never dropped.")
   "Unfinished business that must survive trimming and restarts: entries
 awaiting (re)submission, and entries whose saved video has not been
 attached to their server draft yet (unless the upload was permanently
-rejected - those are as finished as a rejected run)."
+rejected - those are as finished as a rejected run). Aborted runs never
+upload their recording (reset-farming would flood hosted storage with
+worthless footage), so a pending video does not keep them active."
   (or (member (getf entry :status) '(:queued :failed))
       (and (getf entry :video-path)
            (getf entry :server-id)
+           (not (getf entry :aborted))
            (not (getf entry :video-attached))
            (not (getf entry :upload-given-up)))))
 
@@ -55,7 +58,9 @@ LIMIT finished ones, preserving order."
       (tr :status-video-attached)
       (case (getf entry :status)
         (:queued (tr :status-queued))
-        (:submitted (cond ((not (getf entry :video-path))
+        (:submitted (cond ((getf entry :aborted)
+                           (tr :status-draft-aborted))
+                          ((not (getf entry :video-path))
                            (tr :status-draft-add))
                           ((and (config-value :video-upload)
                                 (not (getf entry :upload-given-up)))
@@ -240,11 +245,15 @@ moderator decision frees a slot, so probing more often is pointless.")
 
 (defun upload-candidate (&key (now (get-universal-time)))
   "The oldest entry whose saved recording still needs uploading and is
-not backing off. An entry whose file vanished from disk (the user
-deleted it) gives up on the spot and the scan moves on."
+not backing off. Aborted runs are skipped: their recording stays on
+disk for the player, but a cancelled attempt has no review value and
+heavy reset-farming (100 laps a day happen) would swamp hosted storage.
+An entry whose file vanished from disk (the user deleted it) gives up
+on the spot and the scan moves on."
   (dolist (entry (reverse (queued-runs)))
     (when (and (getf entry :video-path)
                (getf entry :server-id)
+               (not (getf entry :aborted))
                (not (getf entry :video-attached))
                (not (getf entry :upload-given-up))
                (let ((next (getf entry :next-upload-at)))
