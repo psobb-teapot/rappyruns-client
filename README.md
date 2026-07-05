@@ -205,7 +205,7 @@ release on the releases repo and upload the zip as an asset).
 One-time setup:
 
 ```
-gh repo create psobb-teapot/ephinea-ta-client-releases --public \
+gh repo create psobb-teapot/rappyruns-client-releases --public \
   --description "Binary releases of the RappyRuns desktop client"
 ```
 
@@ -228,7 +228,7 @@ in a file (passing quotes on the `gh` command line is unreliable).
 
 The main asset must be named `RappyRunsClient.zip` - the site's
 download button points at
-`https://github.com/psobb-teapot/ephinea-ta-client-releases/releases/latest/download/RappyRunsClient.zip`
+`https://github.com/psobb-teapot/rappyruns-client-releases/releases/latest/download/RappyRunsClient.zip`
 (override with `ETA_CLIENT_DOWNLOAD_URL` on the server) - and every
 release must also carry the legacy `EphineaTAClient.zip` until the
 pre-rename install base is gone (release.ps1 uploads both).

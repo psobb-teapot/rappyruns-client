@@ -2,8 +2,14 @@
 
 ;;; Config lives in %APPDATA%/ephinea-ta-client/config.sexp as a plist.
 
+(defparameter +old-default-server-url+
+  "https://ephinea-ta-production.up.railway.app"
+  "The pre-rename production URL. Configs that still carry it are
+rewritten to the new default on load (LOAD-CONFIG!), so the old domain
+can eventually be retired; a custom URL is never touched.")
+
 (defparameter *default-config*
-  (list :server-url "https://ephinea-ta-production.up.railway.app"
+  (list :server-url "https://rappyruns-production.up.railway.app"
         :api-token ""
         :language :en      ; UI language, :en or :ja (i18n.lisp)
         :auto-submit t
@@ -48,13 +54,22 @@
         (prin1 form out))))
   form)
 
+(defun migrate-config (config)
+  "Bring an older config file up to date (pure, so the tests can pin it).
+Scrubs the dropped :token-prompt-shown key (the token nudge now repeats
+until a token is set) and retargets the old default server URL to the
+new domain (both serve the same app while both exist); a custom URL is
+never touched."
+  (remf config :token-prompt-shown)
+  (when (equal (getf config :server-url) +old-default-server-url+)
+    (setf (getf config :server-url)
+          (getf *default-config* :server-url)))
+  config)
+
 (defun load-config! ()
-  (setf *config* (or (read-sexp-file (config-path))
-                     (copy-list *default-config*)))
-  ;; Dropped key: the token nudge now repeats until a token is set, so
-  ;; the old one-time flag is scrubbed from older config files.
-  (remf *config* :token-prompt-shown)
-  *config*)
+  (setf *config* (migrate-config
+                  (or (read-sexp-file (config-path))
+                      (copy-list *default-config*)))))
 
 (defun save-config! ()
   (write-sexp-file (config-path) *config*))

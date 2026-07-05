@@ -1933,6 +1933,32 @@ store functions that persist never touch the real %APPDATA% queue."
            (not (search "Remove-Item -Force $exe" script)))))
 
 ;;; ------------------------------------------------------------------
+;;; Config migration (the RappyRuns rename retargets the old default
+;;; server URL; custom URLs and everything else pass through)
+;;; ------------------------------------------------------------------
+
+(defun run-config-migration-tests ()
+  (format t "~&--- config migration ---~%")
+  (let ((migrated (ephinea-ta-client::migrate-config
+                   (list :server-url ephinea-ta-client::+old-default-server-url+
+                         :api-token "eta_x"))))
+    (check "old default server URL is retargeted"
+           (equal (getf ephinea-ta-client::*default-config* :server-url)
+                  (getf migrated :server-url)))
+    (check "other keys survive the migration"
+           (equal "eta_x" (getf migrated :api-token))))
+  (check "a custom server URL is never touched"
+         (equal "http://localhost:8080"
+                (getf (ephinea-ta-client::migrate-config
+                       (list :server-url "http://localhost:8080"))
+                      :server-url)))
+  (check "the dropped token-prompt-shown key is scrubbed"
+         (let ((migrated (ephinea-ta-client::migrate-config
+                          (list :token-prompt-shown t :auto-submit t))))
+           (and (null (getf migrated :token-prompt-shown))
+                (getf migrated :auto-submit)))))
+
+;;; ------------------------------------------------------------------
 ;;; Authenticode trust policy (the Win32 verification itself is
 ;;; LispWorks-only; the decision and the GUI label are pure)
 ;;; ------------------------------------------------------------------
@@ -2136,5 +2162,6 @@ store functions that persist never touch the real %APPDATA% queue."
   (run-upload-queue-tests)
   (run-ux-helper-tests)
   (run-updater-tests)
+  (run-config-migration-tests)
   (format t "~&=== client tests: ~d failure~:p ===~%" *failures*)
   *failures*)

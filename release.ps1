@@ -11,7 +11,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 
-$repo = "psobb-teapot/ephinea-ta-client-releases"
+$repo = "psobb-teapot/rappyruns-client-releases"
 $lispworks = "C:\Program Files\LispWorks\lispworks-8-1-0-x64-windows.exe"
 
 if ($Version -notmatch '^v\d+\.\d+\.\d+$') { throw "Version must look like v1.2.3 (got: $Version)." }
