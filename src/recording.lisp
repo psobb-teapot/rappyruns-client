@@ -58,13 +58,25 @@ BACKEND-CLOSE-CAPTURE, or (values nil error-string)."))
 (defgeneric backend-list-stale-files (backend dir)
   (:documentation "Leftover rec-tmp-*.mp4 files from a previous session."))
 
-;;; Encoder settings. Not user-facing config: veryfast/23 costs a few
-;;; percent CPU at PSOBB resolutions and the resulting quality is fine
-;;; for run verification.
+;;; Encoder settings. Not user-facing config: veryfast/26 capped at
+;;; 1080p costs a few percent CPU at PSOBB resolutions and the quality
+;;; is fine for run verification. Measured on a real 3200x1800 capture:
+;;; CRF 23 uncapped produced ~90 MB per minute (a 10-minute quest stay
+;;; was ~1 GB, and the 2 GiB upload cap was only ~22 minutes away);
+;;; CRF 26 + 1080p is a quarter of that (SSIM 0.96, HUD text still
+;;; legible) and stretches the upload cap to over an hour of footage.
 
 (defparameter +record-framerate+ 30)
 (defparameter +record-preset+ "veryfast")
-(defparameter +record-crf+ 23)
+(defparameter +record-crf+ 26)
+(defparameter +record-max-height+ 1080
+  "Downscale cap. Windows larger than this record at 1080p; smaller
+ones are left alone (min(), never an upscale). Height is forced even
+for yuv420p, and -2 keeps the aspect ratio with an even width.")
+
+(defun record-scale-filter ()
+  (format nil "scale=-2:trunc(min(~d\\,ih)/2)*2:flags=lanczos"
+          +record-max-height+))
 
 (defvar *audio-target-pid* nil
   "PID of the attached PSOBB process, maintained by the poll loop.
@@ -169,7 +181,8 @@ named pipe as a second input and is encoded as AAC."
    (list "-c:v" "libx264"
          "-preset" +record-preset+
          "-crf" (princ-to-string +record-crf+)
-         "-pix_fmt" "yuv420p")
+         "-pix_fmt" "yuv420p"
+         "-vf" (record-scale-filter))
    (when audio-pipe
      ;; Loopback capture is post-mixer: a low per-app volume slider
      ;; (observed at 5% in the field) makes the raw capture inaudible.
