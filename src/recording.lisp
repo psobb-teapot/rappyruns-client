@@ -188,6 +188,12 @@ With AUDIO-PIPE, raw 16-bit 48 kHz stereo game audio arrives on that
 named pipe as a second input and is encoded as AAC."
   (append
    (list "-y" "-loglevel" "error"
+         ;; Minimal probing: ffmpeg opens the audio pipe right after
+         ;; the gdigrab probe finishes, and the audio clock is anchored
+         ;; to that pipe-connect instant (audio-win32). Probing one
+         ;; frame instead of probesize-worth keeps video time 0 and
+         ;; audio time 0 within a frame of each other.
+         "-probesize" "32" "-analyzeduration" "0"
          "-f" "gdigrab"
          "-framerate" (princ-to-string framerate)
          "-draw_mouse" "0"

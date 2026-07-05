@@ -590,7 +590,10 @@ sample-format) or signals. Caller must have COM initialized."
   pipe-name
   pipe-handle
   thread
-  start-time    ; pacing epoch: set at creation, just before ffmpeg spawns
+  start-time    ; pacing epoch: creation at first, re-anchored to the
+                ; pipe-connect instant once ffmpeg opens the pipe (the
+                ; moment that coincides with video time 0, see
+                ; AUDIO-CAPTURE-LOOP)
   ;; capture objects and format; activation happens synchronously in
   ;; START-AUDIO-SESSION so ffmpeg's argv can match the real format
   client capture-client event
@@ -668,6 +671,15 @@ audio (or silence when WASAPI is unavailable) until stopped."
               (round (* 1000 (- (get-internal-real-time)
                                 (audio-session-start-time session)))
                      internal-time-units-per-second))
+        ;; Re-anchor the pacing epoch to the pipe-connect instant.
+        ;; ffmpeg opens its inputs in order and gdigrab probes a single
+        ;; frame (-probesize 32, see BUILD-FFMPEG-ARGS), so the pipe
+        ;; opens within a frame of the video's time 0. Pacing from
+        ;; session creation - the old scheme - shifted the whole audio
+        ;; track late by ffmpeg's spawn + probe time: a rig that beeps
+        ;; and flashes at the same wall-clock instant measured 567 ms
+        ;; of audio lag, vs under 20 ms anchored here.
+        (setf (audio-session-start-time session) (get-internal-real-time))
         (unless (audio-session-stop-flag session)
           (fli:with-dynamic-foreign-objects ()
             (let* ((rate (audio-session-rate session))
@@ -677,11 +689,11 @@ audio (or silence when WASAPI is unavailable) until stopped."
                            :nelems (* zeros-frames
                                       (audio-session-frame-bytes session))
                            :initial-element 0))
-                   ;; The pacing clock started when the session was
-                   ;; created, just before ffmpeg spawned: ffmpeg
-                   ;; normalizes every input to start at 0, so the time
-                   ;; it spent opening its inputs becomes leading
-                   ;; silence, keeping audio aligned with video.
+                   ;; The pacing clock was re-anchored above to the
+                   ;; pipe-connect instant (= video time 0 within a
+                   ;; frame); ffmpeg normalizes both inputs to start
+                   ;; at 0, so keeping written == elapsed keeps the
+                   ;; audio track aligned with the video timeline.
                    (start (audio-session-start-time session))
                    (event (audio-session-event session))
                    (written 0))

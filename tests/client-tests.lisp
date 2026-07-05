@@ -1328,6 +1328,12 @@ over the defaults. Restores the global config afterwards (it is bound)."
            (member "+frag_keyframe+empty_moov" args :test #'equal))
     (check "ffmpeg args set the poll framerate"
            (member "30" args :test #'equal))
+    (check "video input probes minimally (A/V sync anchor)"
+           (let ((probe (position "-probesize" args :test #'equal))
+                 (grab (position "gdigrab" args :test #'equal)))
+             (and probe grab
+                  (equal "32" (nth (1+ probe) args))
+                  (< probe grab))))
     (check "ffmpeg args encode at crf 28"
            (let ((crf (position "-crf" args :test #'equal)))
              (and crf (equal "28" (nth (1+ crf) args)))))
