@@ -199,12 +199,23 @@ entry, or NIL when the run is no longer in the list."
     (when entry
       (update-run! entry :video-path (namestring video-path)))))
 
+(defun hosted-video-replaceable-p (entry)
+  "True when ENTRY's video on the server is the auto-uploaded hosted
+copy and no external URL has been attached. Until a moderator approves
+the run, the player may swap that copy for their own YouTube/Twitch
+link (hosted videos expire under retention; their own channel's do
+not)."
+  (and (getf entry :video-uploaded)
+       (not (getf entry :video-url))))
+
 (defun video-candidates ()
   "Entries a copied video URL could belong to: on the server (they have
-an id) and no video attached yet."
+an id) and either no video attached yet, or only the auto-uploaded
+hosted copy, which the player may still replace with an external link."
   (remove-if-not (lambda (entry)
                    (and (getf entry :server-id)
-                        (not (getf entry :video-attached))))
+                        (or (not (getf entry :video-attached))
+                            (hosted-video-replaceable-p entry))))
                  (queued-runs)))
 
 (defun resolve-video-target (candidates preferred)
@@ -292,16 +303,27 @@ was already on file, which is just as done. Returns the updated entry."
                    :upload-error (api-error-message condition)))))
 
 (defun attach-video-url! (entry video-url)
-  "Attach VIDEO-URL to ENTRY's server draft, promoting it to pending
-review. Returns (values updated-entry error-message); exactly one is
-non-NIL."
+  "Attach VIDEO-URL to ENTRY's server run: a draft is promoted to
+pending review, an auto-uploaded run has its hosted copy replaced.
+Returns (values updated-entry error-message already-submitted-p);
+ERROR-MESSAGE is NIL on success. ALREADY-SUBMITTED-P is true when the
+server reports the run already carries a video it will not swap (a
+duplicate reply - typically the run was approved in the meantime); the
+entry is marked attached but keeps its existing video state."
   (handler-case
       (multiple-value-bind (outcome payload)
           (attach-run-video (getf entry :server-id) video-url)
         (ecase outcome
           (:attached
-           (values (update-run! entry :video-attached t :video-url video-url)
-                   nil))
+           (if (and (hash-table-p payload) (gethash "duplicate" payload))
+               (values (update-run! entry :video-attached t) nil t)
+               ;; A successful replace deletes the hosted copy server
+               ;; side, so the entry's video is now the external URL,
+               ;; not an upload.
+               (values (update-run! entry :video-attached t
+                                    :video-url video-url
+                                    :video-uploaded nil)
+                       nil)))
           (:rejected
            (values nil
                    (or (and (hash-table-p payload) (gethash "message" payload))

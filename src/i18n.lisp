@@ -233,9 +233,15 @@
     :attach-confirm
     ("Attach the copied YouTube link to this run?~%~%~a~%~a"
      "コピーされた YouTube のリンクをこの記録に紐付けますか?~%~%~a~%~a")
+    :attach-confirm-replace
+    ("Replace this run's auto-uploaded video with the copied YouTube link?~%The hosted copy will be deleted and your link goes to review instead.~%~%~a~%~a"
+     "この記録の自動アップロードされた動画を、コピーされた YouTube のリンクで差し替えますか?~%ホストされている動画は削除され、代わりにこのリンクが審査対象になります。~%~%~a~%~a")
     :attach-failed
     ("Could not attach the video:~%~%~a"
      "動画を紐付けられませんでした:~%~%~a")
+    :attach-already-submitted
+    ("The video was not changed: the site already has a video on file for this run (it may have been approved in the meantime)."
+     "動画は変更されませんでした: この記録にはサイト側で既に動画が登録されています (その間に承認された可能性があります)。")
     :token-setup-offer
     ("No API token is set yet.~%~%Runs are still timed and listed below, but they can only be uploaded to the site with a token.~%~%Open the token page in your browser now?~%(~a - requires Discord login)"
      "API トークンがまだ設定されていません。~%~%トークンがなくてもタイム計測と記録の一覧表示はできますが、サイトへのアップロードにはトークンが必要です。~%~%ブラウザでトークンページを開きますか?~%(~a - Discord ログインが必要です)")
