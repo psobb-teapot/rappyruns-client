@@ -1328,9 +1328,9 @@ over the defaults. Restores the global config afterwards (it is bound)."
            (member "+frag_keyframe+empty_moov" args :test #'equal))
     (check "ffmpeg args set the poll framerate"
            (member "30" args :test #'equal))
-    (check "ffmpeg args encode at crf 26"
+    (check "ffmpeg args encode at crf 28"
            (let ((crf (position "-crf" args :test #'equal)))
-             (and crf (equal "26" (nth (1+ crf) args)))))
+             (and crf (equal "28" (nth (1+ crf) args)))))
     (check "ffmpeg args cap the height at 1080 without upscaling"
            (let ((vf (position "-vf" args :test #'equal)))
              (and vf

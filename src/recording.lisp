@@ -60,17 +60,20 @@ BACKEND-CLOSE-CAPTURE, or (values nil error-string)."))
 (defgeneric backend-list-stale-files (backend dir)
   (:documentation "Leftover rec-tmp-*.mp4 files from a previous session."))
 
-;;; Encoder settings. Not user-facing config: veryfast/26 capped at
+;;; Encoder settings. Not user-facing config: veryfast/28 capped at
 ;;; 1080p costs a few percent CPU at PSOBB resolutions and the quality
 ;;; is fine for run verification. Measured on a real 3200x1800 capture:
 ;;; CRF 23 uncapped produced ~90 MB per minute (a 10-minute quest stay
 ;;; was ~1 GB, and the 2 GiB upload cap was only ~22 minutes away);
-;;; CRF 26 + 1080p is a quarter of that (SSIM 0.96, HUD text still
-;;; legible) and stretches the upload cap to over an hour of footage.
+;;; 1080p + CRF 28 is ~21 MB per minute at the same frame count. CRF
+;;; 28 rather than 26 offsets the frames regained by the loudnorm fix
+;;; (a full 30 fps carries ~25% more encoded frames than the throttled
+;;; capture did), keeping hosted-video sizes level: smoothness beats
+;;; sharpness here, and the HUD stays legible either way.
 
 (defparameter +record-framerate+ 30)
 (defparameter +record-preset+ "veryfast")
-(defparameter +record-crf+ 26)
+(defparameter +record-crf+ 28)
 (defparameter +record-max-height+ 1080
   "Downscale cap. Windows larger than this record at 1080p; smaller
 ones are left alone (min(), never an upscale). Height is forced even
