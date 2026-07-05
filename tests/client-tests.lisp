@@ -818,7 +818,51 @@ REGISTER-VALUES an alist of (register-id . value)."
     (step-with detector (lobby-reader))
     (step-with detector (ttf-reader :start 1))
     (detector-step detector nil)
-    (check "game gone -> idle" (eq :idle (detector-state detector)))))
+    (check "game gone -> idle" (eq :idle (detector-state detector))))
+  ;; Abandoning a quest mid-run: attempts shorter than +abort-min-ms+
+  ;; are noise and emit nothing.
+  (let ((detector (make-detector)))
+    (step-with detector (lobby-reader))
+    (step-with detector (ttf-reader :start 1))
+    (check "abort: quick lobby return emits nothing"
+           (null (step-with detector (lobby-reader)))))
+  ;; Past the threshold, returning to the lobby emits an aborted run
+  ;; built from state captured at the start (no quest snapshot left).
+  (flet ((age-trackers (detector seconds)
+           (dolist (tracker (ephinea-ta-client::detector-trackers detector))
+             (decf (ephinea-ta-client::tracker-start-time tracker)
+                   (* seconds internal-time-units-per-second)))))
+    (let ((detector (make-detector)))
+      (step-with detector (lobby-reader))
+      (step-with detector (ttf-reader :start 1))
+      (age-trackers detector 20)
+      (let ((run (first (step-with detector (lobby-reader)))))
+        (check "abort: lobby return emits aborted run" (not (null run)))
+        (check "abort: marked aborted" (eq t (getf run :aborted)))
+        (check "abort: slug" (equal "ep1-towards-the-future"
+                                    (getf run :quest-slug)))
+        (check "abort: time >= 20s" (>= (getf run :time-ms) 20000))
+        (check "abort: quest name captured at start"
+               (equal "Towards the Future" (getf run :quest-name)))
+        (check "abort: party captured" (= 2 (getf run :party-size)))
+        (check "abort: telemetry attached" (not (null (getf run :telemetry))))
+        (check "abort: detector reset" (eq :idle (detector-state detector)))))
+    ;; Game exit mid-run aborts the same way.
+    (let ((detector (make-detector)))
+      (step-with detector (lobby-reader))
+      (step-with detector (ttf-reader :start 1))
+      (age-trackers detector 20)
+      (let ((run (first (detector-step detector nil))))
+        (check "abort: game exit emits aborted run"
+               (eq t (getf run :aborted)))))
+    ;; A completed run must never be re-emitted as aborted afterwards.
+    (let ((detector (make-detector)))
+      (step-with detector (lobby-reader))
+      (step-with detector (ttf-reader :start 1))
+      (age-trackers detector 20)
+      (step-with detector (ttf-reader :start 1 :end 1))
+      (check "abort: nothing re-emitted after completion"
+             (null (step-with detector (lobby-reader)))))))
 
 ;;; ------------------------------------------------------------------
 

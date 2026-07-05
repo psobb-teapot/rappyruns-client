@@ -13,6 +13,8 @@
   def          ; the quest-def this tracker times
   start-time   ; internal real time at its start trigger
   party        ; ((:name ... :class ...) ...) captured at start
+  quest-name   ; quest name captured at start (snapshots may be gone
+  difficulty   ; by the time an abandoned run is emitted)
   done)        ; T once its run has been emitted
 
 (defstruct detector
@@ -112,67 +114,88 @@ with Shifta up - so a run is No PB until a discharge is seen."
                                                 (party-of snapshot)))))
   (let ((tracker (make-tracker :def def
                                :start-time (get-internal-real-time)
-                               :party (party-of snapshot))))
+                               :party (party-of snapshot)
+                               :quest-name (getf snapshot :quest-name)
+                               :difficulty (difficulty-name
+                                            (getf snapshot :difficulty)))))
     (setf (detector-trackers detector)
           (append (detector-trackers detector) (list tracker)))
     tracker))
 
-(defun finish-tracker (detector tracker snapshot)
+(defun finish-tracker (detector tracker &key aborted)
   (let ((def (tracker-def tracker))
         (time-ms (max 1 (elapsed-ms (tracker-start-time tracker))))
         (telemetry (detector-telemetry detector)))
     (setf (tracker-done tracker) t)
-    (list :quest-slug (quest-def-slug def)
-          :quest-name (getf snapshot :quest-name)
-          :episode (quest-def-episode def)
-          :time-ms time-ms
-          :party-size (length (tracker-party tracker))
-          :pb (and (detector-pb-flag detector) t)
-          :players (tracker-party tracker)
-          :difficulty (difficulty-name (getf snapshot :difficulty))
-          :death-count (and telemetry (telemetry-death-count telemetry))
-          :telemetry (and telemetry (telemetry-run-data telemetry))
-          :finished-at (get-universal-time))))
+    (append
+     (list :quest-slug (quest-def-slug def)
+           :quest-name (tracker-quest-name tracker)
+           :episode (quest-def-episode def)
+           :time-ms time-ms
+           :party-size (length (tracker-party tracker))
+           :pb (and (detector-pb-flag detector) t)
+           :players (tracker-party tracker)
+           :difficulty (tracker-difficulty tracker)
+           :death-count (and telemetry (telemetry-death-count telemetry))
+           :telemetry (and telemetry (telemetry-run-data telemetry))
+           :finished-at (get-universal-time))
+     (when aborted (list :aborted t)))))
+
+(defparameter +abort-min-ms+ 15000
+  "Abandoned quests shorter than this are noise (mis-starts, instant
+resets) and are dropped instead of recorded.")
+
+(defun abandon-trackers (detector)
+  "Aborted-run plists for the trackers still running at the moment the
+quest is abandoned (lobby return, quest reload or game exit)."
+  (loop :for tracker :in (active-trackers detector)
+        :when (>= (elapsed-ms (tracker-start-time tracker)) +abort-min-ms+)
+          :collect (finish-tracker detector tracker :aborted t)))
 
 (defun detector-step (detector snapshot)
   "Feed one SNAPSHOT (NIL when the game is unreadable). Returns the list
-of runs that completed this frame (usually empty or one)."
+of runs that completed this frame (usually empty or one). Abandoning a
+quest mid-run emits the unfinished trackers as :aborted runs."
   (cond
     ;; Game gone: abandon everything.
     ((null snapshot)
-     (reset-detector detector)
-     (setf (detector-armed detector) nil)
-     '())
+     (let ((aborted (abandon-trackers detector)))
+       (reset-detector detector)
+       (setf (detector-armed detector) nil)
+       aborted))
     ;; No quest loaded (lobby / free field): reset and arm.
     ((not (and (getf snapshot :quest-ptr) (plusp (getf snapshot :quest-ptr))))
-     (reset-detector detector)
-     (setf (detector-armed detector) t)
-     '())
+     (let ((aborted (abandon-trackers detector)))
+       (reset-detector detector)
+       (setf (detector-armed detector) t)
+       aborted))
     (t
-     (let ((ptr (getf snapshot :quest-ptr)))
-       ;; Quest reloaded or a different quest: in-flight runs are void.
-       (when (and (detector-quest-ptr detector)
-                  (/= ptr (detector-quest-ptr detector)))
-         (reset-detector detector))
-       (setf (detector-quest-ptr detector) ptr))
-     (let ((started '())
-           (completed '()))
-       ;; Start a tracker for each definition whose start trigger fired.
-       (when (detector-armed detector)
-         (dolist (def (snapshot-quest-defs snapshot))
-           (unless (find def (detector-trackers detector) :key #'tracker-def)
-             (when (trigger-met-p (quest-def-start def) snapshot)
-               (push (start-tracker detector def snapshot) started)))))
-       (when (active-trackers detector)
-         (update-pb-tracking detector snapshot)
-         (when (detector-telemetry detector)
-           (telemetry-step (detector-telemetry detector) snapshot)))
-       ;; End checks skip trackers started this frame: a real end trigger
-       ;; cannot fire on the start frame, only stale data could.
-       (dolist (tracker (detector-trackers detector))
-         (unless (or (tracker-done tracker) (member tracker started))
-           (when (trigger-met-p (quest-def-end (tracker-def tracker)) snapshot)
-             (push (finish-tracker detector tracker snapshot) completed))))
-       (setf (detector-state detector)
-             (if (active-trackers detector) :in-quest :idle))
-       (nreverse completed)))))
+     (let ((aborted '()))
+       (let ((ptr (getf snapshot :quest-ptr)))
+         ;; Quest reloaded or a different quest: in-flight runs are void.
+         (when (and (detector-quest-ptr detector)
+                    (/= ptr (detector-quest-ptr detector)))
+           (setf aborted (abandon-trackers detector))
+           (reset-detector detector))
+         (setf (detector-quest-ptr detector) ptr))
+       (let ((started '())
+             (completed (reverse aborted)))
+         ;; Start a tracker for each definition whose start trigger fired.
+         (when (detector-armed detector)
+           (dolist (def (snapshot-quest-defs snapshot))
+             (unless (find def (detector-trackers detector) :key #'tracker-def)
+               (when (trigger-met-p (quest-def-start def) snapshot)
+                 (push (start-tracker detector def snapshot) started)))))
+         (when (active-trackers detector)
+           (update-pb-tracking detector snapshot)
+           (when (detector-telemetry detector)
+             (telemetry-step (detector-telemetry detector) snapshot)))
+         ;; End checks skip trackers started this frame: a real end trigger
+         ;; cannot fire on the start frame, only stale data could.
+         (dolist (tracker (detector-trackers detector))
+           (unless (or (tracker-done tracker) (member tracker started))
+             (when (trigger-met-p (quest-def-end (tracker-def tracker)) snapshot)
+               (push (finish-tracker detector tracker) completed))))
+         (setf (detector-state detector)
+               (if (active-trackers detector) :in-quest :idle))
+         (nreverse completed))))))

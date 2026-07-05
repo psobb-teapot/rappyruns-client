@@ -374,6 +374,8 @@ hold nested location lists that become objects."
       (setf (gethash "difficulty" object) (getf run :difficulty)))
     (when (getf run :death-count)
       (setf (gethash "death_count" object) (getf run :death-count)))
+    (when (getf run :aborted)
+      (setf (gethash "aborted" object) t))
     (setf (gethash "players" object)
           (coerce (loop :for player :in (getf run :players)
                         :collect (let ((entry (make-hash-table :test 'equal)))
@@ -391,8 +393,9 @@ hold nested location lists that become objects."
                                    entry))
                   'vector)
           (gethash "notes" object)
-          (format nil "Auto-submitted by ephinea-ta-client (~a)"
-                  (getf run :quest-name (getf run :quest-slug))))
+          (format nil "Auto-submitted by ephinea-ta-client (~a~:[~;, aborted~])"
+                  (getf run :quest-name (getf run :quest-slug))
+                  (getf run :aborted)))
     (when (getf run :telemetry)
       (setf (gethash "telemetry" object)
             (telemetry-json (getf run :telemetry))))

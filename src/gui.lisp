@@ -96,6 +96,14 @@ poll loop re-reads it every iteration.")
                       :callback-type :interface
                       :font *ui-font*
                       :accessor auto-submit-check)
+   (submit-aborted-check capi:check-button
+                         :text (tr :submit-aborted-label)
+                         :selected (config-value :submit-aborted)
+                         :selection-callback 'toggle-submit-aborted-callback
+                         :retract-callback 'toggle-submit-aborted-callback
+                         :callback-type :interface
+                         :font *ui-font*
+                         :accessor submit-aborted-check)
    (completion-sound-check capi:check-button
                            :text (tr :completion-sound-label)
                            :selected (config-value :completion-sound)
@@ -222,7 +230,8 @@ poll loop re-reads it every iteration.")
                      :title (tr :group-connection) :title-position :frame
                      :title-font *ui-font* :adjust :left)
    (completion-group capi:column-layout
-                     '(auto-submit-check completion-sound-check)
+                     '(auto-submit-check submit-aborted-check
+                       completion-sound-check)
                      :title (tr :group-completion) :title-position :frame
                      :title-font *ui-font* :adjust :left)
    (recording-row capi:row-layout '(record-dir-display record-dir-button)
@@ -285,6 +294,12 @@ when toggled."
   "Apply the auto-submit toggle immediately (no Save needed)."
   (setf (config-value :auto-submit)
         (capi:button-selected (auto-submit-check interface)))
+  (save-config!))
+
+(defun toggle-submit-aborted-callback (interface)
+  "Apply the submit-aborted toggle immediately (no Save needed)."
+  (setf (config-value :submit-aborted)
+        (capi:button-selected (submit-aborted-check interface)))
   (save-config!))
 
 (defun toggle-completion-sound-callback (interface)

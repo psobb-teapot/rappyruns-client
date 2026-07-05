@@ -36,18 +36,24 @@ process reads) to SNAPSHOT while a quest is loaded."
 
 (defun handle-completed-runs (runs)
   "Queue RUNS and auto-submit; returns the submission results (updated
-entries) so the caller can react to failures, or NIL when not submitting."
-  (dolist (run runs)
-    (enqueue-run! run))
-  (when (and runs (config-value :auto-submit))
-    (submit-queued!)))
+entries) so the caller can react to failures, or NIL when not submitting.
+Aborted (mid-quest quit) runs are dropped when :submit-aborted is off."
+  (let ((runs (if (config-value :submit-aborted)
+                  runs
+                  (remove-if (lambda (run) (getf run :aborted)) runs))))
+    (dolist (run runs)
+      (enqueue-run! run))
+    (when (and runs (config-value :auto-submit))
+      (submit-queued!))))
 
 #+lispworks
 (defun run-completion-sounds (runs)
   "Completion beep the moment RUNS finish (before the network round
 trip), then the error sound if auto-submission left any of them
-failed/rejected. Two sounds correctly say: timed OK, upload did not."
-  (when (config-value :completion-sound)
+failed/rejected. Two sounds correctly say: timed OK, upload did not.
+Aborted runs are silent - quitting a quest is not an event."
+  (when (and (config-value :completion-sound)
+             (find-if-not (lambda (run) (getf run :aborted)) runs))
     (%message-beep +mb-iconasterisk+))
   (let ((results (handle-completed-runs runs)))
     (when (and (config-value :completion-sound)

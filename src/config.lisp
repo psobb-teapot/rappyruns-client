@@ -7,6 +7,7 @@
         :api-token ""
         :language :en      ; UI language, :en or :ja (i18n.lisp)
         :auto-submit t
+        :submit-aborted t   ; record quests quit mid-run (private on the server)
         :auto-update t      ; install new GitHub releases at startup, unattended (updater.lisp)
         :completion-sound t
         :trigger-log nil

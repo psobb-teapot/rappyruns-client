@@ -127,6 +127,9 @@
     :auto-submit-label
     ("Submit automatically on quest completion"
      "クエスト完了時に記録を自動送信する")
+    :submit-aborted-label
+    ("Record abandoned quests too (private, only you can see them)"
+     "中断したクエストも記録する (非公開・自分だけが見られます)")
     :completion-sound-label
     ("Play a sound when a run completes"
      "計測完了時にサウンドを鳴らす")
