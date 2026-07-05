@@ -7,7 +7,8 @@
 (defparameter +search-interval+ 1)
 (defparameter +gui-update-interval+ 1/4)
 
-(defvar *stop-requested* nil)
+;; *STOP-REQUESTED* is defvar'd in updater.lisp (which loads first and
+;; sets it during a self-update handover).
 
 (defvar *last-heavy-sample* 0
   "Internal real time of the last inventory/monster sample.")
@@ -76,6 +77,19 @@ nothing changed: just a sequence-number read, no clipboard open."
           (offer-clipboard-url interface url))))))
 
 #+lispworks
+(defun note-poll-activity (interface detector recorder)
+  "Track whether a run or recording is in flight (the updater never
+swaps the exe mid-run) and, on return to idle, pop the deferred update
+prompt exactly once."
+  (setf *poll-busy-p* (or (eq (detector-state detector) :in-quest)
+                          (eq (recorder-state recorder) :recording)))
+  (unless *poll-busy-p*
+    (let ((ready *update-ready-zip*))
+      (when ready
+        (setf *update-ready-zip* nil)
+        (offer-update-restart interface (car ready) (cdr ready))))))
+
+#+lispworks
 (defun poll-loop (interface)
   (let ((reader nil)
         (detector (make-detector))
@@ -91,7 +105,8 @@ nothing changed: just a sequence-number read, no clipboard open."
     (ignore-errors (cleanup-stale-recordings recorder))
     (unwind-protect
          (loop :until *stop-requested*
-               :do (cond
+               :do (note-poll-activity interface detector recorder)
+                   (cond
                      ;; Not attached: look for the game once per second.
                      ((null reader)
                       (setf reader (open-psobb-reader))
@@ -172,6 +187,7 @@ nothing changed: just a sequence-number read, no clipboard open."
 (defun main ()
   (setf *stop-requested* nil)
   (load-config!)
+  (cleanup-old-update-files)
   (load-queue!)
   (load-quest-defs)
   (let ((interface (make-instance 'client-window)))
@@ -180,8 +196,11 @@ nothing changed: just a sequence-number read, no clipboard open."
     (check-server interface)
     (check-token interface)
     (prompt-for-token-setup interface)
-    (mp:process-run-function "eta-client-poll" '()
-                             (lambda () (poll-loop interface)))
+    (when (config-value :auto-update)
+      (check-for-updates interface))
+    (setf *poll-process*
+          (mp:process-run-function "eta-client-poll" '()
+                                   (lambda () (poll-loop interface))))
     interface))
 
 #-lispworks

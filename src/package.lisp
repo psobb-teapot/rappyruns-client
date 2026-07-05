@@ -38,6 +38,9 @@
            #:backend-delete-file #:backend-list-stale-files
            ;; trigger discovery
            #:log-trigger-changes #:start-trigger-log #:close-trigger-log
+           ;; version / self-update (pure parts, used by tests)
+           #:client-version #:parse-version #:version< #:update-available-p
+           #:parse-release-json #:updater-script-text #:valid-update-zip-p
            ;; api
            #:fetch-quests #:fetch-me #:normalize-token #:submit-run
            ;; store

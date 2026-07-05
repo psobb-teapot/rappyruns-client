@@ -133,6 +133,34 @@ client's own MIT license.
 
 [btbn]: https://github.com/BtbN/FFmpeg-Builds/releases
 
+## Auto-update
+
+The client updates itself from the releases repo. At startup (and via
+**Settings → Updates → Check for updates now**) it fetches
+`releases/latest` from the GitHub API, compares the tag against the
+version baked in at build time (`client/VERSION` → `*client-version*`),
+and offers to download. The zip is verified (asset size + zip magic)
+in `%TEMP%`, then a PowerShell helper script takes over: it waits for
+the client to exit, unpacks to a staging folder, verifies the new exe,
+moves the old exe to `EphineaTAClient.exe.old` (restored automatically
+if anything fails), copies the new exe + `data\` (+ `ffmpeg\`, best
+effort) and restarts. The `.old` file and temp leftovers are swept on
+the next startup.
+
+Notes:
+
+- An update is never applied while a run or recording is in flight;
+  it is offered again once the client is idle.
+- Startup checks fail silently (offline, rate limited, no releases);
+  the manual button reports every outcome.
+- Dev images (run from source) never self-update: `*client-version*`
+  is NIL there.
+- Config keys: `:auto-update` (the Settings checkbox); `:update-repo`
+  in `config.sexp` overrides the releases repo (`owner/name`) for
+  testing the flow against a scratch repo.
+- The helper's transcript lands in `%TEMP%\ephinea-ta-update.log` -
+  first place to look when an update did not stick.
+
 ## Releasing
 
 Releases live on a separate **public** repo so the main repo can stay
@@ -151,8 +179,10 @@ gh repo create psobb-teapot/ephinea-ta-client-releases --public \
 Give it a single README commit (releases need at least one commit); no
 source goes there.
 
-Per release (tag `vX.Y.Z`), `release.ps1` builds the exe, packages the
-zip and publishes it in one go:
+Per release: bump `client/VERSION` to the new `X.Y.Z` and commit it
+(release.ps1 refuses a tag that does not match, and deliver.lisp bakes
+this file into the exe for the self-updater). Then `release.ps1` builds
+the exe, packages the zip and publishes it in one go:
 
 ```
 .\client\release.ps1 v0.2.0 -NotesFile notes.md   # new release

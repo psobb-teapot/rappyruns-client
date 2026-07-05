@@ -1254,6 +1254,127 @@ store functions that persist never touch the real %APPDATA% queue."
                   (make-condition 'ephinea-ta-client::api-error
                                   :message "WinHttpConnect failed (Windows error 12029)")))))
 
+;;; ------------------------------------------------------------------
+;;; Self-update: version compare, release JSON, zip check, helper script
+;;; ------------------------------------------------------------------
+
+(defparameter *release-json-sample*
+  "{\"tag_name\": \"v0.6.0\",
+    \"prerelease\": false,
+    \"assets\": [
+      {\"name\": \"notes.txt\",
+       \"size\": 12,
+       \"browser_download_url\": \"https://example.com/notes.txt\"},
+      {\"name\": \"EphineaTAClient.zip\",
+       \"size\": 12345678,
+       \"browser_download_url\": \"https://github.com/x/y/releases/download/v0.6.0/EphineaTAClient.zip\"}]}")
+
+(defun run-updater-tests ()
+  (format t "~&--- updater ---~%")
+  ;; Version parsing: strict X.Y.Z, malformed tags never update.
+  (check "parse-version reads v-prefixed tags"
+         (equal '(1 2 3) (parse-version "v1.2.3")))
+  (check "parse-version reads bare versions"
+         (equal '(0 10 0) (parse-version "0.10.0")))
+  (check "parse-version rejects two components"
+         (null (parse-version "v1.2")))
+  (check "parse-version rejects four components"
+         (null (parse-version "v1.2.3.4")))
+  (check "parse-version rejects suffixes"
+         (null (parse-version "v1.2.3-rc1")))
+  (check "parse-version rejects words and empties"
+         (notany #'parse-version (list "abc" "" "v" "v.." nil 42)))
+  ;; Comparison is numeric, not textual.
+  (check "version< compares components as numbers"
+         (and (version< '(0 9 9) '(0 10 0))
+              (not (version< '(0 10 0) '(0 9 9)))))
+  (check "version< is false on equal versions"
+         (not (version< '(1 2 3) '(1 2 3))))
+  (check "version< orders on the major first"
+         (version< '(1 9 9) '(2 0 0)))
+  ;; update-available-p falls on the do-not-update side.
+  (check "update available for a newer tag"
+         (update-available-p "0.5.0" "v0.6.0"))
+  (check "no update for the same tag"
+         (not (update-available-p "0.6.0" "v0.6.0")))
+  (check "no update when the current version is nil (dev)"
+         (not (update-available-p nil "v0.6.0")))
+  (check "no update when the latest tag is malformed"
+         (not (update-available-p "0.5.0" "release-2")))
+  ;; Release JSON -> plist.
+  (let ((release (parse-release-json *release-json-sample*)))
+    (check "release json yields the tag"
+           (equal "v0.6.0" (getf release :tag)))
+    (check "release json picks the client zip asset, not other assets"
+           (search "EphineaTAClient.zip" (getf release :asset-url)))
+    (check "release json carries the asset size"
+           (eql 12345678 (getf release :asset-size))))
+  (check "release without the zip asset is ignored"
+         (null (parse-release-json
+                "{\"tag_name\": \"v0.6.0\", \"assets\": [{\"name\": \"other.zip\", \"browser_download_url\": \"https://x/o.zip\"}]}")))
+  (check "empty and malformed responses are ignored"
+         (notany #'parse-release-json
+                 (list "{}" "" "not json" "{\"assets\": []}")))
+  ;; Downloaded zip verification: size and PK magic.
+  (let ((path (merge-pathnames "eta-test-update.zip"
+                               (uiop:temporary-directory))))
+    (unwind-protect
+         (progn
+           (with-open-file (out path :direction :output
+                                     :if-exists :supersede
+                                     :element-type '(unsigned-byte 8))
+             (write-sequence #(80 75 3 4 9 9 9 9) out))
+           (check "zip check passes on matching size and magic"
+                  (valid-update-zip-p path 8))
+           (check "zip check passes without an expected size"
+                  (valid-update-zip-p path nil))
+           (check "zip check fails on a size mismatch"
+                  (not (valid-update-zip-p path 7)))
+           (with-open-file (out path :direction :output
+                                     :if-exists :supersede
+                                     :element-type '(unsigned-byte 8))
+             (write-sequence #(60 104 116 109 108 62 10 10) out))
+           (check "zip check fails on an html error page"
+                  (not (valid-update-zip-p path 8))))
+      (ignore-errors (delete-file path))))
+  (check "zip check fails on a missing file"
+         (not (valid-update-zip-p
+               (merge-pathnames "eta-no-such-file.zip"
+                                (uiop:temporary-directory))
+               nil)))
+  ;; The helper script: staging, verification, rollback, quoting.
+  (let ((script (updater-script-text
+                 :pid 4242
+                 :exe-path "C:\\Program Files\\Ephinea TA\\EphineaTAClient.exe"
+                 :install-dir "C:\\Program Files\\Ephinea TA\\"
+                 :zip-path "C:\\Temp\\EphineaTAClient-update.zip"
+                 :stage-dir "C:\\Temp\\ephinea-ta-update-stage\\"
+                 :log-path "C:\\Temp\\it's a log.txt")))
+    (check "script waits for the old process"
+           (and (search "Wait-Process -Id 4242" script)
+                (search "Get-Process -Id 4242" script)))
+    (check "script stages the zip before touching the install"
+           (let ((expand (search "Expand-Archive" script))
+                 (move (search "Move-Item -Force $exe $old" script)))
+             (and expand move (< expand move))))
+    (check "script verifies the staged exe"
+           (search "no EphineaTAClient.exe in the update zip" script))
+    (check "script rolls the .old exe back on failure"
+           (search "Move-Item $old $exe" script))
+    (check "script restarts the client"
+           (search "Start-Process -FilePath $exe" script))
+    (check "script updates the data folder"
+           (search "Join-Path $stage 'data'" script))
+    (check "script treats ffmpeg as best effort"
+           (search "ffmpeg update skipped" script))
+    (check "paths with spaces are single-quoted"
+           (search "'C:\\Program Files\\Ephinea TA\\EphineaTAClient.exe'"
+                   script))
+    (check "embedded quotes in paths are doubled"
+           (search "'C:\\Temp\\it''s a log.txt'" script))
+    (check "the running exe is never deleted, only moved"
+           (not (search "Remove-Item -Force $exe" script)))))
+
 (defun run-client-tests ()
   (setf *failures* 0)
   (load-quest-defs)
@@ -1270,5 +1391,6 @@ store functions that persist never touch the real %APPDATA% queue."
   (run-recorder-tests)
   (run-video-flow-tests)
   (run-ux-helper-tests)
+  (run-updater-tests)
   (format t "~&=== client tests: ~d failure~:p ===~%" *failures*)
   *failures*)

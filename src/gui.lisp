@@ -114,6 +114,23 @@
                        :accessor record-audio-check)
    ;; ffmpeg itself is not a setting: the release bundles it next to the
    ;; exe (an override still exists as :ffmpeg-path in config.sexp).
+   (update-status-pane capi:title-pane
+                       :text (format nil "Version: ~a" (client-version))
+                       :font *ui-font*
+                       :accessor update-status-pane)
+   (auto-update-check capi:check-button
+                      :text "Check for updates at startup"
+                      :selected (config-value :auto-update)
+                      :selection-callback 'toggle-auto-update-callback
+                      :retract-callback 'toggle-auto-update-callback
+                      :callback-type :interface
+                      :font *ui-font*
+                      :accessor auto-update-check)
+   (check-updates-button capi:push-button
+                         :text "Check for updates now"
+                         :callback 'check-updates-callback
+                         :callback-type :interface
+                         :font *ui-font*)
    (record-dir-display capi:title-pane
                        :text (record-dir-label)
                        :font *ui-font*
@@ -176,12 +193,17 @@
                     '(record-check record-audio-check recording-row)
                     :title "Recording" :title-position :frame
                     :title-font *ui-font* :adjust :left)
+   (updates-group capi:column-layout
+                  '(update-status-pane auto-update-check
+                    check-updates-button)
+                  :title "Updates" :title-position :frame
+                  :title-font *ui-font* :adjust :left)
    (advanced-group capi:column-layout '(trigger-log-check)
                    :title "Advanced" :title-position :frame
                    :title-font *ui-font* :adjust :left)
    (settings-tab capi:column-layout
                  '(connection-group completion-group recording-group
-                   advanced-group)
+                   updates-group advanced-group)
                  :adjust :left)
    (main-tabs capi:tab-layout ()
               :items '(("Runs" runs-tab) ("Settings" settings-tab))
@@ -503,6 +525,138 @@ the Save settings flow."
                (error (condition)
                  (set-pane-text interface #'token-status-pane
                                 (token-status-error-text condition) :red)))))))))
+
+;;; Self-update flow. The mechanics (release fetch, download, helper
+;;; script handover) live in updater.lisp; this is the GUI choreography:
+;;; a startup check fails silently, the Settings button reports every
+;;; outcome, and nothing is ever applied while a run or recording is in
+;;; flight (note-poll-activity in main.lisp re-offers once idle).
+
+(defun toggle-auto-update-callback (interface)
+  "Apply the auto-update toggle immediately (no Save needed)."
+  (setf (config-value :auto-update)
+        (capi:button-selected (auto-update-check interface)))
+  (save-config!))
+
+(defun check-updates-callback (interface)
+  (check-for-updates interface :manual t))
+
+(defun set-version-status (interface &optional note color)
+  (set-pane-text interface #'update-status-pane
+                 (format nil "Version: ~a~@[ - ~a~]" (client-version) note)
+                 color))
+
+(defun update-note (interface format-string &rest args)
+  "Pop an informational dialog from any thread."
+  (let ((text (apply #'format nil format-string args)))
+    (capi:execute-with-interface
+     interface
+     (lambda () (capi:display-message "~a" text)))))
+
+(defun check-for-updates (interface &key manual)
+  "Look for a newer release on a background thread and walk the user
+through downloading and installing it. MANUAL marks the Settings
+button, which reports every outcome; the startup check only ever
+surfaces an actual update."
+  (cond
+    ((and (null *client-version*) (not manual))
+     nil)                               ; dev image: never self-checks
+    ((and (null *client-version*) manual)
+     (update-note interface
+                  "This is a dev build (no version baked in), so there is nothing to compare against.~%~%Releases live at:~%~a"
+                  (update-release-page-url)))
+    (t
+     (set-version-status interface "checking for updates...")
+     (mp:process-run-function
+      "eta-client-update-check" '()
+      (lambda ()
+        (let ((release (fetch-latest-release)))
+          (cond
+            ((null release)
+             (set-version-status interface (and manual "update check failed"))
+             (when manual
+               (update-note interface
+                            "Could not check for updates - network trouble, GitHub rate limiting, or no release published yet.")))
+            ((not (update-available-p *client-version* (getf release :tag)))
+             (set-version-status interface "up to date")
+             (when manual
+               (update-note interface "You are on the latest version (~a)."
+                            (client-version))))
+            (t
+             (offer-update-download interface release)))))))))
+
+(defun offer-update-download (interface release)
+  (capi:execute-with-interface
+   interface
+   (lambda ()
+     (if (capi:confirm-yes-or-no
+          "Version ~a is available (you have ~a).~%~%Download and install it now?"
+          (getf release :tag) (client-version))
+         (mp:process-run-function
+          "eta-client-update-download" '()
+          (lambda () (run-update-download interface release)))
+         (set-version-status interface
+                             (format nil "~a available (skipped)"
+                                     (getf release :tag)))))))
+
+(defun run-update-download (interface release)
+  (cond
+    ((not (install-dir-writable-p))
+     (set-version-status interface "install folder not writable" :red)
+     (capi:execute-with-interface
+      interface
+      (lambda ()
+        (when (capi:confirm-yes-or-no
+               "The client's folder is not writable, so the update cannot be applied automatically.~%~%Open the download page to update by hand?")
+          (open-in-browser (update-release-page-url))))))
+    (t
+     (let* ((tag (getf release :tag))
+            (last-shown -1)
+            (zip (download-update!
+                  release (update-zip-path)
+                  :on-progress
+                  (lambda (done total)
+                    ;; Once per MB: this runs per 64KB chunk, and every
+                    ;; update is a message to the GUI thread.
+                    (let ((mb (floor done 1048576)))
+                      (when (> mb last-shown)
+                        (setf last-shown mb)
+                        (set-version-status
+                         interface
+                         (format nil "downloading ~a... ~d~@[ / ~d~] MB"
+                                 tag mb (and total
+                                             (ceiling total 1048576))))))))))
+       (cond
+         ((null zip)
+          (set-version-status interface "download failed" :red)
+          (update-note interface
+                       "The update download failed or did not verify. Nothing was changed; try again later."))
+         (*poll-busy-p*
+          ;; Never swap the exe mid-run; note-poll-activity re-offers
+          ;; the moment the run and its recording are over.
+          (setf *update-ready-zip* (cons zip tag))
+          (set-version-status interface
+                              (format nil "~a downloaded - installs after this run"
+                                      tag)))
+         (t
+          (offer-update-restart interface zip tag)))))))
+
+(defun offer-update-restart (interface zip tag)
+  "Final confirmation; on yes the app exits and the helper script swaps
+the exe and restarts. Called from the download thread and from the poll
+loop (for updates deferred past a run)."
+  (set-version-status interface (format nil "~a downloaded" tag))
+  (capi:execute-with-interface
+   interface
+   (lambda ()
+     (if (capi:confirm-yes-or-no
+          "Update ~a is downloaded and verified.~%~%Restart now to finish installing?"
+          tag)
+         (launch-updater-and-quit interface zip)
+         (set-version-status
+          interface
+          (format nil "~a downloaded - restart skipped; it will be offered again next launch"
+                  tag))))))
 
 (defvar *last-window-title* nil
   "Cache so the 4x-per-second GUI tick only calls SetWindowText on change.")

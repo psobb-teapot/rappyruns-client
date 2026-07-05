@@ -107,6 +107,7 @@
 (defconstant +winhttp-access-type-no-proxy+ 1)
 (defconstant +winhttp-flag-secure+ #x00800000)
 (defconstant +winhttp-query-status-code+ 19)
+(defconstant +winhttp-query-content-length+ 5)
 (defconstant +winhttp-query-flag-number+ #x20000000)
 
 (define-condition winhttp-error (error)
@@ -172,6 +173,19 @@
       (winhttp-fail "WinHttpQueryHeaders"))
     status))
 
+(defun read-winhttp-content-length (request)
+  "The response's Content-Length as an integer, or NIL when absent
+\(chunked transfers). A DWORD is plenty: release zips stay far under
+4GB."
+  (multiple-value-bind (ok length)
+      (%win-http-query-headers request
+                               (logior +winhttp-query-content-length+
+                                       +winhttp-query-flag-number+)
+                               fli:*null-pointer*
+                               0 4
+                               fli:*null-pointer*)
+    (and ok length)))
+
 (defun read-winhttp-body (request)
   (fli:with-dynamic-foreign-objects ()
     (let* ((chunk-size 8192)
@@ -189,16 +203,44 @@
           (dotimes (i bytes-read)
             (vector-push-extend (fli:dereference chunk :index i) bytes)))))))
 
-(defun winhttp-request (method scheme host port path &key headers body)
-  "Blocking HTTP(S) request. HEADERS is an alist of (name . value)
-strings; BODY is an octet vector or NIL. Returns (values status-code
-body-octets). Signals WINHTTP-ERROR on transport failures."
+(defun read-winhttp-body-to-stream (request stream &key on-progress total)
+  "Stream the response body to STREAM (an (unsigned-byte 8) stream) in
+chunks, for downloads too large to hold in memory. ON-PROGRESS, when
+given, is called with (bytes-so-far TOTAL) after every chunk. Returns
+the number of bytes written."
+  (fli:with-dynamic-foreign-objects ()
+    (let* ((chunk-size 65536)
+           (chunk (fli:allocate-dynamic-foreign-object
+                   :type '(:unsigned :byte) :nelems chunk-size))
+           (buffer (make-array chunk-size :element-type '(unsigned-byte 8)))
+           (written 0))
+      (loop
+        (multiple-value-bind (ok bytes-read)
+            (%win-http-read-data request chunk chunk-size 0)
+          (unless ok
+            (winhttp-fail "WinHttpReadData"))
+          (when (zerop bytes-read)
+            (return written))
+          (dotimes (i bytes-read)
+            (setf (aref buffer i) (fli:dereference chunk :index i)))
+          (write-sequence buffer stream :end bytes-read)
+          (incf written bytes-read)
+          (when on-progress
+            (funcall on-progress written total)))))))
+
+(defun call-with-winhttp-request (method scheme host port path headers body
+                                  function)
+  "The request skeleton shared by WINHTTP-REQUEST and WINHTTP-DOWNLOAD:
+open, send, receive, then call FUNCTION with the live request handle to
+consume the response."
   (let ((header-string
           (format nil "~{~a~}"
                   (loop :for (name . value) :in headers
                         :collect (format nil "~a: ~a~c~c" name value
                                          #\Return #\Linefeed)))))
     (with-winhttp-handle (session (open-winhttp-session) "WinHttpOpen")
+      ;; The receive timeout applies per WinHttpReadData call, so long
+      ;; downloads are fine as long as the connection keeps moving.
       (%win-http-set-timeouts session 10000 10000 30000 30000)
       (with-winhttp-handle (connection (%win-http-connect session host port 0)
                             "WinHttpConnect")
@@ -213,5 +255,34 @@ body-octets). Signals WINHTTP-ERROR on transport failures."
           (send-winhttp-request request header-string body)
           (unless (%win-http-receive-response request fli:*null-pointer*)
             (winhttp-fail "WinHttpReceiveResponse"))
-          (values (read-winhttp-status request)
-                  (read-winhttp-body request)))))))
+          (funcall function request))))))
+
+(defun winhttp-request (method scheme host port path &key headers body)
+  "Blocking HTTP(S) request. HEADERS is an alist of (name . value)
+strings; BODY is an octet vector or NIL. Returns (values status-code
+body-octets). Signals WINHTTP-ERROR on transport failures."
+  (call-with-winhttp-request
+   method scheme host port path headers body
+   (lambda (request)
+     (values (read-winhttp-status request)
+             (read-winhttp-body request)))))
+
+(defun winhttp-download (method scheme host port path target-pathname
+                         &key headers on-progress)
+  "Like WINHTTP-REQUEST but streams the body to TARGET-PATHNAME instead
+of memory. Only a 200 writes the file (other statuses leave nothing
+behind). Returns the status code; signals WINHTTP-ERROR on transport
+failures."
+  (call-with-winhttp-request
+   method scheme host port path headers nil
+   (lambda (request)
+     (let ((status (read-winhttp-status request)))
+       (when (eql status 200)
+         (with-open-file (out target-pathname
+                              :direction :output :if-exists :supersede
+                              :element-type '(unsigned-byte 8))
+           (read-winhttp-body-to-stream
+            request out
+            :on-progress on-progress
+            :total (read-winhttp-content-length request))))
+       status))))

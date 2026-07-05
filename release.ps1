@@ -17,6 +17,16 @@ $lispworks = "C:\Program Files\LispWorks\lispworks-8-1-0-x64-windows.exe"
 if ($Version -notmatch '^v\d+\.\d+\.\d+$') { throw "Version must look like v1.2.3 (got: $Version)." }
 if (-not (Test-Path $lispworks)) { throw "LispWorks not found at $lispworks." }
 
+# The tag must match client/VERSION, which deliver.lisp bakes into the
+# exe for the self-updater; a mismatch would ship a binary that thinks
+# it is some other release.
+$versionFile = Join-Path $PSScriptRoot "VERSION"
+if (-not (Test-Path $versionFile)) { throw "client/VERSION not found; create it with the X.Y.Z version." }
+$fileVersion = (Get-Content $versionFile -TotalCount 1).Trim()
+if ("v$fileVersion" -ne $Version) {
+    throw "client/VERSION ($fileVersion) does not match the release tag ($Version); bump and commit client/VERSION first."
+}
+
 # The LispWorks image is a GUI-subsystem exe: plain invocation returns
 # immediately and never sets $LASTEXITCODE, so wait on it explicitly.
 $build = Start-Process -FilePath $lispworks `

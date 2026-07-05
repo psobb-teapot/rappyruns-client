@@ -13,6 +13,7 @@
   :serial t
   :components ((:module "src"
                 :components ((:file "package")
+                             (:file "version")
                              (:file "config")
                              (:file "memory")
                              (:file "win32" :if-feature :lispworks)
@@ -26,6 +27,7 @@
                              (:file "ffmpeg-win32" :if-feature :lispworks)
                              (:file "trigger-log")
                              (:file "api-client")
+                             (:file "updater")
                              (:file "store")
                              (:file "gui" :if-feature :lispworks)
                              (:file "main")))))

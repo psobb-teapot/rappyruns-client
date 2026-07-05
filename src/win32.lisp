@@ -66,6 +66,14 @@
   :calling-convention :stdcall
   :module :kernel32)
 
+;; The self-updater (updater.lisp) hands our PID to its helper script,
+;; which waits for this process to exit before swapping the exe.
+(fli:define-foreign-function (%get-current-process-id "GetCurrentProcessId")
+    ()
+  :result-type (:unsigned :long)
+  :calling-convention :stdcall
+  :module :kernel32)
+
 (fli:define-foreign-function (%get-exit-code-process "GetExitCodeProcess")
     ((process :pointer)
      (exit-code (:reference-return (:unsigned :long))))

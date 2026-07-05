@@ -21,6 +21,17 @@
 
 (funcall (intern "QUICKLOAD" "QL") :ephinea-ta-client)
 
+;; Bake client/VERSION into the image so the self-updater can compare
+;; itself against the latest release tag. Failing the build on a missing
+;; or malformed file keeps every delivered exe versioned.
+(let* ((version-path (merge-pathnames "VERSION" *client-root*))
+       (version (with-open-file (in version-path)
+                  (string-trim '(#\Space #\Tab #\Return #\Linefeed)
+                               (read-line in)))))
+  (unless (funcall (intern "PARSE-VERSION" "EPHINEA-TA-CLIENT") version)
+    (error "client/VERSION must contain an X.Y.Z version (got: ~s)" version))
+  (setf (symbol-value (intern "*CLIENT-VERSION*" "EPHINEA-TA-CLIENT")) version))
+
 (ensure-directories-exist (merge-pathnames "dist/" *client-root*))
 
 (deliver (intern "MAIN" "EPHINEA-TA-CLIENT")

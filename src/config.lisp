@@ -6,6 +6,7 @@
   (list :server-url "https://ephinea-ta-production.up.railway.app"
         :api-token ""
         :auto-submit t
+        :auto-update t      ; check GitHub releases at startup (updater.lisp)
         :completion-sound t
         :trigger-log nil
         :record-enabled t

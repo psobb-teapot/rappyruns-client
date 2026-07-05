@@ -138,13 +138,16 @@ opposed to a definite 401, which the caller words itself)."
       (values status (subseq bytes (+ header-end 4))))))
 
 #+lispworks
-(defun http-request (method url &key body (content-type "application/json") token)
-  "Blocking HTTP request. Returns (values status-code body-string)."
+(defun http-request (method url &key body (content-type "application/json") token
+                                     headers)
+  "Blocking HTTP request. HEADERS is an alist of extra (name . value)
+header strings. Returns (values status-code body-string)."
   (multiple-value-bind (scheme host port path) (parse-url url)
     (handler-case
         (multiple-value-bind (status response-body)
             (winhttp-request method scheme host port path
                              :headers (append
+                                       headers
                                        (when token
                                          (list (cons "Authorization"
                                                      (format nil "Bearer ~a" token))))
@@ -156,8 +159,10 @@ opposed to a definite 401, which the caller words itself)."
         (error 'api-error :message (winhttp-error-message condition))))))
 
 #-lispworks
-(defun http-request (method url &key body (content-type "application/json") token)
-  "Blocking HTTP request. Returns (values status-code body-string)."
+(defun http-request (method url &key body (content-type "application/json") token
+                                     headers)
+  "Blocking HTTP request. HEADERS is an alist of extra (name . value)
+header strings. Returns (values status-code body-string)."
   (multiple-value-bind (scheme host port path) (parse-url url)
     (let ((stream (open-http-stream scheme host port))
           (body-octets (and body (string-to-utf8 body))))
@@ -169,6 +174,9 @@ opposed to a definite 401, which the caller words itself)."
                                          #\Return #\Linefeed))
              (write-ascii stream (format nil "Connection: close~c~c"
                                          #\Return #\Linefeed))
+             (loop :for (name . value) :in headers
+                   :do (write-ascii stream (format nil "~a: ~a~c~c" name value
+                                                   #\Return #\Linefeed)))
              (when token
                (write-ascii stream (format nil "Authorization: Bearer ~a~c~c"
                                            token #\Return #\Linefeed)))
