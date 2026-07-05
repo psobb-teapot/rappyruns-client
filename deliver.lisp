@@ -19,18 +19,26 @@
 
 (push *client-root* asdf:*central-registry*)
 
-(funcall (intern "QUICKLOAD" "QL") :ephinea-ta-client)
+;; Delete the client's cached fasls BEFORE loading, so the build
+;; compiles every component fresh. ASDF only recompiles CHANGED files,
+;; but LispWorks inlines defstruct accessors and constructors into
+;; their callers: change a struct's slot layout and every UNCHANGED
+;; caller's cached fasl still addresses the old offsets. Exactly that
+;; shipped in v0.14.6 - a slot added to the RECORDER struct left
+;; main.lisp/gui.lisp fasls stale, and the delivered exe read garbage
+;; ("#<pointer out of memory bounds>" in the status bar) and lost the
+;; ON-KEEP wiring. Deleting the cache (rather than ASDF:LOAD-SYSTEM
+;; :FORCE T after the fact) avoids a double load, which re-executes
+;; DEFCONSTANT forms and dies on non-EQL constants. Thirty extra build
+;; seconds buy layout-consistent releases.
+(let* ((sample (asdf:apply-output-translations
+                (merge-pathnames "src/main.lisp" *client-root*)))
+       (cache-dir (uiop:pathname-directory-pathname sample)))
+  (format t "~&; clearing fasl cache: ~a~%" cache-dir)
+  (uiop:delete-directory-tree cache-dir :validate t
+                                        :if-does-not-exist :ignore))
 
-;; Force a full recompile of the client system (dependencies stay
-;; cached). ASDF only recompiles CHANGED files, but LispWorks inlines
-;; defstruct accessors and constructors into their callers: change a
-;; struct's slot layout and every UNCHANGED caller's cached fasl still
-;; addresses the old offsets. Exactly that shipped in v0.14.6 - a slot
-;; added to the RECORDER struct left main.lisp/gui.lisp fasls stale,
-;; and the delivered exe read garbage ("#<pointer out of memory
-;; bounds>" in the status bar) and lost the ON-KEEP wiring. Thirty
-;; extra build seconds buy layout-consistent releases.
-(funcall (intern "LOAD-SYSTEM" "ASDF") :ephinea-ta-client :force t)
+(funcall (intern "QUICKLOAD" "QL") :ephinea-ta-client)
 
 ;; Bake client/VERSION into the image so the self-updater can compare
 ;; itself against the latest release tag. Failing the build on a missing
