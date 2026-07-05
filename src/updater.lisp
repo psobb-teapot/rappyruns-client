@@ -269,8 +269,9 @@ process to die, swaps the exe and restarts the new build."
     (let ((poll *poll-process*))
       (when poll
         (ignore-errors (mp:process-join poll :timeout 10))))
-    (capi:execute-with-interface
+    ;; Quit unconditionally: the helper is already waiting on our PID,
+    ;; so lingering here would only make it abort after its timeout.
+    (capi:execute-with-interface-if-alive
      interface
-     (lambda ()
-       (capi:destroy interface)
-       (lw:quit :status 0)))))
+     (lambda () (capi:destroy interface)))
+    (lw:quit :status 0)))

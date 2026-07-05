@@ -8,6 +8,14 @@
   (gp:make-font-description :family "Segoe UI" :size 12)
   "Font for all panes; the CAPI default on Windows is small and hard to read.")
 
+(defvar *interface* nil
+  "The live CLIENT-WINDOW. A global rather than a closure argument so
+the language toggle can replace the window (see REBUILD-INTERFACE); the
+poll loop re-reads it every iteration.")
+
+(defvar *last-window-title* nil
+  "Cache so the 4x-per-second GUI tick only calls SetWindowText on change.")
+
 ;; RUN-STATUS-LABEL and FORMAT-RUN-TIME live in store.lisp (pure CL,
 ;; covered by the SBCL tests).
 
@@ -24,29 +32,29 @@
   ()
   (:panes
    (game-status capi:title-pane
-                :text "Game: searching..."
+                :text (tr :game-searching)
                 :font *ui-font*
                 :accessor game-status-pane)
    (server-status capi:title-pane
-                  :text "Server: not checked"
+                  :text (tr :server-not-checked)
                   :font *ui-font*
                   :accessor server-status-pane)
    (token-status capi:title-pane
-                 :text "Token: not checked"
+                 :text (tr :token-not-checked)
                  :font *ui-font*
                  :accessor token-status-pane)
    (quest-status capi:title-pane
-                 :text "No active quest"
+                 :text (tr :no-active-quest)
                  :font *ui-font*
                  :accessor quest-status-pane)
    (runs-list capi:multi-column-list-panel
               :font *ui-font*
               :header-args (list :font *ui-font*)
-              :columns '((:title "Quest" :width (:character 34))
-                         (:title "Time" :width (:character 12))
-                         (:title "Party" :width (:character 6))
-                         (:title "Video" :width (:character 10))
-                         (:title "Status" :width (:character 40)))
+              :columns `((:title ,(tr :col-quest) :width (:character 34))
+                         (:title ,(tr :col-time) :width (:character 12))
+                         (:title ,(tr :col-party) :width (:character 6))
+                         (:title ,(tr :col-video) :width (:character 10))
+                         (:title ,(tr :col-status) :width (:character 40)))
               :items '()
               :column-function
               (lambda (entry)
@@ -60,20 +68,28 @@
               :action-callback 'runs-list-action-callback
               :callback-type :data-interface
               :visible-min-height '(:character 8))
+   (language-radio capi:radio-button-panel
+                   :items *languages*
+                   :print-function 'language-label
+                   :selected-item *language*
+                   :selection-callback 'language-changed-callback
+                   :callback-type :interface
+                   :font *ui-font*
+                   :accessor language-radio)
    (server-url-input capi:text-input-pane
-                     :title "Server URL"
+                     :title (tr :server-url-label)
                      :text (config-value :server-url)
                      :font *ui-font*
                      :title-font *ui-font*
                      :accessor server-url-input)
    (api-token-input capi:password-pane
-                    :title "API token"
+                    :title (tr :api-token-label)
                     :text (config-value :api-token)
                     :font *ui-font*
                     :title-font *ui-font*
                     :accessor api-token-input)
    (auto-submit-check capi:check-button
-                      :text "Submit automatically on quest completion"
+                      :text (tr :auto-submit-label)
                       :selected (config-value :auto-submit)
                       :selection-callback 'toggle-auto-submit-callback
                       :retract-callback 'toggle-auto-submit-callback
@@ -81,7 +97,7 @@
                       :font *ui-font*
                       :accessor auto-submit-check)
    (completion-sound-check capi:check-button
-                           :text "Play a sound when a run completes"
+                           :text (tr :completion-sound-label)
                            :selected (config-value :completion-sound)
                            :selection-callback 'toggle-completion-sound-callback
                            :retract-callback 'toggle-completion-sound-callback
@@ -89,7 +105,7 @@
                            :font *ui-font*
                            :accessor completion-sound-check)
    (trigger-log-check capi:check-button
-                      :text "Log trigger changes (for finding switch IDs of new categories)"
+                      :text (tr :trigger-log-label)
                       :selected (config-value :trigger-log)
                       :selection-callback 'toggle-trigger-log-callback
                       :retract-callback 'toggle-trigger-log-callback
@@ -97,7 +113,7 @@
                       :font *ui-font*
                       :accessor trigger-log-check)
    (record-check capi:check-button
-                 :text "Record quest videos automatically"
+                 :text (tr :record-label)
                  :selected (config-value :record-enabled)
                  :selection-callback 'toggle-record-callback
                  :retract-callback 'toggle-record-callback
@@ -105,7 +121,7 @@
                  :font *ui-font*
                  :accessor record-check)
    (record-audio-check capi:check-button
-                       :text "Record game audio (only the game is heard, not Discord etc.)"
+                       :text (tr :record-audio-label)
                        :selected (config-value :record-audio)
                        :selection-callback 'toggle-record-audio-callback
                        :retract-callback 'toggle-record-audio-callback
@@ -115,11 +131,11 @@
    ;; ffmpeg itself is not a setting: the release bundles it next to the
    ;; exe (an override still exists as :ffmpeg-path in config.sexp).
    (update-status-pane capi:title-pane
-                       :text (format nil "Version: ~a" (client-version))
+                       :text (tr :version-status (client-version) nil)
                        :font *ui-font*
                        :accessor update-status-pane)
    (auto-update-check capi:check-button
-                      :text "Check for updates at startup"
+                      :text (tr :auto-update-label)
                       :selected (config-value :auto-update)
                       :selection-callback 'toggle-auto-update-callback
                       :retract-callback 'toggle-auto-update-callback
@@ -127,7 +143,7 @@
                       :font *ui-font*
                       :accessor auto-update-check)
    (check-updates-button capi:push-button
-                         :text "Check for updates now"
+                         :text (tr :check-updates-button)
                          :callback 'check-updates-callback
                          :callback-type :interface
                          :font *ui-font*)
@@ -136,35 +152,40 @@
                        :font *ui-font*
                        :accessor record-dir-display)
    (record-dir-button capi:push-button
-                      :text "Change folder..."
+                      :text (tr :change-folder-button)
                       :callback 'choose-record-dir-callback
                       :callback-type :interface
                       :font *ui-font*)
    (save-button capi:push-button
-                :text "Save & verify"
+                :text (tr :save-button)
                 :callback 'save-settings-callback
                 :callback-type :interface
                 :font *ui-font*)
    (upload-button capi:push-button
-                  :text "Upload to YouTube"
+                  :text (tr :upload-button)
                   :callback 'upload-video-callback
                   :callback-type :interface
                   :font *ui-font*)
    (recordings-folder-button capi:push-button
-                             :text "Open recordings folder"
+                             :text (tr :recordings-folder-button)
                              :callback 'open-recordings-folder-callback
                              :callback-type :interface
                              :font *ui-font*)
    (my-runs-button capi:push-button
-                   :text "Open My Runs (add videos)"
+                   :text (tr :my-runs-button)
                    :callback 'open-my-runs-callback
                    :callback-type :interface
                    :font *ui-font*)
    (retry-button capi:push-button
-                 :text "Submit pending runs"
+                 :text (tr :retry-button)
                  :callback 'retry-callback
                  :callback-type :interface
-                 :font *ui-font*))
+                 :font *ui-font*)
+   (clear-list-button capi:push-button
+                      :text (tr :clear-list-button)
+                      :callback 'clear-list-callback
+                      :callback-type :interface
+                      :font *ui-font*))
   ;; Two tabs mirror how the app is used: Settings once up front, then
   ;; the Runs tab for the daily play -> check video -> submit flow.
   (:layouts
@@ -173,40 +194,51 @@
    ;; right here), with the folder / site / resubmit as fallbacks.
    (actions-row capi:row-layout
                 '(upload-button recordings-folder-button my-runs-button
-                  retry-button))
+                  retry-button clear-list-button))
    (runs-tab capi:column-layout
              '(status-row quest-status runs-list actions-row)
              :adjust :left)
    ;; Settings are grouped by how they behave: the Connection fields
    ;; need Save & verify, every checkbox applies immediately.
+   (language-group capi:column-layout '(language-radio)
+                   :title (tr :group-language) :title-position :frame
+                   :title-font *ui-font* :adjust :left)
+   ;; The Server URL is a developer setting: pointing a normal user's
+   ;; client anywhere else only breaks it. The pane always exists (so
+   ;; SAVE-SETTINGS-CALLBACK and REBUILD-INTERFACE read it either way),
+   ;; it just stays out of the layout without --debug / :debug t.
    (connection-group capi:column-layout
-                     '(server-url-input api-token-input save-button)
-                     :title "Connection" :title-position :frame
+                     (if (debug-mode-p)
+                         '(server-url-input api-token-input save-button)
+                         '(api-token-input save-button))
+                     :title (tr :group-connection) :title-position :frame
                      :title-font *ui-font* :adjust :left)
    (completion-group capi:column-layout
                      '(auto-submit-check completion-sound-check)
-                     :title "When a run completes" :title-position :frame
+                     :title (tr :group-completion) :title-position :frame
                      :title-font *ui-font* :adjust :left)
    (recording-row capi:row-layout '(record-dir-display record-dir-button)
                   :adjust :center)
    (recording-group capi:column-layout
                     '(record-check record-audio-check recording-row)
-                    :title "Recording" :title-position :frame
+                    :title (tr :group-recording) :title-position :frame
                     :title-font *ui-font* :adjust :left)
    (updates-group capi:column-layout
                   '(update-status-pane auto-update-check
                     check-updates-button)
-                  :title "Updates" :title-position :frame
+                  :title (tr :group-updates) :title-position :frame
                   :title-font *ui-font* :adjust :left)
    (advanced-group capi:column-layout '(trigger-log-check)
-                   :title "Advanced" :title-position :frame
+                   :title (tr :group-advanced) :title-position :frame
                    :title-font *ui-font* :adjust :left)
    (settings-tab capi:column-layout
-                 '(connection-group completion-group recording-group
-                   updates-group advanced-group)
+                 '(language-group connection-group completion-group
+                   recording-group updates-group advanced-group)
                  :adjust :left)
    (main-tabs capi:tab-layout ()
-              :items '(("Runs" runs-tab) ("Settings" settings-tab))
+              :items `((,(tr :tab-runs) runs-tab)
+                       (,(tr :tab-settings) settings-tab))
+              :font *ui-font*
               :print-function 'first
               :visible-child-function 'second
               ;; First launch without a token lands on Settings (step 1
@@ -243,13 +275,45 @@ when toggled."
         (capi:button-selected (completion-sound-check interface)))
   (save-config!))
 
+(defun language-changed-callback (interface)
+  "Switch the UI language. CAPI fixes pane labels, list columns and tab
+titles at creation time, so the reliable way to relabel everything is
+to build a fresh window."
+  (let ((language (capi:choice-selected-item (language-radio interface))))
+    (unless (eq language *language*)
+      (setf *language* language
+            (config-value :language) language)
+      (save-config!)
+      (rebuild-interface interface))))
+
+(defun rebuild-interface (old)
+  "Replace OLD with a freshly built window at the same screen position,
+carrying over unsaved Connection edits and the selected tab.
+*INTERFACE* flips to the new window before OLD is destroyed, so the
+poll loop never picks up a dead interface."
+  (multiple-value-bind (x y) (capi:top-level-interface-geometry old)
+    (let ((new (make-instance 'client-window :best-x x :best-y y)))
+      (setf (capi:text-input-pane-text (server-url-input new))
+            (capi:text-input-pane-text (server-url-input old))
+            (capi:text-input-pane-text (api-token-input new))
+            (capi:text-input-pane-text (api-token-input old)))
+      (setf (capi:choice-selection (slot-value new 'main-tabs))
+            (capi:choice-selection (slot-value old 'main-tabs)))
+      (capi:display new)
+      (setf *interface* new
+            *last-window-title* nil)
+      (refresh-runs-list new)
+      (check-server new)
+      (check-token new)
+      (capi:destroy old))))
+
 (defun record-dir-label ()
-  (format nil "Recordings folder: ~a" (namestring (resolve-record-dir))))
+  (tr :record-dir-label (namestring (resolve-record-dir))))
 
 (defun choose-record-dir-callback (interface)
   "Pick the recordings folder with the system directory dialog; applied
 and saved immediately (no Save settings needed)."
-  (let ((dir (capi:prompt-for-directory "Choose the recordings folder"
+  (let ((dir (capi:prompt-for-directory (tr :choose-record-dir)
                                         :pathname (resolve-record-dir))))
     (when dir
       (setf (config-value :record-dir) (namestring dir))
@@ -261,6 +325,15 @@ and saved immediately (no Save settings needed)."
   (declare (ignore interface))
   ;; The poll loop owns submission; just flag the queue for a retry pass.
   (setf *retry-requested* t))
+
+(defun clear-list-callback (interface)
+  "Clear the runs list after confirmation. Only unsent runs stay (see
+CLEAR-RUNS!); drafts with a pending video go too - by the time someone
+reaches for this button, those are recordings they never meant to
+upload, and the site can still take a video for them."
+  (when (capi:confirm-yes-or-no "~a" (tr :clear-list-confirm))
+    (clear-runs!)
+    (refresh-runs-list interface)))
 
 (defun runs-list-action-callback (entry interface)
   "Double-click / Enter on a run: open it on the site (drafts get their
@@ -307,12 +380,12 @@ run whose video is still unattached (the just-finished-playing case)."
                                 (queued-runs))))))
     (cond
       ((and selected (not (getf selected :video-path)))
-       (capi:display-message "This run has no saved recording.~%~%Videos are only saved when recording is enabled while the quest is played."))
+       (capi:display-message "~a" (tr :no-recording-for-run)))
       ((null entry)
-       (capi:display-message "No saved recordings to upload yet.~%~%Videos are saved automatically when a recorded quest completes."))
+       (capi:display-message "~a" (tr :no-recordings-yet)))
       ((not (ignore-errors (probe-file (getf entry :video-path))))
-       (capi:display-message "The recording file is missing:~%~%~a"
-                             (getf entry :video-path)))
+       (capi:display-message "~a" (tr :recording-file-missing
+                                      (getf entry :video-path))))
       (t
        (setf *last-upload-run* entry)
        (open-file-in-explorer (getf entry :video-path))
@@ -332,16 +405,15 @@ run whose video is still unattached (the just-finished-playing case)."
        (declare (ignore updated))
        (refresh-runs-list interface)
        (when error
-         (capi:execute-with-interface
+         (capi:execute-with-interface-if-alive
           interface
           (lambda ()
-            (capi:display-message "Could not attach the video:~%~%~a"
-                                  error))))))))
+            (capi:display-message "~a" (tr :attach-failed error)))))))))
 
 (defun offer-clipboard-url (interface url)
   "Confirm (on the GUI thread) which run the copied URL belongs to,
 then attach it in a worker process."
-  (capi:execute-with-interface
+  (capi:execute-with-interface-if-alive
    interface
    (lambda ()
      (let ((target (resolve-video-target (video-candidates)
@@ -352,15 +424,13 @@ then attach it in a worker process."
           (multiple-value-bind (entry okp)
               (capi:prompt-with-list
                (video-candidates)
-               (format nil "A YouTube link was copied:~%~a~%~%Attach it to which run?"
-                       url)
+               (tr :attach-choose url)
                :print-function 'run-choice-label)
             (when (and okp entry)
               (attach-video-in-background interface entry url))))
          (t
           (when (capi:confirm-yes-or-no
-                 "Attach the copied YouTube link to this run?~%~%~a~%~a"
-                 (run-choice-label target) url)
+                 "~a" (tr :attach-confirm (run-choice-label target) url))
             (attach-video-in-background interface target url))))))))
 
 (defun open-recordings-folder-callback (interface)
@@ -383,17 +453,15 @@ Cancel (or an empty paste) skips it for this launch."
      (lambda ()
        (let ((url (api-url (config-value :server-url) "/my/tokens")))
          (when (capi:confirm-yes-or-no
-                "No API token is set yet.~%~%Runs are still timed and listed below, but they can only be uploaded to the site with a token.~%~%Open the token page in your browser now?~%(~a - requires Discord login)"
-                url)
+                "~a" (tr :token-setup-offer url))
            (open-in-browser url))
          (labels ((ask ()
                     (multiple-value-bind (text okp)
-                        (capi:prompt-for-string
-                         "Paste your API token here (Cancel to skip - you can also set it later in Settings):")
+                        (capi:prompt-for-string (tr :token-paste-prompt))
                       (let ((token (and okp (normalize-token text))))
                         (if (or (null token) (string= token ""))
                             (set-pane-text interface #'token-status-pane
-                                           "Token: not set")
+                                           (tr :token-not-set))
                             (progn
                               (setf (config-value :api-token) token)
                               (save-config!)
@@ -408,7 +476,7 @@ Cancel (or an empty paste) skips it for this launch."
                                   interface
                                   (lambda ()
                                     (when (capi:confirm-yes-or-no
-                                           "The server rejected that token (unauthorized).~%~%Paste it again?")
+                                           "~a" (tr :token-retry))
                                       (ask))))))))))))
            (ask)))))))
 
@@ -423,8 +491,7 @@ on, start the log file right away so the user can see it is working."
     (if on
         (let ((path (start-trigger-log)))
           (capi:display-message
-           "Trigger logging is on. Play the segment, then open:~%~%~a~%~%The floor switch (or register) that flips when the room is cleared is your end trigger."
-           (namestring path)))
+           "~a" (tr :trigger-log-on (namestring path))))
         (close-trigger-log))))
 
 (defun toggle-record-callback (interface)
@@ -435,8 +502,7 @@ snaps back off with instructions."
     (when (and on (not (ffmpeg-available-p)))
       (setf (capi:button-selected (record-check interface)) nil
             on nil)
-      (capi:display-message
-       "ffmpeg was not found, so recording stays off.~%~%Use the client zip that bundles it (ffmpeg\\ffmpeg.exe next to the exe), or install ffmpeg so it is on PATH."))
+      (capi:display-message "~a" (tr :ffmpeg-missing)))
     (setf (config-value :record-enabled) on)
     (save-config!)))
 
@@ -447,10 +513,14 @@ recording start, so it takes effect from the next quest."
         (capi:button-selected (record-audio-check interface)))
   (save-config!))
 
+;; The cross-thread update helpers use the -IF-ALIVE variant: the
+;; language toggle destroys and replaces the window, and the poll loop
+;; or a background check may still hold the old one for a moment.
+
 (defun set-pane-text (interface accessor text &optional foreground)
   "Update a title pane's text and foreground color (NIL = default) from
 any thread. Errors get :red so they stand out from routine status."
-  (capi:execute-with-interface
+  (capi:execute-with-interface-if-alive
    interface
    (lambda ()
      (let ((pane (funcall accessor interface)))
@@ -459,7 +529,7 @@ any thread. Errors get :red so they stand out from routine status."
 
 (defun refresh-runs-list (interface)
   (let ((runs (queued-runs)))
-    (capi:execute-with-interface
+    (capi:execute-with-interface-if-alive
      interface
      (lambda ()
        (setf (capi:collection-items (runs-list-pane interface))
@@ -478,9 +548,9 @@ cross-check the builtin trigger slugs against the server."
                              :collect (gethash "slug" quest)))
                 (unknown (unknown-slugs slugs *builtin-quest-defs*)))
            (set-pane-text interface #'server-status-pane
-                          (format nil "Server: OK (~d quests, ~d timed category~:p~@[; ~d local trigger~:p unknown~])"
-                                  (length quests) server-defs
-                                  (and (plusp (length unknown)) (length unknown)))))
+                          (tr :server-ok
+                              (length quests) server-defs
+                              (and (plusp (length unknown)) (length unknown)))))
        (error (condition)
          (set-pane-text interface #'server-status-pane
                         (server-status-error-text condition) :red))))))
@@ -493,9 +563,9 @@ itself may well be fine. NOTIFY also pops the outcome as a dialog, for
 the Save settings flow."
   (let ((token (normalize-token (config-value :api-token))))
     (if (string= token "")
-        (set-pane-text interface #'token-status-pane "Token: not set")
+        (set-pane-text interface #'token-status-pane (tr :token-not-set))
         (progn
-          (set-pane-text interface #'token-status-pane "Token: checking...")
+          (set-pane-text interface #'token-status-pane (tr :token-checking))
           (mp:process-run-function
            "eta-client-token-check" '()
            (lambda ()
@@ -505,22 +575,22 @@ the Save settings flow."
                      (:ok
                       (let ((name (gethash "username" user)))
                         (set-pane-text interface #'token-status-pane
-                                       (format nil "Token: OK (~a)" name))
+                                       (tr :token-ok name))
                         (when notify
-                          (capi:execute-with-interface
+                          (capi:execute-with-interface-if-alive
                            interface
                            (lambda ()
                              (capi:display-message
-                              "Token OK - authenticated as ~a." name))))))
+                              "~a" (tr :token-ok-dialog name)))))))
                      (:unauthorized
                       (set-pane-text interface #'token-status-pane
-                                     "Token: invalid or revoked" :red)
+                                     (tr :token-invalid) :red)
                       (when notify
-                        (capi:execute-with-interface
+                        (capi:execute-with-interface-if-alive
                          interface
                          (lambda ()
                            (capi:display-message
-                            "The server rejected the API token (unauthorized).~%~%Paste a fresh one from the site's token page."))))
+                            "~a" (tr :token-rejected-dialog)))))
                       (when on-invalid (funcall on-invalid)))))
                (error (condition)
                  (set-pane-text interface #'token-status-pane
@@ -543,15 +613,14 @@ the Save settings flow."
 
 (defun set-version-status (interface &optional note color)
   (set-pane-text interface #'update-status-pane
-                 (format nil "Version: ~a~@[ - ~a~]" (client-version) note)
+                 (tr :version-status (client-version) note)
                  color))
 
-(defun update-note (interface format-string &rest args)
+(defun update-note (interface text)
   "Pop an informational dialog from any thread."
-  (let ((text (apply #'format nil format-string args)))
-    (capi:execute-with-interface
-     interface
-     (lambda () (capi:display-message "~a" text)))))
+  (capi:execute-with-interface-if-alive
+   interface
+   (lambda () (capi:display-message "~a" text))))
 
 (defun check-for-updates (interface &key manual)
   "Look for a newer release on a background thread and walk the user
@@ -562,52 +631,49 @@ surfaces an actual update."
     ((and (null *client-version*) (not manual))
      nil)                               ; dev image: never self-checks
     ((and (null *client-version*) manual)
-     (update-note interface
-                  "This is a dev build (no version baked in), so there is nothing to compare against.~%~%Releases live at:~%~a"
-                  (update-release-page-url)))
+     (update-note interface (tr :update-dev-build (update-release-page-url))))
     (t
-     (set-version-status interface "checking for updates...")
+     (set-version-status interface (tr :update-checking))
      (mp:process-run-function
       "eta-client-update-check" '()
       (lambda ()
         (let ((release (fetch-latest-release)))
           (cond
             ((null release)
-             (set-version-status interface (and manual "update check failed"))
+             (set-version-status interface
+                                 (and manual (tr :update-check-failed)))
+             (when manual
+               (update-note interface (tr :update-check-failed-dialog))))
+            ((not (update-available-p *client-version* (getf release :tag)))
+             (set-version-status interface (tr :update-up-to-date))
              (when manual
                (update-note interface
-                            "Could not check for updates - network trouble, GitHub rate limiting, or no release published yet.")))
-            ((not (update-available-p *client-version* (getf release :tag)))
-             (set-version-status interface "up to date")
-             (when manual
-               (update-note interface "You are on the latest version (~a)."
-                            (client-version))))
+                            (tr :update-latest-dialog (client-version)))))
             (t
              (offer-update-download interface release)))))))))
 
 (defun offer-update-download (interface release)
-  (capi:execute-with-interface
+  (capi:execute-with-interface-if-alive
    interface
    (lambda ()
      (if (capi:confirm-yes-or-no
-          "Version ~a is available (you have ~a).~%~%Download and install it now?"
-          (getf release :tag) (client-version))
+          "~a" (tr :update-available-confirm
+                   (getf release :tag) (client-version)))
          (mp:process-run-function
           "eta-client-update-download" '()
           (lambda () (run-update-download interface release)))
          (set-version-status interface
-                             (format nil "~a available (skipped)"
-                                     (getf release :tag)))))))
+                             (tr :update-skipped (getf release :tag)))))))
 
 (defun run-update-download (interface release)
   (cond
     ((not (install-dir-writable-p))
-     (set-version-status interface "install folder not writable" :red)
-     (capi:execute-with-interface
+     (set-version-status interface (tr :update-not-writable) :red)
+     (capi:execute-with-interface-if-alive
       interface
       (lambda ()
         (when (capi:confirm-yes-or-no
-               "The client's folder is not writable, so the update cannot be applied automatically.~%~%Open the download page to update by hand?")
+               "~a" (tr :update-not-writable-confirm))
           (open-in-browser (update-release-page-url))))))
     (t
      (let* ((tag (getf release :tag))
@@ -623,21 +689,17 @@ surfaces an actual update."
                         (setf last-shown mb)
                         (set-version-status
                          interface
-                         (format nil "downloading ~a... ~d~@[ / ~d~] MB"
-                                 tag mb (and total
-                                             (ceiling total 1048576))))))))))
+                         (tr :update-downloading
+                             tag mb (and total (ceiling total 1048576))))))))))
        (cond
          ((null zip)
-          (set-version-status interface "download failed" :red)
-          (update-note interface
-                       "The update download failed or did not verify. Nothing was changed; try again later."))
+          (set-version-status interface (tr :update-download-failed) :red)
+          (update-note interface (tr :update-download-failed-dialog)))
          (*poll-busy-p*
           ;; Never swap the exe mid-run; note-poll-activity re-offers
           ;; the moment the run and its recording are over.
           (setf *update-ready-zip* (cons zip tag))
-          (set-version-status interface
-                              (format nil "~a downloaded - installs after this run"
-                                      tag)))
+          (set-version-status interface (tr :update-after-run tag)))
          (t
           (offer-update-restart interface zip tag)))))))
 
@@ -645,26 +707,21 @@ surfaces an actual update."
   "Final confirmation; on yes the app exits and the helper script swaps
 the exe and restarts. Called from the download thread and from the poll
 loop (for updates deferred past a run)."
-  (set-version-status interface (format nil "~a downloaded" tag))
-  (capi:execute-with-interface
+  (set-version-status interface (tr :update-downloaded tag))
+  (capi:execute-with-interface-if-alive
    interface
    (lambda ()
      (if (capi:confirm-yes-or-no
-          "Update ~a is downloaded and verified.~%~%Restart now to finish installing?"
-          tag)
-         (launch-updater-and-quit interface zip)
-         (set-version-status
-          interface
-          (format nil "~a downloaded - restart skipped; it will be offered again next launch"
-                  tag))))))
-
-(defvar *last-window-title* nil
-  "Cache so the 4x-per-second GUI tick only calls SetWindowText on change.")
+          "~a" (tr :update-restart-confirm tag))
+         ;; *INTERFACE*, not the captured window: a language switch may
+         ;; have rebuilt it, and the teardown must destroy the live one.
+         (launch-updater-and-quit *interface* zip)
+         (set-version-status interface (tr :update-restart-skipped tag))))))
 
 (defun set-window-title (interface title)
   (unless (equal title *last-window-title*)
     (setf *last-window-title* title)
-    (capi:execute-with-interface
+    (capi:execute-with-interface-if-alive
      interface
      (lambda ()
        (setf (capi:interface-title interface) title)))))
@@ -676,9 +733,12 @@ loop (for updates deferred past a run)."
                           (eq (recorder-state recorder) :recording)))
         (in-quest-p (eq (detector-state detector) :in-quest)))
     (set-pane-text interface #'game-status-pane
-                   (format nil "~a~@[ / recording error: ~a~]"
-                           (if connected-p "Game: attached" "Game: searching...")
-                           recording-error)
+                   (let ((base (if connected-p
+                                   (tr :game-attached)
+                                   (tr :game-searching))))
+                     (if recording-error
+                         (tr :game-status-with-error base recording-error)
+                         base))
                    (and recording-error :red))
     (set-pane-text
      interface #'quest-status-pane
@@ -691,8 +751,8 @@ loop (for updates deferred past a run)."
                   (format-run-time (detector-elapsed-ms detector))
                   recording-p)))
        ((and snapshot (getf snapshot :quest-name))
-        (format nil "~a (waiting for start)" (getf snapshot :quest-name)))
-       (t "No active quest")))
+        (tr :quest-waiting (getf snapshot :quest-name)))
+       (t (tr :no-active-quest))))
     ;; The taskbar truncates from the right, so the time goes first.
     (set-window-title
      interface

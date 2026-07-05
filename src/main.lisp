@@ -90,7 +90,10 @@ prompt exactly once."
         (offer-update-restart interface (car ready) (cdr ready))))))
 
 #+lispworks
-(defun poll-loop (interface)
+(defun poll-loop ()
+  ;; INTERFACE is re-read from *INTERFACE* every iteration: the language
+  ;; toggle replaces the window (REBUILD-INTERFACE), and updates must
+  ;; land on the current one.
   (let ((reader nil)
         (detector (make-detector))
         (recorder (make-recorder
@@ -99,12 +102,13 @@ prompt exactly once."
                    ;; Upload button and clipboard attach can find it.
                    :on-keep (lambda (path run)
                               (link-video-file! run path)
-                              (refresh-runs-list interface))))
+                              (refresh-runs-list *interface*))))
         (previous-snapshot nil)
         (last-gui-update 0))
     (ignore-errors (cleanup-stale-recordings recorder))
     (unwind-protect
-         (loop :until *stop-requested*
+         (loop :for interface := *interface*
+               :until *stop-requested*
                :do (note-poll-activity interface detector recorder)
                    (cond
                      ;; Not attached: look for the game once per second.
@@ -187,10 +191,12 @@ prompt exactly once."
 (defun main ()
   (setf *stop-requested* nil)
   (load-config!)
+  (setf *language* (valid-language (config-value :language)))
   (cleanup-old-update-files)
   (load-queue!)
   (load-quest-defs)
   (let ((interface (make-instance 'client-window)))
+    (setf *interface* interface)
     (capi:display interface)
     (refresh-runs-list interface)
     (check-server interface)
@@ -199,8 +205,7 @@ prompt exactly once."
     (when (config-value :auto-update)
       (check-for-updates interface))
     (setf *poll-process*
-          (mp:process-run-function "eta-client-poll" '()
-                                   (lambda () (poll-loop interface))))
+          (mp:process-run-function "eta-client-poll" '() 'poll-loop))
     interface))
 
 #-lispworks

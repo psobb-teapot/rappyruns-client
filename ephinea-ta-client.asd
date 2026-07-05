@@ -14,6 +14,7 @@
   :components ((:module "src"
                 :components ((:file "package")
                              (:file "version")
+                             (:file "i18n")
                              (:file "config")
                              (:file "memory")
                              (:file "win32" :if-feature :lispworks)

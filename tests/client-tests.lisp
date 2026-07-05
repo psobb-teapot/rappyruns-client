@@ -1091,6 +1091,29 @@ store functions that persist never touch the real %APPDATA% queue."
              (null (getf (first saved) :telemetry)))
       (check "persisted queued entry keeps its telemetry"
              (getf (second saved) :telemetry))))
+  ;; Clearing the list keeps only unsent runs - the one thing that
+  ;; exists nowhere else. Drafts with a pending video go too (their
+  ;; recording and server draft survive elsewhere), so recordings the
+  ;; user never means to upload cannot haunt the list forever.
+  (with-test-store ((list :status :submitted :server-id 1)
+                    (list :status :queued)
+                    (list :status :failed :reason "boom")
+                    (list :status :submitted :server-id 2 :video-path "v.mp4")
+                    (list :status :submitted :server-id 3 :video-path "w.mp4"
+                          :video-attached t)
+                    (list :status :duplicate :server-id 4)
+                    (list :status :rejected :reason "nope"))
+    (check "clear-runs! reports the removed count"
+           (= 5 (ephinea-ta-client::clear-runs!)))
+    (check "clear keeps only queued and failed entries, in order"
+           (equal '(:queued :failed)
+                  (mapcar (lambda (entry) (getf entry :status))
+                          (queued-runs))))
+    (check "clear persists the surviving queue"
+           (= 2 (length (ephinea-ta-client::read-sexp-file
+                         ephinea-ta-client::*queue-path*))))
+    (check "cleared pending-video draft is no longer a video candidate"
+           (null (ephinea-ta-client::video-candidates))))
   ;; Which run does a copied URL belong to?
   (let ((a (list :quest-slug "a" :time-ms 1 :finished-at 1 :server-id 1))
         (b (list :quest-slug "b" :time-ms 2 :finished-at 2 :server-id 2)))
@@ -1206,6 +1229,13 @@ store functions that persist never touch the real %APPDATA% queue."
     (check "trim keeps the newest finished entries in order"
            (equal (subseq (mapcar (lambda (e) (getf e :n)) runs) 0 10)
                   (subseq (mapcar (lambda (e) (getf e :n)) trimmed) 0 10))))
+  ;; Debug mode gates developer-only settings (the Server URL field).
+  (check "debug mode is off by default"
+         (with-recording-config ()
+           (not (ephinea-ta-client::debug-mode-p))))
+  (check "debug mode can be enabled in config"
+         (with-recording-config (:debug t)
+           (ephinea-ta-client::debug-mode-p)))
   ;; Browser URL guard.
   (check "http and https URLs are openable"
          (and (ephinea-ta-client::valid-http-url-p "http://x/y")
@@ -1227,7 +1257,7 @@ store functions that persist never touch the real %APPDATA% queue."
            (search "could not connect"
                    (text-for "WinHttpConnect failed (Windows error 12029)")))
     (check "bad URL points at the settings fix"
-           (search "Save settings" (text-for "Bad URL: nonsense")))
+           (search "Save & verify" (text-for "Bad URL: nonsense")))
     (check "unexpected HTTP status mentions the response"
            (search "unexpected response"
                    (text-for "GET /api/quests -> 500"))))
@@ -1375,9 +1405,47 @@ store functions that persist never touch the real %APPDATA% queue."
     (check "the running exe is never deleted, only moved"
            (not (search "Remove-Item -Force $exe" script)))))
 
+;;; ------------------------------------------------------------------
+;;; i18n: the UI string table and TR
+;;; ------------------------------------------------------------------
+
+(defun run-i18n-tests ()
+  (format t "~&--- i18n ---~%")
+  (check "every key has an English and a Japanese string"
+         (loop :for (key entry) :on ephinea-ta-client::*strings* :by #'cddr
+               :always (and (keywordp key)
+                            (= 2 (length entry))
+                            (stringp (first entry))
+                            (stringp (second entry)))))
+  (check "default language is English"
+         (string= "Settings" (ephinea-ta-client::tr :tab-settings)))
+  (check "tr switches to Japanese"
+         (let ((ephinea-ta-client::*language* :ja))
+           (string= "設定" (ephinea-ta-client::tr :tab-settings))))
+  (check "tr formats arguments"
+         (search "teapot" (ephinea-ta-client::tr :token-ok "teapot")))
+  (check "labels follow the language too"
+         (let ((ephinea-ta-client::*language* :ja))
+           (string= "保存済み" (ephinea-ta-client::run-video-label
+                                (list :video-path "v.mp4")))))
+  (check "an invalid configured language falls back to English"
+         (and (eq :en (ephinea-ta-client::valid-language "nonsense"))
+              (eq :ja (ephinea-ta-client::valid-language :ja))))
+  ;; Directive mismatches between the two columns would error at
+  ;; runtime in one language only; format every entry in both.
+  (check "every entry formats cleanly in both languages"
+         (loop :for language :in ephinea-ta-client::*languages*
+               :always (let ((ephinea-ta-client::*language* language))
+                         (loop :for (key entry) :on ephinea-ta-client::*strings*
+                               :by #'cddr
+                               :always (stringp
+                                        (ignore-errors
+                                          (ephinea-ta-client::tr key 1 2 3))))))))
+
 (defun run-client-tests ()
   (setf *failures* 0)
   (load-quest-defs)
+  (run-i18n-tests)
   (run-memory-tests)
   (run-inventory-tests)
   (run-extended-player-tests)
