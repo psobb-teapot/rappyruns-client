@@ -62,6 +62,44 @@ Aborted runs are silent - quitting a quest is not an event."
                         results))
       (%message-beep +mb-iconhand+))))
 
+#+lispworks
+(defvar *upload-process* nil
+  "The in-flight video upload worker, or NIL. One at a time.")
+
+#+lispworks
+(defun maybe-start-upload (recorder)
+  "Kick off the oldest pending recording upload in a worker thread.
+Skipped while recording - the encoder gets the disk and the uplink to
+itself - and while a previous upload is still running; failures back
+off inside UPLOAD-ENTRY-VIDEO! and a later call picks up the retry."
+  (when (and (config-value :video-upload)
+             (not (eq (recorder-state recorder) :recording))
+             (or (null *upload-process*)
+                 (not (mp:process-alive-p *upload-process*))))
+    (let ((entry (upload-candidate)))
+      (when entry
+        (setf *upload-process*
+              (mp:process-run-function
+               "eta-client-video-upload" '()
+               (lambda ()
+                 (let ((last-percent -1))
+                   (upload-entry-video!
+                    entry
+                    :on-progress
+                    (lambda (done total)
+                      (setf *upload-progress*
+                            (list (getf entry :server-id) done total))
+                      ;; Redraw only when the whole percent moves, not
+                      ;; on every megabyte.
+                      (let ((percent (if (plusp total)
+                                         (floor (* 100 done) total)
+                                         0)))
+                        (when (/= percent last-percent)
+                          (setf last-percent percent)
+                          (refresh-runs-list *interface*))))))
+                 (setf *upload-progress* nil)
+                 (refresh-runs-list *interface*))))))))
+
 (defvar *clipboard-seen-seq* nil
   "Last clipboard sequence number examined, so the poll loop only reads
 the clipboard when its contents actually changed.")
@@ -141,6 +179,7 @@ update exactly once."
                             ;; Uploads happen while the game is closed
                             ;; too, so watch the clipboard here as well.
                             (ignore-errors (check-clipboard interface))
+                            (ignore-errors (maybe-start-upload recorder))
                             (update-game-status interface nil detector nil
                                                 recorder)
                             (mp:process-wait-with-timeout
@@ -183,6 +222,7 @@ update exactly once."
                                       internal-time-units-per-second))
                             (setf last-gui-update now)
                             (ignore-errors (check-clipboard interface))
+                            (ignore-errors (maybe-start-upload recorder))
                             (update-game-status interface (and reader t)
                                                 detector snapshot recorder)
                             (when (eq (detector-state detector) :in-quest)

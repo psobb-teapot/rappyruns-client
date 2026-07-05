@@ -25,11 +25,13 @@ the list; active ones (see ENTRY-ACTIVE-P) are never dropped.")
 (defun entry-active-p (entry)
   "Unfinished business that must survive trimming and restarts: entries
 awaiting (re)submission, and entries whose saved video has not been
-attached to their server draft yet."
+attached to their server draft yet (unless the upload was permanently
+rejected - those are as finished as a rejected run)."
   (or (member (getf entry :status) '(:queued :failed))
       (and (getf entry :video-path)
            (getf entry :server-id)
-           (not (getf entry :video-attached)))))
+           (not (getf entry :video-attached))
+           (not (getf entry :upload-given-up)))))
 
 (defun trim-finished-runs (runs limit)
   "RUNS is newest first: keep every active entry and only the newest
@@ -53,9 +55,12 @@ LIMIT finished ones, preserving order."
       (tr :status-video-attached)
       (case (getf entry :status)
         (:queued (tr :status-queued))
-        (:submitted (if (getf entry :video-path)
-                        (tr :status-draft-upload)
-                        (tr :status-draft-add)))
+        (:submitted (cond ((not (getf entry :video-path))
+                           (tr :status-draft-add))
+                          ((and (config-value :video-upload)
+                                (not (getf entry :upload-given-up)))
+                           (tr :status-draft-auto-upload))
+                          (t (tr :status-draft-upload))))
         (:duplicate (tr :status-duplicate))
         (:rejected (tr :status-rejected (or (getf entry :reason) "?")))
         (:failed (tr :status-failed (or (getf entry :reason) "?")))
@@ -63,7 +68,11 @@ LIMIT finished ones, preserving order."
 
 (defun run-video-label (entry)
   "The Video column: the recording's journey from disk to the site."
-  (cond ((getf entry :video-attached) (tr :video-attached))
+  (cond ((getf entry :video-uploaded) (tr :video-uploaded))
+        ((getf entry :video-attached) (tr :video-attached))
+        ((upload-progress-percent entry) (tr :video-uploading
+                                             (upload-progress-percent entry)))
+        ((getf entry :upload-given-up) (tr :video-upload-failed))
         ((getf entry :video-path) (tr :video-saved))
         (t "")))
 
@@ -202,6 +211,75 @@ NIL when there are none."
     ((null (rest candidates)) (first candidates))
     ((and preferred (find preferred candidates :test #'same-run-p)))
     (t :choose)))
+
+;;; Automatic upload of saved recordings to the server (which relays
+;;; them into hosted storage). One upload at a time; failures back off
+;;; and are retried by the poll loop, permanent rejections give up but
+;;; leave the entry eligible for the manual YouTube flow.
+
+(defvar *upload-progress* nil
+  "(server-id bytes-so-far total) while an upload is in flight, else
+NIL. A special variable rather than an entry key: progress ticks every
+megabyte and UPDATE-RUN! writes the queue file on every change.")
+
+(defun upload-progress-percent (entry)
+  "Whole percent of ENTRY's in-flight upload, or NIL when it has none."
+  (let ((progress *upload-progress*))
+    (when (and progress
+               (getf entry :server-id)
+               (eql (first progress) (getf entry :server-id)))
+      (let ((done (second progress))
+            (total (third progress)))
+        (if (plusp total) (floor (* 100 done) total) 0)))))
+
+(defparameter +upload-retry-seconds+ 300
+  "Backoff after a transport failure.")
+(defparameter +upload-limit-retry-seconds+ 3600
+  "Backoff when the server's pending-review limit is full; only a
+moderator decision frees a slot, so probing more often is pointless.")
+
+(defun upload-candidate (&key (now (get-universal-time)))
+  "The oldest entry whose saved recording still needs uploading and is
+not backing off. An entry whose file vanished from disk (the user
+deleted it) gives up on the spot and the scan moves on."
+  (dolist (entry (reverse (queued-runs)))
+    (when (and (getf entry :video-path)
+               (getf entry :server-id)
+               (not (getf entry :video-attached))
+               (not (getf entry :upload-given-up))
+               (let ((next (getf entry :next-upload-at)))
+                 (or (null next) (<= next now))))
+      (if (probe-file (getf entry :video-path))
+          (return entry)
+          (update-run! entry :upload-given-up t)))))
+
+(defun upload-entry-video! (entry &key on-progress)
+  "Upload ENTRY's recording to its server draft. Success marks the
+entry attached (same flag as the manual URL flow, so every consumer
+agrees the video is on the server); a :duplicate reply means a video
+was already on file, which is just as done. Returns the updated entry."
+  (handler-case
+      (multiple-value-bind (outcome payload)
+          (upload-run-video (getf entry :server-id)
+                            (getf entry :video-path)
+                            :on-progress on-progress)
+        (ecase outcome
+          ((:attached :duplicate)
+           (update-run! entry :video-attached t :video-uploaded t))
+          (:rejected
+           (let ((code (and (hash-table-p payload) (gethash "error" payload)))
+                 (message (and (hash-table-p payload)
+                               (gethash "message" payload))))
+             (if (equal code "pending-limit")
+                 (update-run! entry :next-upload-at
+                              (+ (get-universal-time)
+                                 +upload-limit-retry-seconds+))
+                 (update-run! entry :upload-given-up t
+                              :upload-error (or message code "rejected")))))))
+    (api-error (condition)
+      (update-run! entry :next-upload-at
+                   (+ (get-universal-time) +upload-retry-seconds+)
+                   :upload-error (api-error-message condition)))))
 
 (defun attach-video-url! (entry video-url)
   "Attach VIDEO-URL to ENTRY's server draft, promoting it to pending

@@ -139,6 +139,9 @@
     :record-audio-label
     ("Record game audio (only the game is heard, not Discord etc.)"
      "ゲーム音声を録音する (ゲームの音のみ。Discord などの音は入りません)")
+    :video-upload-label
+    ("Upload recordings to the site automatically"
+     "録画をサイトへ自動アップロードする")
     :record-dir-label
     ("Recordings folder: ~a"
      "録画フォルダ: ~a")
@@ -259,6 +262,9 @@
     :status-draft-upload
     ("draft - use Upload to YouTube"
      "下書き - 「YouTube にアップロード」を使ってください")
+    :status-draft-auto-upload
+    ("draft - video uploads automatically"
+     "下書き - 動画は自動でアップロードされます")
     :status-draft-add
     ("draft - double-click to add video"
      "下書き - ダブルクリックで動画を追加")
@@ -277,6 +283,15 @@
     :video-saved
     ("saved"
      "保存済み")
+    :video-uploading
+    ("uploading ~d%"
+     "アップロード中 ~d%")
+    :video-uploaded
+    ("uploaded"
+     "アップロード済み")
+    :video-upload-failed
+    ("upload failed"
+     "アップロード失敗")
 
     ;; Connection error texts (api-client.lisp)
     :hint-address

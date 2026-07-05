@@ -13,6 +13,7 @@
         :trigger-log nil
         :record-enabled t
         :record-audio t     ; game-only capture (process loopback; see audio-win32)
+        :video-upload t     ; upload saved recordings to the site automatically
         :ffmpeg-path ""     ; blank = bundled copy next to the exe, or PATH
         :record-dir ""      ; blank = <user home>/Videos/EphineaTA/
         :debug nil))        ; developer knobs in the GUI (see DEBUG-MODE-P)

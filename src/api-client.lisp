@@ -443,6 +443,88 @@ Signals API-ERROR on authentication and transport failures."
                     :message (format nil "POST /api/runs/~d/video -> ~a: ~a"
                                      server-id status body))))))))
 
+#+lispworks
+(defun video-file-request (server-id file-path server-url token on-progress)
+  (multiple-value-bind (scheme host port path)
+      (parse-url (api-url server-url
+                          (format nil "/api/runs/~d/video-file" server-id)))
+    (handler-case
+        (multiple-value-bind (status response-body)
+            (winhttp-upload-file "POST" scheme host port path file-path
+                                 :headers (append
+                                           (when token
+                                             (list (cons "Authorization"
+                                                         (format nil "Bearer ~a" token))))
+                                           (list (cons "Content-Type" "video/mp4")))
+                                 :on-progress on-progress)
+          (values status (utf8-to-string response-body)))
+      (winhttp-error (condition)
+        (error 'api-error :message (winhttp-error-message condition))))))
+
+#-lispworks
+(defun video-file-request (server-id file-path server-url token on-progress)
+  "Test backend: buffers the whole file, fine for small fixtures."
+  (multiple-value-bind (scheme host port path)
+      (parse-url (api-url server-url
+                          (format nil "/api/runs/~d/video-file" server-id)))
+    (let ((body (with-open-file (in file-path :element-type '(unsigned-byte 8))
+                  (let ((bytes (make-array (file-length in)
+                                           :element-type '(unsigned-byte 8))))
+                    (read-sequence bytes in)
+                    bytes)))
+          (stream (open-http-stream scheme host port)))
+      (unwind-protect
+           (progn
+             (write-ascii stream (format nil "POST ~a HTTP/1.0~c~c" path
+                                         #\Return #\Linefeed))
+             (write-ascii stream (format nil "Host: ~a~c~c" host
+                                         #\Return #\Linefeed))
+             (write-ascii stream (format nil "Connection: close~c~c"
+                                         #\Return #\Linefeed))
+             (when token
+               (write-ascii stream (format nil "Authorization: Bearer ~a~c~c"
+                                           token #\Return #\Linefeed)))
+             (write-ascii stream (format nil "Content-Type: video/mp4~c~c"
+                                         #\Return #\Linefeed))
+             (write-ascii stream (format nil "Content-Length: ~d~c~c"
+                                         (length body) #\Return #\Linefeed))
+             (write-ascii stream (format nil "~c~c" #\Return #\Linefeed))
+             (write-sequence body stream)
+             (force-output stream)
+             (when on-progress
+               (funcall on-progress (length body) (length body)))
+             (multiple-value-bind (status response-body)
+                 (split-response (read-all-bytes stream))
+               (values status (utf8-to-string response-body))))
+        (close stream)))))
+
+(defun upload-run-video (server-id file-path
+                         &key (server-url (config-value :server-url))
+                              (token (config-value :api-token))
+                              on-progress)
+  "POST /api/runs/:id/video-file: stream the recording at FILE-PATH up
+to the server, which relays it into hosted storage. Ordinary drafts are
+promoted to pending review; aborted runs stay drafts. Returns (values
+outcome payload): :attached, :duplicate (a video was already on file -
+both count as done) or :rejected (permanent, except the pending-limit
+error, which is worth retrying later); PAYLOAD is the parsed JSON
+response. Signals API-ERROR on authentication and transport failures
+\(worth retrying). ON-PROGRESS is called with (bytes-so-far total)."
+  (multiple-value-bind (status body)
+      (video-file-request server-id file-path server-url token on-progress)
+    (let ((payload (ignore-errors (jzon:parse body))))
+      (case status
+        ((200 201) (values (if (and (hash-table-p payload)
+                                    (gethash "duplicate" payload))
+                               :duplicate
+                               :attached)
+                           payload))
+        ((400 403 404 409 411 413) (values :rejected payload))
+        (401 (error 'api-error :message "Invalid or revoked API token"))
+        (t (error 'api-error
+                  :message (format nil "POST /api/runs/~d/video-file -> ~a: ~a"
+                                   server-id status body)))))))
+
 ;;; Recognizing YouTube links on the clipboard. Deliberately simple
 ;;; string matching (no regex dependency); the server's validator has
 ;;; the final say, this only decides when to offer the attach prompt.

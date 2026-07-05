@@ -136,6 +136,14 @@ poll loop re-reads it every iteration.")
                        :callback-type :interface
                        :font *ui-font*
                        :accessor record-audio-check)
+   (video-upload-check capi:check-button
+                       :text (tr :video-upload-label)
+                       :selected (config-value :video-upload)
+                       :selection-callback 'toggle-video-upload-callback
+                       :retract-callback 'toggle-video-upload-callback
+                       :callback-type :interface
+                       :font *ui-font*
+                       :accessor video-upload-check)
    ;; ffmpeg itself is not a setting: the release bundles it next to the
    ;; exe (an override still exists as :ffmpeg-path in config.sexp).
    (update-status-pane capi:title-pane
@@ -237,7 +245,8 @@ poll loop re-reads it every iteration.")
    (recording-row capi:row-layout '(record-dir-display record-dir-button)
                   :adjust :center)
    (recording-group capi:column-layout
-                    '(record-check record-audio-check recording-row)
+                    '(record-check record-audio-check video-upload-check
+                      recording-row)
                     :title (tr :group-recording) :title-position :frame
                     :title-font *ui-font* :adjust :left)
    (updates-group capi:column-layout
@@ -544,6 +553,13 @@ snaps back off with instructions."
 recording start, so it takes effect from the next quest."
   (setf (config-value :record-audio)
         (capi:button-selected (record-audio-check interface)))
+  (save-config!))
+
+(defun toggle-video-upload-callback (interface)
+  "Applies immediately: the poll loop reads it before each upload, so
+unticking also stops the queue after the in-flight file (if any)."
+  (setf (config-value :video-upload)
+        (capi:button-selected (video-upload-check interface)))
   (save-config!))
 
 ;; The cross-thread update helpers use the -IF-ALIVE variant: the

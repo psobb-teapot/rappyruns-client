@@ -1454,9 +1454,20 @@ store functions that persist never touch the real %APPDATA% queue."
                             (list :video-path "v.mp4" :video-attached t))))
   (check "video label: no recording"
          (equal "" (ephinea-ta-client::run-video-label (list :status :queued))))
-  (check "status label: saved video points at the Upload button"
-         (search "Upload" (ephinea-ta-client::run-status-label
-                           (list :status :submitted :video-path "v.mp4"))))
+  (check "status label: saved video announces the automatic upload"
+         (with-recording-config (:video-upload t)
+           (search "automatically"
+                   (ephinea-ta-client::run-status-label
+                    (list :status :submitted :video-path "v.mp4")))))
+  (check "status label: saved video points at the Upload button when auto-upload is off"
+         (with-recording-config (:video-upload nil)
+           (search "Upload" (ephinea-ta-client::run-status-label
+                             (list :status :submitted :video-path "v.mp4")))))
+  (check "status label: a given-up upload points back at the Upload button"
+         (with-recording-config (:video-upload t)
+           (search "Upload" (ephinea-ta-client::run-status-label
+                             (list :status :submitted :video-path "v.mp4"
+                                   :upload-given-up t)))))
   (check "status label: attached video says awaiting review"
          (search "awaiting review"
                  (ephinea-ta-client::run-status-label
@@ -1750,6 +1761,89 @@ store functions that persist never touch the real %APPDATA% queue."
                                         (ignore-errors
                                           (ephinea-ta-client::tr key 1 2 3))))))))
 
+;;; ------------------------------------------------------------------
+;;; Automatic upload queue: candidate selection, backoff and labels
+;;; ------------------------------------------------------------------
+
+(defun run-upload-queue-tests ()
+  (format t "~&--- automatic upload queue ---~%")
+  (let ((video (merge-pathnames (format nil "eta-test-video-~d.mp4"
+                                        (get-internal-real-time))
+                                (uiop:temporary-directory)))
+        (now (get-universal-time)))
+    (with-open-file (out video :direction :output :if-exists :supersede)
+      (write-string "not really mp4" out))
+    (unwind-protect
+         (let ((path (namestring video)))
+           ;; *RUNS* is newest first; the candidate scan wants the oldest.
+           (with-test-store ((list :status :submitted :server-id 3
+                                   :video-path path)
+                             (list :status :submitted :server-id 2
+                                   :video-path path :video-attached t)
+                             (list :status :submitted :server-id 1
+                                   :video-path path))
+             (check "the oldest unattached recording uploads first"
+                    (eql 1 (getf (ephinea-ta-client::upload-candidate
+                                  :now now)
+                                 :server-id))))
+           (with-test-store ((list :status :submitted :server-id 2
+                                   :video-path path)
+                             (list :status :submitted :server-id 1
+                                   :video-path path
+                                   :next-upload-at (+ now 900)))
+             (check "a backing-off entry is skipped"
+                    (eql 2 (getf (ephinea-ta-client::upload-candidate
+                                  :now now)
+                                 :server-id)))
+             (check "the backoff expires with time"
+                    (eql 1 (getf (ephinea-ta-client::upload-candidate
+                                  :now (+ now 1000))
+                                 :server-id))))
+           (with-test-store ((list :status :submitted :server-id 1
+                                   :video-path path :upload-given-up t))
+             (check "a given-up entry is never a candidate"
+                    (null (ephinea-ta-client::upload-candidate :now now))))
+           (with-test-store ((list :status :submitted :server-id 2
+                                   :video-path path)
+                             (list :status :submitted :server-id 1
+                                   :video-path "C:/nowhere/gone.mp4"))
+             (check "a vanished recording gives up and the scan moves on"
+                    (eql 2 (getf (ephinea-ta-client::upload-candidate
+                                  :now now)
+                                 :server-id)))
+             (check "the vanished entry is marked given up"
+                    (getf (find 1 (queued-runs)
+                                :key (lambda (entry) (getf entry :server-id)))
+                          :upload-given-up)))
+           (with-test-store ((list :status :queued :video-path path))
+             (check "entries without a server draft cannot upload yet"
+                    (null (ephinea-ta-client::upload-candidate :now now)))))
+      (ignore-errors (delete-file video))))
+  ;; Given-up entries are finished: trimmed, not persisted.
+  (check "a given-up upload is no longer active"
+         (not (ephinea-ta-client::entry-active-p
+               (list :status :submitted :server-id 1 :video-path "v.mp4"
+                     :upload-given-up t))))
+  ;; Labels around the upload lifecycle.
+  (let ((ephinea-ta-client::*upload-progress* (list 7 50 200)))
+    (check "video label: in-flight upload shows its percent"
+           (search "25%" (ephinea-ta-client::run-video-label
+                          (list :server-id 7 :video-path "v.mp4"))))
+    (check "video label: other entries are not uploading"
+           (equal "saved" (ephinea-ta-client::run-video-label
+                           (list :server-id 8 :video-path "v.mp4")))))
+  (check "video label: uploaded"
+         (equal "uploaded" (ephinea-ta-client::run-video-label
+                            (list :video-path "v.mp4" :video-attached t
+                                  :video-uploaded t))))
+  (check "video label: manual attach still reads attached"
+         (equal "attached" (ephinea-ta-client::run-video-label
+                            (list :video-path "v.mp4" :video-attached t))))
+  (check "video label: given up"
+         (equal "upload failed" (ephinea-ta-client::run-video-label
+                                 (list :video-path "v.mp4"
+                                       :upload-given-up t)))))
+
 (defun run-client-tests ()
   (setf *failures* 0)
   (load-quest-defs)
@@ -1768,6 +1862,7 @@ store functions that persist never touch the real %APPDATA% queue."
   (run-trigger-log-tests)
   (run-recorder-tests)
   (run-video-flow-tests)
+  (run-upload-queue-tests)
   (run-ux-helper-tests)
   (run-updater-tests)
   (format t "~&=== client tests: ~d failure~:p ===~%" *failures*)

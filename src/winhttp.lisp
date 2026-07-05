@@ -97,6 +97,15 @@
   :calling-convention :stdcall
   :module :winhttp)
 
+(fli:define-foreign-function (%win-http-write-data "WinHttpWriteData")
+    ((request :pointer)
+     (buffer :pointer)
+     (bytes-to-write (:unsigned :long))
+     (bytes-written (:reference-return (:unsigned :long))))
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :winhttp)
+
 (fli:define-foreign-function (%win-http-close-handle "WinHttpCloseHandle")
     ((handle :pointer))
   :result-type (:boolean :int)
@@ -228,16 +237,18 @@ the number of bytes written."
           (when on-progress
             (funcall on-progress written total)))))))
 
+(defun format-winhttp-headers (headers)
+  (format nil "~{~a~}"
+          (loop :for (name . value) :in headers
+                :collect (format nil "~a: ~a~c~c" name value
+                                 #\Return #\Linefeed))))
+
 (defun call-with-winhttp-request (method scheme host port path headers body
                                   function)
   "The request skeleton shared by WINHTTP-REQUEST and WINHTTP-DOWNLOAD:
 open, send, receive, then call FUNCTION with the live request handle to
 consume the response."
-  (let ((header-string
-          (format nil "~{~a~}"
-                  (loop :for (name . value) :in headers
-                        :collect (format nil "~a: ~a~c~c" name value
-                                         #\Return #\Linefeed)))))
+  (let ((header-string (format-winhttp-headers headers)))
     (with-winhttp-handle (session (open-winhttp-session) "WinHttpOpen")
       ;; The receive timeout applies per WinHttpReadData call, so long
       ;; downloads are fine as long as the connection keeps moving.
@@ -266,6 +277,88 @@ body-octets). Signals WINHTTP-ERROR on transport failures."
    (lambda (request)
      (values (read-winhttp-status request)
              (read-winhttp-body request)))))
+
+(defun winhttp-upload-file (method scheme host port path source-pathname
+                            &key headers on-progress)
+  "Like WINHTTP-REQUEST but streams SOURCE-PATHNAME as the request body,
+for uploads too large to hold in memory: WinHttpSendRequest carries only
+the headers plus the total length (WinHTTP derives Content-Length from
+it - do not add that header yourself), then the file goes up through
+WinHttpWriteData in 1MB chunks. ON-PROGRESS, when given, is called with
+\(bytes-so-far total) after every chunk. Returns (values status-code
+body-octets); signals WINHTTP-ERROR on transport failures."
+  (let* ((total (with-open-file (in source-pathname
+                                    :element-type '(unsigned-byte 8))
+                  (file-length in)))
+         (header-string (format-winhttp-headers headers)))
+    ;; WinHttpSendRequest's total length is a DWORD.
+    (when (>= total (expt 2 32))
+      (error 'winhttp-error
+             :message (format nil "file too large to upload (~d bytes)" total)))
+    (with-winhttp-handle (session (open-winhttp-session) "WinHttpOpen")
+      ;; The send timeout applies per WinHttpWriteData call; the long
+      ;; receive timeout covers the server relaying the last chunk to
+      ;; storage before it can answer.
+      (%win-http-set-timeouts session 10000 10000 60000 300000)
+      (with-winhttp-handle (connection (%win-http-connect session host port 0)
+                            "WinHttpConnect")
+        (with-winhttp-handle (request (%win-http-open-request
+                                       connection method path
+                                       fli:*null-pointer* fli:*null-pointer*
+                                       fli:*null-pointer*
+                                       (if (string= scheme "https")
+                                           +winhttp-flag-secure+
+                                           0))
+                              "WinHttpOpenRequest")
+          (flet ((send (headers-pointer headers-length)
+                   (%win-http-send-request request headers-pointer headers-length
+                                           fli:*null-pointer* 0 total 0)))
+            (unless (if (plusp (length header-string))
+                        (fli:with-foreign-string (pointer element-count byte-count
+                                                  :external-format :unicode)
+                            header-string
+                          (declare (ignore byte-count))
+                          (send pointer (1- element-count)))
+                        (send fli:*null-pointer* 0))
+              (winhttp-fail "WinHttpSendRequest")))
+          (fli:with-dynamic-foreign-objects ()
+            (let* ((chunk-size (* 1024 1024))
+                   (chunk (fli:allocate-dynamic-foreign-object
+                           :type '(:unsigned :byte) :nelems chunk-size))
+                   (buffer (make-array chunk-size
+                                       :element-type '(unsigned-byte 8)))
+                   (sent 0))
+              (with-open-file (in source-pathname
+                                  :element-type '(unsigned-byte 8))
+                (loop
+                  (let ((end (read-sequence buffer in)))
+                    (when (zerop end) (return))
+                    (dotimes (i end)
+                      (setf (fli:dereference chunk :index i) (aref buffer i)))
+                    ;; WinHttpWriteData may take fewer bytes than offered.
+                    (let ((pointer (fli:copy-pointer chunk))
+                          (remaining end))
+                      (loop :while (plusp remaining)
+                            :do (multiple-value-bind (ok written)
+                                    (%win-http-write-data request pointer
+                                                          remaining 0)
+                                  (unless (and ok (plusp written))
+                                    (winhttp-fail "WinHttpWriteData"))
+                                  (fli:incf-pointer pointer written)
+                                  (decf remaining written))))
+                    (incf sent end)
+                    (when on-progress
+                      (funcall on-progress sent total)))))
+              ;; A file that shrank mid-upload would hang the server
+              ;; waiting for the missing bytes - fail loudly instead.
+              (unless (= sent total)
+                (error 'winhttp-error
+                       :message (format nil "file changed during upload (sent ~d of ~d bytes)"
+                                        sent total)))))
+          (unless (%win-http-receive-response request fli:*null-pointer*)
+            (winhttp-fail "WinHttpReceiveResponse"))
+          (values (read-winhttp-status request)
+                  (read-winhttp-body request)))))))
 
 (defun winhttp-download (method scheme host port path target-pathname
                          &key headers on-progress)
