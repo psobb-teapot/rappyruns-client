@@ -14,6 +14,15 @@ on the site - My Runs → Drafts - still works as a fallback.)
 
 [psostats-client]: https://github.com/phelix-/psostats-client
 
+Before attaching, the client Authenticode-verifies the running
+`PSOBB.exe` (WinVerifyTrust) and requires the official Ephinea
+signature (subject CN "Terry Chatman", i.e. Sodaboy). An unsigned,
+modified or foreign-server exe is refused outright - nothing is
+detected, recorded or submitted - and the status row says why. The
+signer *name* is pinned rather than a certificate thumbprint so
+routine certificate renewals keep working; expired-but-timestamped
+signatures stay valid by design.
+
 ## Requirements
 
 - LispWorks 8.x (64-bit, Windows) for the GUI, FLI memory reading and

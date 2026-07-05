@@ -13,6 +13,7 @@
            #:read-snapshot #:snapshot-register-set-p #:snapshot-floor-switch-set-p
            #:read-player #:read-inventory #:read-monsters
            #:snapshot-my-player #:difficulty-name #:tech-name #:shifta-level
+           #:psobb-signature-trusted-p
            ;; telemetry
            #:make-telemetry #:telemetry-step #:telemetry-run-data
            #:telemetry-death-count #:telemetry-kills #:telemetry-frames

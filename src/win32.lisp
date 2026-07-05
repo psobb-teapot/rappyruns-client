@@ -281,3 +281,221 @@ an exact match - the FindWindowW candidate name is not good enough."
           (dotimes (i size result)
             (setf (aref result i)
                   (fli:dereference buffer :index i))))))))
+
+;;; Authenticode verification (wintrust/crypt32). PROCESS-IMAGE-PATH
+;;; finds the exe behind a process handle and AUTHENTICODE-VERIFY
+;;; checks its embedded signature, so the poll loop can refuse to
+;;; record from a PSOBB.exe that is not the signed official Ephinea
+;;; client. The accept/reject policy itself is pure CL
+;;; (PSOBB-SIGNATURE-TRUSTED-P in psobb.lisp); only the Win32 legwork
+;;; lives here.
+
+(fli:register-module :wintrust :real-name "wintrust"
+                     :connection-style :automatic)
+(fli:register-module :crypt32 :real-name "crypt32"
+                     :connection-style :automatic)
+
+(fli:define-foreign-function (%query-full-process-image-name
+                              "QueryFullProcessImageNameW")
+    ((process :pointer)
+     (flags (:unsigned :long))
+     (exe-name :pointer)
+     (size (:reference (:unsigned :long))))
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :kernel32)
+
+(defun process-image-path (reader)
+  "Full path of the exe behind READER's process (BMP characters only),
+or NIL. PROCESS_QUERY_INFORMATION, already requested at attach time,
+is sufficient access."
+  (fli:with-dynamic-foreign-objects ()
+    (let* ((max-chars 1024)
+           (buffer (fli:allocate-dynamic-foreign-object
+                    :type '(:unsigned :short) :nelems max-chars)))
+      (multiple-value-bind (ok length)
+          (%query-full-process-image-name (live-reader-handle reader) 0
+                                          buffer max-chars)
+        (when (and ok (plusp length) (<= length max-chars))
+          (with-output-to-string (out)
+            (dotimes (i length)
+              (write-char (code-char (fli:dereference buffer :index i))
+                          out))))))))
+
+(fli:define-c-struct guid
+  (data1 (:unsigned :long))
+  (data2 (:unsigned :short))
+  (data3 (:unsigned :short))
+  (data4 (:c-array (:unsigned :byte) 8)))
+
+;; WINTRUST_FILE_INFO / WINTRUST_DATA, transcribed from wintrust.h
+;; (64-bit layout; the union member is a single pointer).
+(fli:define-c-struct wintrust-file-info
+  (cb-struct (:unsigned :long))
+  (file-path :pointer)
+  (file-handle :pointer)
+  (known-subject :pointer))
+
+(fli:define-c-struct wintrust-data
+  (cb-struct (:unsigned :long))
+  (policy-callback-data :pointer)
+  (sip-client-data :pointer)
+  (ui-choice (:unsigned :long))
+  (revocation-checks (:unsigned :long))
+  (union-choice (:unsigned :long))
+  (file-info (:pointer wintrust-file-info))
+  (state-action (:unsigned :long))
+  (state-data :pointer)
+  (url-reference :pointer)
+  (prov-flags (:unsigned :long))
+  (ui-context (:unsigned :long))
+  (signature-settings :pointer))
+
+;; Leading fields of CRYPT_PROVIDER_CERT / CRYPT_PROVIDER_SGNR
+;; (wintrust.h). Only these prefixes are read, and only from structs
+;; wintrust itself allocated, so the trailing members can be omitted.
+(fli:define-c-struct crypt-provider-cert-prefix
+  (cb-struct (:unsigned :long))
+  (cert :pointer))
+
+(fli:define-c-struct crypt-provider-sgnr-prefix
+  (cb-struct (:unsigned :long))
+  (verify-as-of-low (:unsigned :long))  ; FILETIME
+  (verify-as-of-high (:unsigned :long))
+  (cs-cert-chain (:unsigned :long))
+  (pas-cert-chain (:pointer crypt-provider-cert-prefix)))
+
+;; Returns a LONG, but declared unsigned so HRESULTs compare directly
+;; against their #x8... literals.
+(fli:define-foreign-function (%win-verify-trust "WinVerifyTrust")
+    ((hwnd :pointer)
+     (action-id (:pointer guid))
+     (data (:pointer wintrust-data)))
+  :result-type (:unsigned :long)
+  :calling-convention :stdcall
+  :module :wintrust)
+
+(fli:define-foreign-function (%wt-helper-prov-data-from-state-data
+                              "WTHelperProvDataFromStateData")
+    ((state-data :pointer))
+  :result-type :pointer
+  :calling-convention :stdcall
+  :module :wintrust)
+
+(fli:define-foreign-function (%wt-helper-get-prov-signer-from-chain
+                              "WTHelperGetProvSignerFromChain")
+    ((prov-data :pointer)
+     (idx-signer (:unsigned :long))
+     (counter-signer (:boolean :int))
+     (idx-counter-signer (:unsigned :long)))
+  :result-type (:pointer crypt-provider-sgnr-prefix)
+  :calling-convention :stdcall
+  :module :wintrust)
+
+(fli:define-foreign-function (%cert-get-name-string "CertGetNameStringW")
+    ((cert-context :pointer)
+     (name-type (:unsigned :long))
+     (flags (:unsigned :long))
+     (type-para :pointer)
+     (name-string :pointer)
+     (cch-name-string (:unsigned :long)))
+  :result-type (:unsigned :long)
+  :calling-convention :stdcall
+  :module :crypt32)
+
+(defconstant +wtd-ui-none+ 2)
+(defconstant +wtd-choice-file+ 1)
+(defconstant +wtd-stateaction-verify+ 1)
+(defconstant +wtd-stateaction-close+ 2)
+(defconstant +wtd-cache-only-url-retrieval+ #x1000)
+(defconstant +trust-e-nosignature+ #x800B0100)
+(defconstant +cert-name-simple-display-type+ 4)
+
+(defun wintrust-action-guid (action)
+  ;; WINTRUST_ACTION_GENERIC_VERIFY_V2 {00AAC56B-CD44-11d0-8CC2-00C04FC295EE}
+  (setf (fli:foreign-slot-value action 'data1) #x00AAC56B
+        (fli:foreign-slot-value action 'data2) #xCD44
+        (fli:foreign-slot-value action 'data3) #x11D0)
+  (let ((data4 (fli:foreign-slot-pointer action 'data4)))
+    (loop :for i :from 0
+          :for byte :in '(#x8C #xC2 #x00 #xC0 #x4F #xC2 #x95 #xEE)
+          :do (setf (fli:foreign-aref data4 i) byte)))
+  action)
+
+(defun signer-common-name (state-data)
+  "Subject CN of the leaf signing certificate, or NIL."
+  (let ((prov-data (%wt-helper-prov-data-from-state-data state-data)))
+    (unless (fli:null-pointer-p prov-data)
+      (let ((signer (%wt-helper-get-prov-signer-from-chain prov-data 0 nil 0)))
+        (unless (fli:null-pointer-p signer)
+          (when (plusp (fli:foreign-slot-value signer 'cs-cert-chain))
+            (let ((cert (fli:foreign-slot-value
+                         (fli:foreign-slot-value signer 'pas-cert-chain)
+                         'cert)))
+              (unless (fli:null-pointer-p cert)
+                (fli:with-dynamic-foreign-objects ()
+                  (let* ((max-chars 256)
+                         (buffer (fli:allocate-dynamic-foreign-object
+                                  :type '(:unsigned :short) :nelems max-chars))
+                         ;; Returned length includes the trailing NUL.
+                         (length (%cert-get-name-string
+                                  cert +cert-name-simple-display-type+ 0
+                                  fli:*null-pointer* buffer max-chars)))
+                    (when (> length 1)
+                      (with-output-to-string (out)
+                        (dotimes (i (1- length))
+                          (write-char (code-char
+                                       (fli:dereference buffer :index i))
+                                      out))))))))))))))
+
+(defun authenticode-verify (path)
+  "WinVerifyTrust Authenticode check of the file at PATH.
+Returns (values STATUS SIGNER): STATUS is :VALID, :UNSIGNED or
+:INVALID; SIGNER is the signing certificate's subject CN when STATUS
+is :VALID. A timestamp countersignature keeps an expired certificate
+:VALID, which is why the policy pins the signer name and not the
+certificate. Revocation servers are never contacted
+(+WTD-CACHE-ONLY-URL-RETRIEVAL+), so this cannot block on the network."
+  (fli:with-dynamic-foreign-objects ((action guid)
+                                     (file-info wintrust-file-info)
+                                     (data wintrust-data))
+    (wintrust-action-guid action)
+    (fli:with-foreign-string (path-ptr element-count byte-count
+                              :external-format :unicode)
+        path
+      (declare (ignore element-count byte-count))
+      (setf (fli:foreign-slot-value file-info 'cb-struct)
+            (fli:size-of 'wintrust-file-info)
+            (fli:foreign-slot-value file-info 'file-path) path-ptr
+            (fli:foreign-slot-value file-info 'file-handle) fli:*null-pointer*
+            (fli:foreign-slot-value file-info 'known-subject) fli:*null-pointer*)
+      (setf (fli:foreign-slot-value data 'cb-struct)
+            (fli:size-of 'wintrust-data)
+            (fli:foreign-slot-value data 'policy-callback-data)
+            fli:*null-pointer*
+            (fli:foreign-slot-value data 'sip-client-data) fli:*null-pointer*
+            (fli:foreign-slot-value data 'ui-choice) +wtd-ui-none+
+            (fli:foreign-slot-value data 'revocation-checks) 0
+            (fli:foreign-slot-value data 'union-choice) +wtd-choice-file+
+            (fli:foreign-slot-value data 'file-info) file-info
+            (fli:foreign-slot-value data 'state-action)
+            +wtd-stateaction-verify+
+            (fli:foreign-slot-value data 'state-data) fli:*null-pointer*
+            (fli:foreign-slot-value data 'url-reference) fli:*null-pointer*
+            (fli:foreign-slot-value data 'prov-flags)
+            +wtd-cache-only-url-retrieval+
+            (fli:foreign-slot-value data 'ui-context) 0
+            (fli:foreign-slot-value data 'signature-settings)
+            fli:*null-pointer*)
+      (let ((result (%win-verify-trust fli:*null-pointer* action data)))
+        (unwind-protect
+             (cond ((zerop result)
+                    (values :valid (signer-common-name
+                                    (fli:foreign-slot-value data 'state-data))))
+                   ((eql result +trust-e-nosignature+)
+                    (values :unsigned nil))
+                   (t (values :invalid nil)))
+          ;; Release wintrust's verification state in all cases.
+          (setf (fli:foreign-slot-value data 'state-action)
+                +wtd-stateaction-close+)
+          (%win-verify-trust fli:*null-pointer* action data))))))
