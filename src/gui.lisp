@@ -419,13 +419,15 @@ only accepts backslashes and a quoted path after /select,."
 (defun upload-video-callback (interface)
   "Open the YouTube upload page and an Explorer window with the run's
 recording selected. Uses the selected row; with no selection, the newest
-run whose video is still unattached (the just-finished-playing case)."
+run whose video could still take a YouTube link - unattached, or only
+auto-uploaded (the just-finished-playing case)."
   (let* ((selected (capi:choice-selected-item (runs-list-pane interface)))
          (entry (cond ((and selected (getf selected :video-path)) selected)
                       ((null selected)
                        (find-if (lambda (e)
                                   (and (getf e :video-path)
-                                       (not (getf e :video-attached))))
+                                       (or (not (getf e :video-attached))
+                                           (hosted-video-replaceable-p e))))
                                 (queued-runs))))))
     (cond
       ((and selected (not (getf selected :video-path)))
@@ -450,14 +452,18 @@ run whose video is still unattached (the just-finished-playing case)."
   (mp:process-run-function
    "eta-client-attach-video" '()
    (lambda ()
-     (multiple-value-bind (updated error) (attach-video-url! entry url)
+     (multiple-value-bind (updated error already-submitted)
+         (attach-video-url! entry url)
        (declare (ignore updated))
        (refresh-runs-list interface)
-       (when error
+       (when (or error already-submitted)
          (capi:execute-with-interface-if-alive
           interface
           (lambda ()
-            (capi:display-message "~a" (tr :attach-failed error)))))))))
+            (capi:display-message
+             "~a" (if error
+                      (tr :attach-failed error)
+                      (tr :attach-already-submitted))))))))))
 
 (defun offer-clipboard-url (interface url)
   "Confirm (on the GUI thread) which run the copied URL belongs to,
@@ -479,7 +485,10 @@ then attach it in a worker process."
               (attach-video-in-background interface entry url))))
          (t
           (when (capi:confirm-yes-or-no
-                 "~a" (tr :attach-confirm (run-choice-label target) url))
+                 "~a" (tr (if (hosted-video-replaceable-p target)
+                              :attach-confirm-replace
+                              :attach-confirm)
+                          (run-choice-label target) url))
             (attach-video-in-background interface target url))))))))
 
 (defun open-recordings-folder-callback (interface)
