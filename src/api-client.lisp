@@ -238,14 +238,61 @@ transport failures and unexpected statuses."
   ;; :moon-atomizer -> "moon_atomizer"
   (substitute #\_ #\- (string-downcase (symbol-name key))))
 
+(defun locs-json (entries)
+  "Location rows ((key . values) lists) -> JSON object key -> vector."
+  (let ((object (make-hash-table :test 'equal)))
+    (dolist (entry entries object)
+      (setf (gethash (princ-to-string (first entry)) object)
+            (coerce (rest entry) 'vector)))))
+
+(defun frame-json (frame)
+  "One frame row -> JSON vector; the player_locs / monster_locs columns
+hold nested location lists that become objects."
+  (coerce (loop :for value :in frame
+                :for key :across +frame-keys+
+                :collect (if (member key '("player_locs" "monster_locs")
+                                     :test #'string=)
+                             (locs-json value)
+                             value))
+          'vector))
+
+(defun monsters-json (monsters)
+  "Per-monster records -> JSON array (psostats QuestRun.Monsters)."
+  (coerce
+   (loop :for monster :in monsters
+         :collect (let ((entry (make-hash-table :test 'equal)))
+                    (setf (gethash "id" entry) (getf monster :id)
+                          (gethash "unitxt_id" entry) (getf monster :unitxt)
+                          (gethash "spawn_ms" entry) (getf monster :spawn-ms))
+                    (when (getf monster :name)
+                      (setf (gethash "name" entry) (getf monster :name)))
+                    (when (getf monster :killed-ms)
+                      (setf (gethash "killed_ms" entry)
+                            (getf monster :killed-ms)))
+                    (when (getf monster :frame1)
+                      (setf (gethash "frame1" entry) t))
+                    entry))
+   'vector))
+
+(defun bosses-json (bosses)
+  "Boss records -> JSON object keyed by monster id (psostats Bosses)."
+  (let ((object (make-hash-table :test 'equal)))
+    (dolist (boss bosses object)
+      (let ((entry (make-hash-table :test 'equal)))
+        (setf (gethash "name" entry) (getf boss :name)
+              (gethash "unitxt_id" entry) (getf boss :unitxt)
+              (gethash "spawn_t" entry) (getf boss :spawn-t)
+              (gethash "hp" entry) (coerce (getf boss :hp) 'vector))
+        (when (getf boss :killed-t)
+          (setf (gethash "killed_t" entry) (getf boss :killed-t)))
+        (setf (gethash (princ-to-string (getf boss :id)) object) entry)))))
+
 (defun telemetry-json (data)
   "Telemetry plist (TELEMETRY-RUN-DATA) -> JSON object hash table."
   (let ((object (make-hash-table :test 'equal)))
     (setf (gethash "frame_keys" object) +frame-keys+
           (gethash "frames" object)
-          (coerce (mapcar (lambda (frame) (coerce frame 'vector))
-                          (getf data :frames))
-                  'vector)
+          (coerce (mapcar #'frame-json (getf data :frames)) 'vector)
           (gethash "death_count" object) (or (getf data :death-count) 0)
           (gethash "kills" object) (or (getf data :kills) 0)
           (gethash "meseta_charged" object) (or (getf data :meseta-charged) 0)
@@ -288,6 +335,27 @@ transport failures and unexpected statuses."
                                            (getf event :floor)))
                                    entry))
                   'vector))
+    ;; psostats parity: per-monster records, boss HP histories, damage
+    ;; and last-hit attribution, and the cheat heuristics. Absent from
+    ;; runs queued by older client versions, hence the WHENs.
+    (when (getf data :monsters)
+      (setf (gethash "monsters" object) (monsters-json (getf data :monsters))))
+    (when (getf data :bosses)
+      (setf (gethash "bosses" object) (bosses-json (getf data :bosses))))
+    (setf (gethash "player_damage" object)
+          (alist-json (getf data :player-damage) :key #'princ-to-string)
+          (gethash "last_hits" object)
+          (alist-json (getf data :last-hits) :key #'princ-to-string)
+          (gethash "monster_hp_pool" object)
+          (coerce (getf data :monster-hp-pool) 'vector))
+    (when (getf data :max-party-pb-shifta)
+      (setf (gethash "max_party_pb_shifta" object)
+            (getf data :max-party-pb-shifta)))
+    ;; Booleans ride only when true, like pb in RUN-JSON.
+    (when (getf data :illegal-shifta)
+      (setf (gethash "illegal_shifta" object) t))
+    (when (getf data :fast-warps)
+      (setf (gethash "fast_warps" object) t))
     object))
 
 (defun run-json (run)

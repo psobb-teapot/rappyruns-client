@@ -13,11 +13,23 @@
 
 (defparameter +frame-keys+
   #("t" "hp" "tp" "pb" "meseta" "floor" "room" "x" "z"
-    "shifta" "deband" "inv" "state" "monsters" "kills")
-  "Column names for the compact per-second frame rows, in order.")
+    "shifta" "deband" "inv" "state" "monsters" "kills"
+    "map_var" "ft" "dt" "ct" "damage" "weapon" "player_locs" "monster_locs")
+  "Column names for the compact per-second frame rows, in order.
+player_locs rows are (key floor room x y z facing warping01) lists,
+monster_locs rows (id x y z facing hp frozen01 paralyzed01 confused01);
+everything else is a number or a string.")
 
 (defparameter +attack-states+ '(5 6 7))
 (defconstant +casting-state+ 8)
+
+(defparameter +frame1-threshold-ms+ 60
+  "A kill this soon after the spawn sample counts as a frame-1 kill
+\(psostats consolidateMonsterState).")
+
+(defparameter +frame1-excluded-unitxt+ '(34 45 73 68)
+  "De Rol Le, Barba Ray, Dark Gunner/control forms: buggy spawn data in
+psostats, excluded from frame-1 detection there too.")
 
 (defstruct telemetry
   start-time                    ; internal real time of the quest start
@@ -41,9 +53,18 @@
   (time-by-state '())           ; alist (state-id . ms)
   (weapons '())                 ; alist (id . (:display :type :seconds :attacks :techs))
   (current-weapon-id "Bare Handed")
-  (monster-hp (make-hash-table :test 'eql)) ; monster id -> last seen hp
+  (monsters (make-hash-table :test 'eql)) ; monster id -> state plist
   (monsters-alive 0)
-  (kills 0))
+  (monster-hp-pool 0)           ; sum of living monsters' hp, last sample
+  (monster-hp-pool-series '())  ; newest first, one entry per frame
+  (kills 0)                     ; monsters seen alive, then dead
+  (player-damage '())           ; alist (player-index . hp dealt)
+  (last-hits '())               ; alist (player-index . kills credited)
+  (bosses '())                  ; alist (monster-id . boss plist), newest first
+  last-monster-sample           ; most recent :monsters list, for frames
+  max-party-pb-shifta           ; highest legitimate shifta, NIL = unknown
+  (illegal-shifta nil)          ; own shifta exceeded the party ceiling
+  (fast-warps nil))             ; someone warped with fast burst on
 
 (defun telemetry-elapsed-ms (telemetry now)
   (round (* 1000 (- now (telemetry-start-time telemetry)))
@@ -164,21 +185,124 @@
   (setf (telemetry-current-weapon-id telemetry)
         (or (getf (getf inventory :weapon) :id) "Bare Handed")))
 
-(defun update-monster-tracking (telemetry monsters)
-  (let ((table (telemetry-monster-hp telemetry))
-        (alive 0))
+(defun update-boss-tracking (telemetry state second)
+  "Register STATE's monster as a boss the first time it is seen and
+keep its kill time current (psostats consolidateMonsterState).
+Per-second HP history is appended by PUSH-FRAME."
+  (let ((name (boss-name (getf state :unitxt) (getf state :index))))
+    (when name
+      (let* ((id (getf state :id))
+             (cell (assoc id (telemetry-bosses telemetry))))
+        (unless cell
+          ;; A later form of the same boss gets a (n) suffix.
+          (let ((form (count-if (lambda (other)
+                                  (eql (getf (cdr other) :unitxt)
+                                       (getf state :unitxt)))
+                                (telemetry-bosses telemetry))))
+            (when (plusp form)
+              (setf name (format nil "~a (~d)" name form))))
+          (setf cell (cons id (list :name name
+                                    :id id
+                                    :unitxt (getf state :unitxt)
+                                    :spawn-t second
+                                    :killed-t nil
+                                    :hp '())))
+          (push cell (telemetry-bosses telemetry)))
+        (let ((killed-ms (getf state :killed-ms)))
+          (when (and killed-ms (null (getf (cdr cell) :killed-t)))
+            (setf (getf (cdr cell) :killed-t) (floor killed-ms 1000))))))))
+
+(defun update-monster-tracking (telemetry monsters elapsed-ms)
+  "One monster sample: spawn/kill bookkeeping, per-player damage and
+last-hit attribution (psostats consolidateMonsterState). A monster
+first seen with 0 hp still spawns alive there, so its death registers
+one sample later; kills are alive -> dead transitions only."
+  (let ((table (telemetry-monsters telemetry))
+        (second (floor elapsed-ms 1000))
+        (alive 0)
+        (pool 0))
     (dolist (monster monsters)
       (let* ((id (getf monster :id))
-             (hp (getf monster :hp))
-             (previous (gethash id table)))
+             (hp (getf monster :hp 0))
+             (attacker (getf monster :last-attacker 0))
+             (state (gethash id table)))
         (when (plusp hp)
           (incf alive))
-        (when (and previous (plusp previous) (zerop hp))
-          (incf (telemetry-kills telemetry)))
-        (setf (gethash id table) hp)))
-    (setf (telemetry-monsters-alive telemetry) alive)))
+        (incf pool hp)
+        (cond
+          ((null state)
+           (setf state (list :id id
+                             :unitxt (getf monster :unitxt)
+                             :index (getf monster :index)
+                             :name (getf monster :name)
+                             :hp hp
+                             :alive t
+                             :spawn-ms elapsed-ms
+                             :killed-ms nil
+                             :frame1 nil)
+                 (gethash id table) state))
+          ((and (getf state :alive) (zerop hp))
+           (setf (getf state :alive) nil
+                 (getf state :killed-ms) elapsed-ms)
+           (incf (telemetry-kills telemetry))
+           (unless (member (getf state :unitxt) +frame1-excluded-unitxt+)
+             (setf (getf state :frame1)
+                   (< (- elapsed-ms (getf state :spawn-ms))
+                      +frame1-threshold-ms+)))
+           (setf (telemetry-last-hits telemetry)
+                 (bump-alist (telemetry-last-hits telemetry) attacker 1 #'eql))
+           ;; The killing blow is credited with the remaining hp.
+           (when (plusp (getf state :hp))
+             (setf (telemetry-player-damage telemetry)
+                   (bump-alist (telemetry-player-damage telemetry)
+                               attacker (getf state :hp) #'eql)))
+           (setf (getf state :hp) 0))
+          ((getf state :alive)
+           (when (< hp (getf state :hp))
+             (setf (telemetry-player-damage telemetry)
+                   (bump-alist (telemetry-player-damage telemetry)
+                               attacker (- (getf state :hp) hp) #'eql)))
+           (setf (getf state :hp) hp)))
+        (update-boss-tracking telemetry state second)))
+    (setf (telemetry-monsters-alive telemetry) alive
+          (telemetry-monster-hp-pool telemetry) pool
+          (telemetry-last-monster-sample telemetry) monsters)))
 
-(defun push-frame (telemetry me second)
+(defun player-location-key (player)
+  "Key for a player's per-frame location: the guild card when known
+\(psostats PlayerByGcLocation), the character name otherwise."
+  (or (getf player :guild-card) (getf player :name) ""))
+
+(defun frame-player-locs (players)
+  (loop :for player :in players
+        :collect (list (player-location-key player)
+                       (getf player :floor 0)
+                       (getf player :room 0)
+                       (round1 (getf player :x 0.0))
+                       (round1 (getf player :y 0.0))
+                       (round1 (getf player :z 0.0))
+                       (getf player :facing 0)
+                       (if (getf player :warping) 1 0))))
+
+(defun frame-monster-locs (monsters)
+  (loop :for monster :in monsters
+        :when (plusp (getf monster :hp 0))
+          :collect (list (getf monster :id)
+                         (round1 (getf monster :x 0.0))
+                         (round1 (getf monster :y 0.0))
+                         (round1 (getf monster :z 0.0))
+                         (getf monster :facing 0)
+                         (getf monster :hp 0)
+                         (if (getf monster :frozen) 1 0)
+                         (if (getf monster :paralyzed) 1 0)
+                         (if (getf monster :confused) 1 0))))
+
+(defun my-damage-dealt (telemetry snapshot)
+  (or (cdr (assoc (getf snapshot :my-index)
+                  (telemetry-player-damage telemetry)))
+      0))
+
+(defun push-frame (telemetry me snapshot second)
   (push (list second
               (getf me :hp 0)
               (getf me :tp 0)
@@ -193,8 +317,23 @@
               (if (getf me :invincible) 1 0)
               (getf me :state 0)
               (telemetry-monsters-alive telemetry)
-              (telemetry-kills telemetry))
+              (telemetry-kills telemetry)
+              (or (getf snapshot :map-variation) 0)
+              (getf me :freeze-traps 0)
+              (getf me :damage-traps 0)
+              (getf me :confuse-traps 0)
+              (my-damage-dealt telemetry snapshot)
+              (telemetry-current-weapon-id telemetry)
+              (frame-player-locs (getf snapshot :players))
+              (frame-monster-locs (telemetry-last-monster-sample telemetry)))
         (telemetry-frames telemetry))
+  ;; The per-second boss HP histories and monster HP pool advance in
+  ;; step with the frames.
+  (loop :for (id . boss) :in (telemetry-bosses telemetry)
+        :for state := (gethash id (telemetry-monsters telemetry))
+        :do (push (getf state :hp 0) (getf boss :hp)))
+  (push (telemetry-monster-hp-pool telemetry)
+        (telemetry-monster-hp-pool-series telemetry))
   (setf (telemetry-last-frame-second telemetry) second))
 
 (defun telemetry-step (telemetry snapshot &key (now (get-internal-real-time)))
@@ -211,8 +350,17 @@ them; a data frame is recorded once per second."
     (setf (telemetry-last-tick telemetry) now)
     (let ((monsters (getf snapshot :monsters)))
       (when monsters
-        (update-monster-tracking telemetry monsters)))
+        (update-monster-tracking telemetry monsters elapsed-ms)))
+    ;; Anyone still warping while fast burst is on (psostats FastWarps).
+    (when (and (getf snapshot :fast-burst)
+               (some (lambda (player) (getf player :warping))
+                     (getf snapshot :players)))
+      (setf (telemetry-fast-warps telemetry) t))
     (when me
+      ;; Own shifta above the party's legitimate ceiling (IllegalShifta).
+      (let ((limit (telemetry-max-party-pb-shifta telemetry)))
+        (when (and limit (> (getf me :shifta 0) limit))
+          (setf (telemetry-illegal-shifta telemetry) t)))
       (update-state-tracking telemetry me delta-ms)
       (update-death-tracking telemetry me second)
       (update-map-tracking telemetry snapshot second)
@@ -221,8 +369,39 @@ them; a data frame is recorded once per second."
         (when inventory
           (update-inventory-tracking telemetry inventory)))
       (when (> second (telemetry-last-frame-second telemetry))
-        (push-frame telemetry me second)))
+        (push-frame telemetry me snapshot second)))
     telemetry))
+
+(defun monster-run-data (telemetry)
+  "Per-monster records as printable plists, oldest spawn first."
+  (let ((monsters '()))
+    (maphash (lambda (id state)
+               (declare (ignore id))
+               (push (list :id (getf state :id)
+                           :unitxt (getf state :unitxt)
+                           :name (getf state :name)
+                           :spawn-ms (getf state :spawn-ms)
+                           :killed-ms (getf state :killed-ms)
+                           :frame1 (and (getf state :frame1) t))
+                     monsters))
+             (telemetry-monsters telemetry))
+    (sort monsters (lambda (a b) (< (getf a :spawn-ms 0) (getf b :spawn-ms 0))))))
+
+(defun boss-run-data (telemetry)
+  "Boss records as printable plists, spawn order preserved."
+  (reverse
+   (mapcar (lambda (cell)
+             (let ((boss (cdr cell)))
+               (list :name (getf boss :name)
+                     :id (getf boss :id)
+                     :unitxt (getf boss :unitxt)
+                     :spawn-t (getf boss :spawn-t)
+                     :killed-t (getf boss :killed-t)
+                     :hp (reverse (getf boss :hp)))))
+           (telemetry-bosses telemetry))))
+
+(defun copy-alist-cells (alist)
+  (reverse (mapcar (lambda (cell) (cons (car cell) (cdr cell))) alist)))
 
 (defun telemetry-run-data (telemetry)
   "Snapshot of the accumulated telemetry as a printable plist for the
@@ -235,16 +414,18 @@ are correct for segment categories that end before the full clear."
         :kills (telemetry-kills telemetry)
         :tp-used (telemetry-tp-used telemetry)
         :traps-used (copy-list (telemetry-traps-used telemetry))
-        :items-used (reverse (mapcar (lambda (cell)
-                                       (cons (car cell) (cdr cell)))
-                                     (telemetry-items-used telemetry)))
-        :techs-cast (reverse (mapcar (lambda (cell)
-                                       (cons (car cell) (cdr cell)))
-                                     (telemetry-techs-cast telemetry)))
-        :time-by-state (reverse (mapcar (lambda (cell)
-                                          (cons (car cell) (cdr cell)))
-                                        (telemetry-time-by-state telemetry)))
+        :items-used (copy-alist-cells (telemetry-items-used telemetry))
+        :techs-cast (copy-alist-cells (telemetry-techs-cast telemetry))
+        :time-by-state (copy-alist-cells (telemetry-time-by-state telemetry))
         :weapons (reverse
                   (mapcar (lambda (cell)
                             (list* :id (car cell) (copy-list (cdr cell))))
-                          (telemetry-weapons telemetry)))))
+                          (telemetry-weapons telemetry)))
+        :monsters (monster-run-data telemetry)
+        :bosses (boss-run-data telemetry)
+        :player-damage (copy-alist-cells (telemetry-player-damage telemetry))
+        :last-hits (copy-alist-cells (telemetry-last-hits telemetry))
+        :monster-hp-pool (reverse (telemetry-monster-hp-pool-series telemetry))
+        :max-party-pb-shifta (telemetry-max-party-pb-shifta telemetry)
+        :illegal-shifta (and (telemetry-illegal-shifta telemetry) t)
+        :fast-warps (and (telemetry-fast-warps telemetry) t)))

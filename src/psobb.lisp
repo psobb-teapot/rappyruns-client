@@ -13,6 +13,13 @@
 (defconstant +floor-switches+ #x00AC9FA0)     ; 32 bytes per floor
 (defconstant +difficulty-address+ #x00A9CD68) ; u16, 0=Normal .. 3=Ultimate
 (defconstant +current-map-address+ #x00AAFC9C) ; u16, map number (floor names)
+(defconstant +map-variation-address+ #x00AAFC98) ; u16, layout variation
+
+;; Ephinea fast-burst detection (psostats ephineaFastBurstEnabled):
+;; *(u32*)+fast-burst-base+ -> a; *(u32*)(a + +fast-burst-step+) ->
+;; slow-burst flag address; fast burst is on when that u16 is zero.
+(defconstant +fast-burst-base+ #x5B92DA)
+(defconstant +fast-burst-step+ #x5B92DF)
 
 ;; Inventory (item array is the local player's inventory)
 (defconstant +item-array-pointer+ #x00A8D81C) ; u32 -> array of item pointers
@@ -44,6 +51,24 @@
 (defconstant +monster-id-offset+ #x1C)        ; u16
 (defconstant +monster-unitxt-offset+ #x378)   ; u32, 0 = not a monster
 (defconstant +monster-hp-offset+ #x334)       ; u16 (fallback, non-Ephinea)
+;; READ-MONSTER fetches [+monster-block-start+, +monster-block-end+) in
+;; one ReadProcessMemory call, like READ-PLAYER does for players.
+(defconstant +monster-block-start+ #x1C)
+(defconstant +monster-block-end+ #x37C)
+(defconstant +monster-x-offset+ #x38)         ; f32
+(defconstant +monster-y-offset+ #x3C)         ; f32
+(defconstant +monster-z-offset+ #x40)         ; f32
+(defconstant +monster-facing-offset+ #x60)    ; u16
+(defconstant +monster-paralyzed-offset+ #x25C) ; u16, #x10 = paralyzed
+(defconstant +monster-status-offset+ #x268)   ; u16, #x02 frozen, #x12 confused
+(defconstant +monster-attacker-offset+ #x2D8) ; u16, last attacker player index
+(defconstant +monster-zu-y-offset+ #x418)     ; f32, Zu/Pazuzu extra height
+;; Boss HP lives outside the regular hp word for the Ep1/Ep2 dragons
+;; (psostats data.go De Rol Le / Barba Ray constants).
+(defconstant +monster-de-rol-le-hp+ #x6B4)
+(defconstant +monster-de-rol-le-shell-hp+ #x39C)
+(defconstant +monster-barba-ray-hp+ #x704)
+(defconstant +monster-barba-ray-shell-hp+ #x7AC)
 
 ;; Offsets within the quest struct / quest data block
 (defconstant +quest-data-offset+ #x19C)       ; u32 -> quest data block
@@ -93,6 +118,24 @@
 
 (defun class-name-for-id (id)
   (cdr (assoc id +class-ids+)))
+
+(defparameter +class-max-shifta+
+  ;; Highest Shifta level each class can cast (psostats psoclasses).
+  '(("HUmar" . 3) ("HUnewearl" . 20) ("HUcast" . 3) ("HUcaseal" . 3)
+    ("RAmar" . 15) ("RAmarl" . 20) ("RAcast" . 0) ("RAcaseal" . 0)
+    ("FOmar" . 30) ("FOmarl" . 30) ("FOnewm" . 30) ("FOnewearl" . 30)))
+
+(defun max-supplyable-shifta (class-name)
+  (or (cdr (assoc class-name +class-max-shifta+ :test #'equal)) 0))
+
+(defun max-party-pb-shifta (party)
+  "Highest legitimate Shifta level for PARTY ((:class ...) plists):
+the party-wide Photon Blast ceiling (21 + 20 per extra member, psostats
+StartNewQuest), or the best caster's own ceiling if that is higher."
+  (let ((size (max 1 (length party))))
+    (reduce #'max party
+            :key (lambda (player) (max-supplyable-shifta (getf player :class)))
+            :initial-value (+ 21 (* 20 (1- size))))))
 
 (defparameter +section-ids+
   #("Viridia" "Greenill" "Skyly" "Bluefull" "Purplenum"
@@ -202,6 +245,14 @@ Jellen/Zalure)."
             :into players
         :finally (return (remove nil players))))
 
+(defun fast-burst-enabled-p (reader)
+  "T when Ephinea's fast burst is active (psostats ephineaFastBurstEnabled)."
+  (let ((base (read-u32 reader +fast-burst-base+)))
+    (when (and base (plusp base))
+      (let ((slow-burst-ptr (read-u32 reader (+ base +fast-burst-step+))))
+        (when (and slow-burst-ptr (plusp slow-burst-ptr))
+          (eql 0 (read-u16 reader slow-burst-ptr)))))))
+
 (defun read-episode (reader)
   (let ((raw (read-u16 reader +episode-address+)))
     (case (and raw (1+ raw))
@@ -223,6 +274,8 @@ so the detection state machine stays pure and testable."
                              :players players
                              :difficulty (read-u16 reader +difficulty-address+)
                              :map (read-u16 reader +current-map-address+)
+                             :map-variation (read-u16 reader +map-variation-address+)
+                             :fast-burst (fast-burst-enabled-p reader)
                              :quest-ptr (or quest-ptr 0))))
         (when (and quest-ptr (plusp quest-ptr))
           (let* ((data-ptr (read-u32 reader (+ quest-ptr +quest-data-offset+)))
@@ -459,12 +512,82 @@ so the detection state machine stays pure and testable."
                 :weapon weapon
                 :consumables consumables))))))
 
-;;; Monsters. Enough of psostats GetMonsterList to count living enemies
-;;; and observe alive->dead transitions (kills); names, positions and
-;;; boss-specific HP forms are not read.
+;;; Monsters. Ported from psostats GetMonsterList: per-monster identity
+;;; (id, unitxt id, name), HP (Ephinea's server-side table, with the De
+;;; Rol Le / Barba Ray special forms), position, status ailments and
+;;; the last attacker's player index. Each monster costs one block read
+;;; plus the HP word, so the poll loop can afford it every frame.
+
+(defvar *monster-name-cache* (make-hash-table :test 'eql)
+  "unitxt monster id -> name; unitxt data is static for a game session.")
+
+(defun read-monster-name (reader unitxt-id)
+  (or (gethash unitxt-id *monster-name-cache*)
+      (let* ((unitxt (read-u32 reader +unitxt-pointer+))
+             ;; The monster name table is the third table (offset 16),
+             ;; where item names live at offset 4.
+             (names (and unitxt (plusp unitxt) (read-u32 reader (+ unitxt 16))))
+             (name-address (and names (plusp names)
+                                (read-u32 reader (+ names (* 4 unitxt-id)))))
+             (name (and name-address (plusp name-address)
+                        (read-utf16-string reader name-address 32))))
+        (when (and name (string/= name ""))
+          (setf (gethash unitxt-id *monster-name-cache*) name)))))
+
+(defun boss-hp-offset (unitxt index)
+  "Alternate HP field for the boss forms whose regular hp word lies
+\(psostats data.go). INDEX is the entity's absolute slot, players
+included, matching psostats' Monster.Index."
+  (case unitxt
+    (45 (if (zerop index) +monster-de-rol-le-hp+ +monster-de-rol-le-shell-hp+))
+    (73 (if (zerop index) +monster-barba-ray-hp+ +monster-barba-ray-shell-hp+))
+    (t nil)))
+
+(defun read-monster (reader monster-addr index hp-table)
+  "Monster plist at MONSTER-ADDR, or NIL when it is not a live monster
+entity. INDEX is the absolute entity-array slot (players included)."
+  (let ((block (read-block reader (+ monster-addr +monster-block-start+)
+                           (- +monster-block-end+ +monster-block-start+))))
+    (when block
+      (flet ((u16 (offset) (bytes-u16 block (- offset +monster-block-start+)))
+             (u32 (offset) (bytes-u32 block (- offset +monster-block-start+)))
+             (f32 (offset) (u32-float
+                            (bytes-u32 block (- offset +monster-block-start+)))))
+        (let ((unitxt (u32 +monster-unitxt-offset+))
+              (id (u16 +monster-id-offset+)))
+          (when (plusp unitxt)
+            (let* ((boss-offset (boss-hp-offset unitxt index))
+                   (hp (cond (boss-offset
+                              (read-u16 reader (+ monster-addr boss-offset)))
+                             ((and hp-table (plusp hp-table))
+                              (read-u16 reader (+ hp-table 4 (* 32 id))))
+                             (t (u16 +monster-hp-offset+))))
+                   (status (u16 +monster-status-offset+))
+                   (y (f32 +monster-y-offset+)))
+              ;; HP underflows below zero on kill.
+              (when (and hp (> hp #x8000))
+                (setf hp 0))
+              ;; Zu and Pazuzu keep their height in a separate field.
+              (when (member unitxt '(94 95))
+                (let ((extra (read-f32 reader (+ monster-addr
+                                                 +monster-zu-y-offset+))))
+                  (when extra (incf y extra))))
+              (list :id id
+                    :unitxt unitxt
+                    :index index
+                    :name (read-monster-name reader unitxt)
+                    :hp (or hp 0)
+                    :last-attacker (u16 +monster-attacker-offset+)
+                    :x (f32 +monster-x-offset+)
+                    :y y
+                    :z (f32 +monster-z-offset+)
+                    :facing (u16 +monster-facing-offset+)
+                    :frozen (eql status #x02)
+                    :confused (eql status #x12)
+                    :paralyzed (eql (u16 +monster-paralyzed-offset+) #x10)))))))))
 
 (defun read-monsters (reader)
-  "List of (:id n :hp n) for monster entities, or NIL when unreadable."
+  "List of monster plists (see READ-MONSTER), or NIL when unreadable."
   (let ((array (read-u32 reader +npc-array-pointer+))
         (npc-count (read-u32 reader +npc-count-address+))
         (player-count (read-u32 reader +player-count-address+))
@@ -476,17 +599,32 @@ so the detection state machine stays pure and testable."
         (when pointers
           (loop :for i :from 0 :below npc-count
                 :for monster-addr := (bytes-u32 pointers (* 4 i))
-                :when (plusp monster-addr)
-                  :append (let ((unitxt (read-u32 reader (+ monster-addr
-                                                            +monster-unitxt-offset+)))
-                                (id (read-u16 reader (+ monster-addr
-                                                        +monster-id-offset+))))
-                            (when (and unitxt (plusp unitxt) id)
-                              (let ((hp (if (and hp-table (plusp hp-table))
-                                            (read-u16 reader (+ hp-table 4 (* 32 id)))
-                                            (read-u16 reader (+ monster-addr
-                                                                +monster-hp-offset+)))))
-                                ;; HP underflows below zero on kill.
-                                (when (and hp (> hp #x8000))
-                                  (setf hp 0))
-                                (list (list :id id :hp (or hp 0))))))))))))
+                :for monster := (and (plusp monster-addr)
+                                     (read-monster reader monster-addr
+                                                   (+ player-count i) hp-table))
+                :when monster
+                  :collect monster))))))
+
+;;; Boss identification, transcribed from psostats isBoss. INDEX is the
+;;; absolute entity slot, players included, like Monster.Index there.
+
+(defun boss-name (unitxt index)
+  "Display name when the monster is a boss form, else NIL."
+  (case unitxt
+    (44 "Sil Dragon")
+    (45 (when (zerop index) "Dal Ra Lie"))
+    (46 (case index
+          (31 "Vol Opt ver. 2 (1)")
+          (32 "Vol Opt ver. 2 (2)")))
+    (47 "Dark Falz")
+    (73 (when (zerop index) "Barba Ray"))
+    (76 "Gol Dragon")
+    (77 "Gal Gryphon")
+    (78 "Olga Flow")
+    ((106 107 108)
+     (let ((base (case unitxt
+                   (106 "Saint-Million")
+                   (107 "Shambertin")
+                   (108 "Kondrieu"))))
+       (cond ((< index 5) (format nil "~a Tail (~d)" base index))
+             ((< index 9) (format nil "~a Head (~d)" base (- index 4))))))))

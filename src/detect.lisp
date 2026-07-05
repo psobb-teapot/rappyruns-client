@@ -107,7 +107,9 @@ with Shifta up - so a run is No PB until a discharge is seen."
           (detector-my-pb detector) (let ((me (snapshot-my-player snapshot)))
                                       (and me (getf me :pb)))
           (detector-telemetry detector)
-          (make-telemetry :start-time (get-internal-real-time))))
+          (make-telemetry :start-time (get-internal-real-time)
+                          :max-party-pb-shifta (max-party-pb-shifta
+                                                (party-of snapshot)))))
   (let ((tracker (make-tracker :def def
                                :start-time (get-internal-real-time)
                                :party (party-of snapshot))))
