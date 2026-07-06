@@ -1384,6 +1384,9 @@ over the defaults. Restores the global config afterwards (it is bound)."
              (and af
                   (search "loudnorm" (nth (1+ af) args))
                   (member "aac" args :test #'equal))))
+    (check "remux loudness target is -20 LUFS (-16 was too loud, issue 84)"
+           (let ((af (position "-af" args :test #'equal)))
+             (and af (search "loudnorm=I=-20:" (nth (1+ af) args)))))
     (check "remux applies no timestamp correction (sync fixed at the source)"
            (let ((af (position "-af" args :test #'equal)))
              (and af

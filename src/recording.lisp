@@ -299,6 +299,13 @@ the game."
    (list "-movflags" "+frag_keyframe+empty_moov"
          output-path)))
 
+(defparameter +record-loudness-lufs+ -20
+  "loudnorm integrated-loudness target for finished recordings. The
+initial -16 (streaming-platform level) played back too loud for the
+first party testers (issue 84), especially with several perspectives
+of one attempt open at once; -20 keeps quiet captures audible while
+sitting comfortably below typical web video.")
+
 (defun build-remux-args (input-path output-path)
   "ffmpeg argv rewriting the fragmented recording as a regular MP4 with
 the moov (duration + seek index) at the front. Video is stream-copied;
@@ -316,7 +323,8 @@ pass runs far faster than real time."
   (list "-y" "-loglevel" "error"
         "-i" input-path
         "-c:v" "copy"
-        "-af" "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"
+        "-af" (format nil "loudnorm=I=~d:TP=-1.5:LRA=11,aresample=48000"
+                      +record-loudness-lufs+)
         "-c:a" "aac" "-b:a" "160k"
         "-movflags" "+faststart"
         output-path))
