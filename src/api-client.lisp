@@ -213,6 +213,50 @@ server, used to sanity-check local trigger definitions."
 tends to come along when copying from a browser. NIL becomes \"\"."
   (string-trim '(#\Space #\Tab #\Return #\Linefeed) (or string "")))
 
+;;; Device pairing: the no-copy-paste first-run setup. The client asks
+;;; the server for a one-time code, sends the browser to /pair?code=...
+;;; and polls until the user approves the connection there; the token
+;;; then arrives over the API (gui.lisp runs the choreography).
+
+(defun start-pairing (&key (server-url (config-value :server-url)) label)
+  "POST /api/pair: register a pairing request. Returns (values code
+poll-interval-seconds expires-in-seconds). Signals API-ERROR when the
+server cannot be reached or answers with anything unexpected."
+  (multiple-value-bind (status body)
+      (http-request "POST" (api-url server-url "/api/pair")
+                    :body (let ((object (make-hash-table :test 'equal)))
+                            (when label (setf (gethash "label" object) label))
+                            (jzon:stringify object)))
+    (let ((payload (ignore-errors (jzon:parse body))))
+      (if (and (eql status 201)
+               (hash-table-p payload)
+               (stringp (gethash "code" payload)))
+          (values (gethash "code" payload)
+                  (or (gethash "interval" payload) 2)
+                  (or (gethash "expires_in" payload) 600))
+          (error 'api-error
+                 :message (format nil "POST /api/pair -> ~a" status))))))
+
+(defun pairing-url (code &key (server-url (config-value :server-url)))
+  (api-url server-url (format nil "/pair?code=~a" code)))
+
+(defun poll-pairing (code &key (server-url (config-value :server-url)))
+  "GET /api/pair/:code. Returns (values :complete token) once approved,
+:pending while the user has not decided yet, and :gone when the code
+expired or was already used. Signals API-ERROR on transport failures
+and unexpected statuses (transient; the caller keeps polling)."
+  (multiple-value-bind (status body)
+      (http-request "GET" (api-url server-url
+                                   (format nil "/api/pair/~a" code)))
+    (let* ((payload (ignore-errors (jzon:parse body)))
+           (token (and (hash-table-p payload) (gethash "token" payload))))
+      (cond
+        ((and (eql status 200) (stringp token)) (values :complete token))
+        ((eql status 200) :pending)
+        ((eql status 404) :gone)
+        (t (error 'api-error
+                  :message (format nil "GET /api/pair -> ~a" status)))))))
+
 (defun fetch-me (&key (server-url (config-value :server-url))
                       (token (config-value :api-token)))
   "Verify TOKEN against GET /api/me.

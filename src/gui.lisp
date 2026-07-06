@@ -500,43 +500,87 @@ button works before the first recording exists)."
     (%shell-execute fli:*null-pointer* "open" (namestring dir)
                     fli:*null-pointer* fli:*null-pointer* +sw-shownormal+)))
 
+(defvar *pairing-process* nil
+  "The in-flight pairing worker, or NIL. One at a time.")
+
+(defun pairing-label ()
+  "API token label for a pairing from this machine, so the token list
+on the site says which computer it belongs to."
+  (let ((name (ignore-errors (machine-instance))))
+    (if (and (stringp name) (string/= name ""))
+        (format nil "Desktop client (~a)" name)
+        "Desktop client")))
+
 (defun prompt-for-token-setup (interface)
-  "First-run setup: while no API token is configured, offer to open the
-token page, take the pasted token right here, save it and verify it
-against /api/me. Shown again on every launch until a token is set;
-Cancel (or an empty paste) skips it for this launch."
+  "First-run setup: while no API token is configured, pair with the
+site instead of asking for a paste - open /pair?code=... in the
+browser and poll until the user approves the connection there; the
+token arrives over the API. Runs again on every launch until a token
+is set; the Settings tab's manual paste stays as the fallback."
   (when (string= (normalize-token (config-value :api-token)) "")
-    (capi:execute-with-interface
+    (start-pairing-flow interface)))
+
+(defun start-pairing-flow (interface)
+  (unless (and *pairing-process* (mp:process-alive-p *pairing-process*))
+    (setf *pairing-process*
+          (mp:process-run-function
+           "eta-client-pairing" '()
+           (lambda () (run-pairing-flow interface))))))
+
+(defun run-pairing-flow (interface)
+  "The pairing worker: register a code, hand the browser the approval
+page and poll until approved, expired or the client shuts down.
+Transient poll errors (the laptop's Wi-Fi blinking) do not abort the
+wait; only failing to even start the pairing gives up, and the next
+launch retries."
+  (handler-case
+      (multiple-value-bind (code interval expires-in)
+          (start-pairing :label (pairing-label))
+        (open-in-browser (pairing-url code))
+        (set-pane-text interface #'token-status-pane (tr :pairing-waiting))
+        (loop :repeat (ceiling expires-in interval)
+              :do (mp:process-wait-with-timeout
+                   "pairing poll" interval (lambda () *stop-requested*))
+                  (when (or *stop-requested*
+                            ;; A token pasted in Settings meanwhile wins.
+                            (string/= (normalize-token
+                                       (config-value :api-token))
+                                      ""))
+                    (return))
+                  (multiple-value-bind (outcome token)
+                      (handler-case (poll-pairing code)
+                        (api-error () :pending))
+                    (ecase outcome
+                      (:pending)
+                      (:gone
+                       (set-pane-text interface #'token-status-pane
+                                      (tr :pairing-expired))
+                       (return))
+                      (:complete
+                       (finish-pairing token)
+                       (return))))
+              ;; Only reached when the repeat count runs out: an
+              ;; explicit RETURN above skips the LOOP epilogue.
+              :finally (set-pane-text interface #'token-status-pane
+                                      (tr :pairing-expired))))
+    (api-error (condition)
+      (set-pane-text interface #'token-status-pane
+                     (tr :pairing-failed (api-error-message condition))
+                     :red))))
+
+(defun finish-pairing (token)
+  "Save and reflect a token that arrived over the pairing API. Uses the
+live *INTERFACE* rather than the worker's captured one: a language
+switch may have rebuilt the window during the wait."
+  (setf (config-value :api-token) token)
+  (save-config!)
+  (let ((interface *interface*))
+    (capi:execute-with-interface-if-alive
      interface
      (lambda ()
-       (let ((url (api-url (config-value :server-url) "/my/tokens")))
-         (when (capi:confirm-yes-or-no
-                "~a" (tr :token-setup-offer url))
-           (open-in-browser url))
-         (labels ((ask ()
-                    (multiple-value-bind (text okp)
-                        (capi:prompt-for-string (tr :token-paste-prompt))
-                      (let ((token (and okp (normalize-token text))))
-                        (if (or (null token) (string= token ""))
-                            (set-pane-text interface #'token-status-pane
-                                           (tr :token-not-set))
-                            (progn
-                              (setf (config-value :api-token) token)
-                              (save-config!)
-                              (setf (capi:text-input-pane-text
-                                     (api-token-input interface))
-                                    token)
-                              (check-token
-                               interface
-                               :on-invalid
-                               (lambda ()
-                                 (capi:execute-with-interface
-                                  interface
-                                  (lambda ()
-                                    (when (capi:confirm-yes-or-no
-                                           "~a" (tr :token-retry))
-                                      (ask))))))))))))
-           (ask)))))))
+       (setf (capi:text-input-pane-text (api-token-input interface))
+             token)))
+    (check-token interface)))
 
 (defvar *retry-requested* nil)
 

@@ -242,15 +242,15 @@
     :attach-already-submitted
     ("The video was not changed: the site already has a video on file for this run (it may have been approved in the meantime)."
      "動画は変更されませんでした: この記録にはサイト側で既に動画が登録されています (その間に承認された可能性があります)。")
-    :token-setup-offer
-    ("No API token is set yet.~%~%Runs are still timed and listed below, but they can only be uploaded to the site with a token.~%~%Open the token page in your browser now?~%(~a - requires Discord login)"
-     "API トークンがまだ設定されていません。~%~%トークンがなくてもタイム計測と記録の一覧表示はできますが、サイトへのアップロードにはトークンが必要です。~%~%ブラウザでトークンページを開きますか?~%(~a - Discord ログインが必要です)")
-    :token-paste-prompt
-    ("Paste your API token here (Cancel to skip - you can also set it later in Settings):"
-     "API トークンをここに貼り付けてください (キャンセルでスキップ。後から設定タブでも設定できます):")
-    :token-retry
-    ("The server rejected that token (unauthorized).~%~%Paste it again?"
-     "サーバーがそのトークンを拒否しました (認証エラー)。~%~%もう一度貼り付けますか?")
+    :pairing-waiting
+    ("Token: approve the connection in your browser..."
+     "トークン: ブラウザで接続を承認してください...")
+    :pairing-expired
+    ("Token: pairing expired - restart the client, or paste a token in Settings"
+     "トークン: 接続の有効期限が切れました。クライアントを再起動するか、設定タブでトークンを貼り付けてください")
+    :pairing-failed
+    ("Token: pairing could not start (~a)"
+     "トークン: 接続を開始できません (~a)")
     :token-ok-dialog
     ("Token OK - authenticated as ~a."
      "トークン OK - ~a として認証されました。")
