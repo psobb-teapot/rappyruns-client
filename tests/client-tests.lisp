@@ -1956,7 +1956,16 @@ store functions that persist never touch the real %APPDATA% queue."
          (let ((migrated (ephinea-ta-client::migrate-config
                           (list :token-prompt-shown t :auto-submit t))))
            (and (null (getf migrated :token-prompt-shown))
-                (getf migrated :auto-submit)))))
+                (getf migrated :auto-submit))))
+  ;; The default recordings folder rename (Videos/EphineaTA -> RappyRuns).
+  (check "a fresh install uses the new recordings folder"
+         (eq :use-new (ephinea-ta-client::default-record-dir-choice nil nil)))
+  (check "only the pre-rename folder present triggers the migration"
+         (eq :migrate (ephinea-ta-client::default-record-dir-choice t nil)))
+  (check "an already-migrated install stays on the new folder"
+         (eq :use-new (ephinea-ta-client::default-record-dir-choice nil t)))
+  (check "both folders present never renames onto the existing one"
+         (eq :use-new (ephinea-ta-client::default-record-dir-choice t t))))
 
 ;;; ------------------------------------------------------------------
 ;;; Authenticode trust policy (the Win32 verification itself is

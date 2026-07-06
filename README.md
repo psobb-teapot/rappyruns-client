@@ -91,9 +91,10 @@ mixer first: a working capture of a 5% slider looks exactly like a
 broken capture. Disable with "Record game audio" in Settings. Completed runs are saved under the
 in-game quest name, e.g.
 `Towards the Future 9'59.123 (2026-07-04 2130).mp4`, into
-`Videos\EphineaTA\` (configurable, and one click away via "Open
-recordings folder"); abandoned/failed captures are deleted
-automatically. Recording never interferes with detection or
+`Videos\RappyRuns\` (configurable, and one click away via "Open
+recordings folder"; a pre-rename `Videos\EphineaTA\` folder is renamed
+in place, recordings included, the first time the default is resolved);
+abandoned/failed captures are deleted automatically. Recording never interferes with detection or
 submission - if ffmpeg fails, the run is still timed and uploaded.
 
 ffmpeg is found in this order: the `:ffmpeg-path` key in

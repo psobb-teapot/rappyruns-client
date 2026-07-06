@@ -116,15 +116,37 @@ machine under load.")
 
 ;;; Paths and filenames
 
+(defun default-record-dir-choice (old-exists-p new-exists-p)
+  "Which default recordings folder RESOLVE-RECORD-DIR should use, given
+what exists on disk (pure, so the tests can pin it): :USE-NEW for a
+fresh install or an already-migrated one - never rename onto an
+existing folder - and :MIGRATE when only the pre-rename EphineaTA
+folder exists."
+  (if (or new-exists-p (not old-exists-p))
+      :use-new
+      :migrate))
+
 (defun resolve-record-dir ()
-  "Config :record-dir, or <user home>/Videos/EphineaTA/ when blank."
+  "Config :record-dir, or <user home>/Videos/RappyRuns/ when blank.
+The pre-rename default was Videos/EphineaTA/; the first resolution
+finding only that folder renames it in place, recordings included, and
+keeps using it under the old name when the rename fails (say, a file
+in it is open) so recordings never split across two folders."
   (let ((configured (string-trim " " (or (config-value :record-dir) ""))))
     (if (plusp (length configured))
         (uiop:ensure-directory-pathname configured)
-        (let ((home (or (uiop:getenv "USERPROFILE")
-                        (namestring (user-homedir-pathname)))))
-          (merge-pathnames "Videos/EphineaTA/"
-                           (uiop:ensure-directory-pathname home))))))
+        (let* ((home (uiop:ensure-directory-pathname
+                      (or (uiop:getenv "USERPROFILE")
+                          (namestring (user-homedir-pathname)))))
+               (old (merge-pathnames "Videos/EphineaTA/" home))
+               (new (merge-pathnames "Videos/RappyRuns/" home)))
+          (ecase (default-record-dir-choice
+                  (and (uiop:directory-exists-p old) t)
+                  (and (uiop:directory-exists-p new) t))
+            (:use-new new)
+            (:migrate (if (ignore-errors (rename-file old new) t)
+                          new
+                          old)))))))
 
 (defun resolve-ffmpeg-path ()
   "Config :ffmpeg-path, else ffmpeg/ffmpeg.exe next to the executable
