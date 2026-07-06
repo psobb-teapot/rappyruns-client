@@ -1007,7 +1007,8 @@ switch 0; room 2 cleared = floor 5 switch 2; full clear = register 254."
                 :documentation "NIL: the remux exits as soon as spawned.")
    (remux-ok :initform t :accessor mock-remux-ok)
    (remux-start-result :initform :ok :accessor mock-remux-start-result)
-   (stale :initform '() :accessor mock-stale)))
+   (stale :initform '() :accessor mock-stale)
+   (fullscreen-monitor :initform nil :accessor mock-fullscreen-monitor)))
 
 (defun record-event (backend &rest event)
   (setf (mock-events backend)
@@ -1060,6 +1061,9 @@ switch 0; room 2 cleared = floor 5 switch 2; full clear = register 254."
 (defmethod backend-list-stale-files ((backend mock-backend) dir)
   (declare (ignore dir))
   (mock-stale backend))
+
+(defmethod backend-fullscreen-monitor ((backend mock-backend))
+  (mock-fullscreen-monitor backend))
 
 (defmacro with-recording-config ((&rest overrides) &body body)
   "Run BODY with an in-memory config; OVERRIDES are plist entries laid
@@ -1412,6 +1416,73 @@ over the defaults. Restores the global config afterwards (it is bound)."
       (check "retargeting keeps the video tokens intact"
              (and (member "gdigrab" retargeted :test #'equal)
                   (member "30" retargeted :test #'equal)))))
+  ;; Fullscreen capture: a game window covering its whole monitor is
+  ;; grabbed with ddagrab (gdigrab records black over exclusive
+  ;; fullscreen Direct3D).
+  (check "a window spanning its monitor exactly is fullscreen"
+         (ephinea-ta-client::rect-covers-p '(0 0 1920 1080)
+                                           '(0 0 1920 1080)))
+  (check "a fullscreen window on a secondary monitor is fullscreen"
+         (ephinea-ta-client::rect-covers-p '(1920 0 3840 1080)
+                                           '(1920 0 3840 1080)))
+  (check "a maximized window (work area, above the taskbar) is not"
+         (not (ephinea-ta-client::rect-covers-p '(0 0 1920 1032)
+                                                '(0 0 1920 1080))))
+  (check "an ordinary window is not fullscreen"
+         (not (ephinea-ta-client::rect-covers-p '(100 100 1124 868)
+                                                '(0 0 1920 1080))))
+  (check "GDI display names map to 0-based output indices"
+         (and (eql 0 (ephinea-ta-client::display-device-output-index
+                      "\\\\.\\DISPLAY1"))
+              (eql 11 (ephinea-ta-client::display-device-output-index
+                       "\\\\.\\DISPLAY12"))
+              (null (ephinea-ta-client::display-device-output-index
+                     "\\\\.\\DISPLAY"))
+              (null (ephinea-ta-client::display-device-output-index ""))))
+  (let ((args (build-ffmpeg-args :window-title "T" :output-path "out.mp4"
+                                 :fullscreen-monitor 1)))
+    (check "fullscreen args capture via ddagrab, not gdigrab"
+           (and (not (member "gdigrab" args :test #'equal))
+                (member "lavfi" args :test #'equal)
+                (find-if (lambda (arg)
+                           (search "ddagrab=output_idx=1" arg))
+                         args)))
+    (check "fullscreen args keep the framerate and hide the mouse"
+           (find-if (lambda (arg)
+                      (and (search "framerate=30" arg)
+                           (search "draw_mouse=0" arg)))
+                    args))
+    (check "fullscreen args download GPU frames before the scale cap"
+           (let ((vf (position "-vf" args :test #'equal)))
+             (and vf
+                  (let ((filter (nth (1+ vf) args)))
+                    (and (search "hwdownload" filter)
+                         (search "min(1080" filter)
+                         (< (search "hwdownload" filter)
+                            (search "scale" filter)))))))
+    (check "stripping audio args restores the fullscreen video-only argv"
+           (let ((pipe (ephinea-ta-client::audio-pipe-name)))
+             (equal args
+                    (ephinea-ta-client::strip-audio-args
+                     (build-ffmpeg-args :window-title "T"
+                                        :output-path "out.mp4"
+                                        :audio-pipe pipe
+                                        :fullscreen-monitor 1)
+                     pipe)))))
+  ;; The recorder asks the backend about fullscreen at capture start.
+  (with-recording-config (:record-enabled t)
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (setf (mock-fullscreen-monitor backend) 0)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (let ((args (third (first (events-of backend :start)))))
+        (check "recorder records a fullscreen game via ddagrab"
+               (find-if (lambda (arg) (search "ddagrab=output_idx=0" arg))
+                        args))))
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (let ((args (third (first (events-of backend :start)))))
+        (check "recorder keeps gdigrab for a windowed game"
+               (member "gdigrab" args :test #'equal)))))
   ;; The recorder passes the audio pipe and target pid to the backend.
   (with-recording-config (:record-enabled t :record-audio t)
     (let ((ephinea-ta-client::*audio-target-pid* 1234))

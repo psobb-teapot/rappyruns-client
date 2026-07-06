@@ -57,6 +57,15 @@ BACKEND-CLOSE-CAPTURE, or (values nil error-string)."))
 
 (defgeneric backend-delete-file (backend path))
 
+(defgeneric backend-fullscreen-monitor (backend)
+  (:documentation
+   "DXGI output index (0-based) of the monitor the game window covers
+entirely, or NIL when it is an ordinary window. Queried once per
+capture start: a fullscreen window's Direct3D output is invisible to
+GDI, so gdigrab would record black frames (field-observed on a Boot
+Camp machine); BUILD-FFMPEG-ARGS switches to ddagrab for it.")
+  (:method (backend) nil))
+
 (defgeneric backend-list-stale-files (backend dir)
   (:documentation "Leftover rec-tmp-*.mp4 files from a previous session."))
 
@@ -206,24 +215,62 @@ e.g. a finished gdv-reset segment inside an abandoned GDV."
     (first (sort (copy-list (or completed runs)) #'>
                  :key (lambda (run) (getf run :time-ms 0))))))
 
+(defun rect-covers-p (window monitor)
+  "T when the WINDOW rect contains the whole MONITOR rect. Rects are
+(left top right bottom) lists; pure so the tests can pin it. This is
+the fullscreen test: an exclusive-fullscreen (or borderless) game
+window spans its monitor exactly, while a maximized captioned window
+stops at the work area and stays on the gdigrab path."
+  (destructuring-bind (wl wt wr wb) window
+    (destructuring-bind (ml mt mr mb) monitor
+      (and (<= wl ml) (<= wt mt) (>= wr mr) (>= wb mb)))))
+
+(defun display-device-output-index (device-name)
+  "0-based output index from a GDI device name: \"\\\\.\\DISPLAY3\" -> 2.
+NIL when the name has no trailing number. ddagrab wants a DXGI output
+index; on a single-adapter machine DXGI enumerates outputs in GDI
+DISPLAYn order, so n-1 is the right index without a DXGI enumeration
+(multi-adapter rigs could mismatch, but a wrong monitor still records
+SOMETHING recoverable, unlike gdigrab's black frames)."
+  (let ((name-end (search "DISPLAY" device-name)))
+    (when name-end
+      (let ((n (parse-integer device-name :start (+ name-end 7)
+                                          :junk-allowed t)))
+        (when (and n (plusp n))
+          (1- n))))))
+
 (defun build-ffmpeg-args (&key window-title output-path audio-pipe
+                               fullscreen-monitor
                                (framerate +record-framerate+))
   "ffmpeg argv (without the program itself). Fragmented MP4 keeps the
 file playable even when ffmpeg is killed instead of quitting on \"q\".
 With AUDIO-PIPE, raw 16-bit 48 kHz stereo game audio arrives on that
-named pipe as a second input and is encoded as AAC."
+named pipe as a second input and is encoded as AAC. With
+FULLSCREEN-MONITOR (a DXGI output index), the video comes from ddagrab
+(Desktop Duplication) instead of gdigrab: GDI cannot see an
+exclusive-fullscreen Direct3D surface and records black frames. The
+fullscreen window covers that whole monitor, so the monitor capture IS
+the game."
   (append
    (list "-y" "-loglevel" "error"
          ;; Minimal probing: ffmpeg opens the audio pipe right after
-         ;; the gdigrab probe finishes, and the audio clock is anchored
-         ;; to that pipe-connect instant (audio-win32). Probing one
-         ;; frame instead of probesize-worth keeps video time 0 and
-         ;; audio time 0 within a frame of each other.
-         "-probesize" "32" "-analyzeduration" "0"
-         "-f" "gdigrab"
-         "-framerate" (princ-to-string framerate)
-         "-draw_mouse" "0"
-         "-i" (format nil "title=~a" window-title))
+         ;; the video-input probe finishes, and the audio clock is
+         ;; anchored to that pipe-connect instant (audio-win32).
+         ;; Probing one frame instead of probesize-worth keeps video
+         ;; time 0 and audio time 0 within a frame of each other.
+         "-probesize" "32" "-analyzeduration" "0")
+   (if fullscreen-monitor
+       ;; ddagrab is a lavfi source filter; it creates its own D3D11
+       ;; device and outputs GPU frames at a constant FRAMERATE
+       ;; (duplicating frames on static screens), which hwdownload in
+       ;; the -vf chain brings back to system memory for libx264.
+       (list "-f" "lavfi"
+             "-i" (format nil "ddagrab=output_idx=~d:framerate=~d:draw_mouse=0"
+                          fullscreen-monitor framerate))
+       (list "-f" "gdigrab"
+             "-framerate" (princ-to-string framerate)
+             "-draw_mouse" "0"
+             "-i" (format nil "title=~a" window-title)))
    (when audio-pipe
      (list "-f" "s16le" "-ar" "48000" "-ac" "2"
            "-thread_queue_size" "1024"
@@ -237,7 +284,10 @@ named pipe as a second input and is encoded as AAC."
          ;; differently, skewing A/V sync by 2 frames on the site.
          "-bf" "0"
          "-pix_fmt" "yuv420p"
-         "-vf" (record-scale-filter))
+         "-vf" (if fullscreen-monitor
+                   (format nil "hwdownload,format=bgra,~a"
+                           (record-scale-filter))
+                   (record-scale-filter)))
    (when audio-pipe
      ;; NO -af here, and in particular no loudnorm: its multi-second
      ;; lookahead makes the audio output lag the video permanently,
@@ -328,7 +378,10 @@ known once the audio session is activated)."
          (audio-pipe (and audio-pid (audio-pipe-name)))
          (args (build-ffmpeg-args :window-title window-title
                                   :output-path output
-                                  :audio-pipe audio-pipe)))
+                                  :audio-pipe audio-pipe
+                                  :fullscreen-monitor
+                                  (backend-fullscreen-monitor
+                                   (recorder-backend recorder)))))
     (multiple-value-bind (capture error)
         (backend-start-capture (recorder-backend recorder) ffmpeg args output
                                :audio-pipe audio-pipe :audio-pid audio-pid)

@@ -87,7 +87,12 @@ machines don't have.)
 With "Record quest videos automatically" checked, the client records the
 game window with ffmpeg (gdigrab window capture): recording starts when
 a quest's start trigger fires and stops when the run completes or the
-quest is abandoned. Game audio is included by default via the Windows
+quest is abandoned. A fullscreen game (window covering its whole
+monitor) is captured with ddagrab (Desktop Duplication) instead:
+exclusive-fullscreen Direct3D output is invisible to GDI, so gdigrab
+would record only black frames (field-observed on a Boot Camp
+machine). The fullscreen window covers the monitor, so the monitor
+capture is the game; the check runs once per capture start. Game audio is included by default via the Windows
 process-loopback API (Windows 10 2004+) scoped to the PSOBB process:
 **only the game is heard** - Discord, notifications etc. never end up
 in the video. On older Windows it falls back to endpoint loopback (all
@@ -138,7 +143,11 @@ when the mixer volume is low).
 Known limits: capture starts a few hundred ms after the start trigger
 (ffmpeg spin-up), gdigrab can't capture a minimized window, and the
 recording gets a ~3 s video tail after the run ends (ffmpeg drains the
-buffered audio before quitting).
+buffered audio before quitting). The fullscreen path maps the monitor
+to ddagrab's DXGI output index by its GDI name (`\\.\DISPLAYn` → n-1),
+which matches on single-GPU machines; a multi-adapter setup could pick
+the wrong monitor there (still a recoverable recording, unlike black
+frames).
 
 ## Packaging
 

@@ -208,6 +208,88 @@ the GUI to validate the recording checkbox; -version exits on its own."
         t)
     (error () nil)))
 
+;;; Fullscreen detection. An exclusive-fullscreen PSOBB renders past
+;;; GDI, so the gdigrab capture records black frames (field-observed on
+;;; a Boot Camp machine, 2026-07-07); BACKEND-FULLSCREEN-MONITOR makes
+;;; BUILD-FFMPEG-ARGS switch to ddagrab. "Fullscreen" here is simply
+;;; "the window covers its whole monitor" (RECT-COVERS-P): a borderless
+;;; window matches too, and ddagrab records it just as well.
+
+(fli:define-c-struct win-rect
+  (left :long)
+  (top :long)
+  (right :long)
+  (bottom :long))
+
+;; MONITORINFOEXW: MONITORINFO plus the GDI device name
+;; ("\\.\DISPLAYn"), which maps the monitor to a ddagrab output index
+;; (DISPLAY-DEVICE-OUTPUT-INDEX).
+(fli:define-c-struct monitorinfoex
+  (cb-size (:unsigned :long))
+  (rc-monitor (:struct win-rect))
+  (rc-work (:struct win-rect))
+  (flags (:unsigned :long))
+  (device (:c-array (:unsigned :short) 32)))
+
+(fli:define-foreign-function (%get-window-rect "GetWindowRect")
+    ((hwnd :pointer)
+     (rect (:pointer (:struct win-rect))))
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :user32)
+
+(fli:define-foreign-function (%monitor-from-window "MonitorFromWindow")
+    ((hwnd :pointer)
+     (flags (:unsigned :long)))
+  :result-type :pointer
+  :calling-convention :stdcall
+  :module :user32)
+
+(fli:define-foreign-function (%get-monitor-info "GetMonitorInfoW")
+    ((monitor :pointer)
+     (info (:pointer (:struct monitorinfoex))))
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :user32)
+
+(defconstant +monitor-defaulttonearest+ 2)
+
+(defun rect-list (rect)
+  "(left top right bottom) from a WIN-RECT pointer."
+  (list (fli:foreign-slot-value rect 'left)
+        (fli:foreign-slot-value rect 'top)
+        (fli:foreign-slot-value rect 'right)
+        (fli:foreign-slot-value rect 'bottom)))
+
+(defun monitor-device-name (info)
+  "The szDevice field of a MONITORINFOEX pointer as a string."
+  (let ((device (fli:foreign-slot-pointer info 'device)))
+    (with-output-to-string (out)
+      (loop :for i :from 0 :below 32
+            :for code := (fli:foreign-aref device i)
+            :until (zerop code)
+            :do (write-char (code-char code) out)))))
+
+(defun psobb-fullscreen-monitor ()
+  "Output index of the monitor the PSOBB window covers entirely, or
+NIL when the window is absent or windowed."
+  (let ((hwnd (find-psobb-window)))
+    (when hwnd
+      (fli:with-dynamic-foreign-objects ((rect win-rect)
+                                         (info monitorinfoex))
+        (setf (fli:foreign-slot-value info 'cb-size)
+              (fli:size-of '(:struct monitorinfoex)))
+        (let ((monitor (%monitor-from-window hwnd
+                                             +monitor-defaulttonearest+)))
+          (when (and (not (fli:null-pointer-p monitor))
+                     (%get-window-rect hwnd rect)
+                     (%get-monitor-info monitor info)
+                     (rect-covers-p
+                      (rect-list rect)
+                      (rect-list (fli:foreign-slot-pointer info
+                                                           'rc-monitor))))
+            (display-device-output-index (monitor-device-name info))))))))
+
 ;;; The live backend
 
 (defclass win32-ffmpeg-backend () ())
@@ -230,6 +312,13 @@ fact. Never signals."
                 month day hour min sec))
       (apply #'format s fmt args)
       (terpri s))))
+
+(defmethod backend-fullscreen-monitor ((backend win32-ffmpeg-backend))
+  (let ((monitor (ignore-errors (psobb-fullscreen-monitor))))
+    (when monitor
+      (recording-log "fullscreen window: capturing via ddagrab output_idx=~d"
+                     monitor))
+    monitor))
 
 (defmethod backend-start-capture ((backend win32-ffmpeg-backend)
                                   ffmpeg-path args output-path

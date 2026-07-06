@@ -39,6 +39,7 @@
            #:backend-close-capture #:backend-rename-file
            #:backend-delete-file #:backend-list-stale-files
            #:backend-start-remux #:backend-capture-succeeded-p
+           #:backend-fullscreen-monitor
            ;; trigger discovery
            #:log-trigger-changes #:start-trigger-log #:close-trigger-log
            ;; version / self-update (pure parts, used by tests)
