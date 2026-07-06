@@ -1,6 +1,6 @@
-# RappyRuns client
+# Rappy Runs client
 
-Desktop companion app for the RappyRuns leaderboard site. It attaches to
+Desktop companion app for the Rappy Runs leaderboard site. It attaches to
 a running Ephinea PSOBB client (read-only, via `ReadProcessMemory`),
 detects quest starts and completions from quest registers / floor switches
 (trigger data transcribed from [psostats-client], MIT), and auto-submits
@@ -206,7 +206,7 @@ One-time setup:
 
 ```
 gh repo create psobb-teapot/rappyruns-client-releases --public \
-  --description "Binary releases of the RappyRuns desktop client"
+  --description "Binary releases of the Rappy Runs desktop client"
 ```
 
 Give it a single README commit (releases need at least one commit); no

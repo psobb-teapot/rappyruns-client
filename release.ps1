@@ -46,9 +46,9 @@ if ($Clobber) {
 } else {
     $ghArgs = @("release", "create", $Version, $zip, $legacyZip,
                 "--repo", $repo,
-                "--title", "RappyRuns Client $Version")
+                "--title", "Rappy Runs Client $Version")
     if ($NotesFile) { $ghArgs += @("--notes-file", $NotesFile) }
-    else { $ghArgs += @("--notes", "RappyRuns Client $Version.") }
+    else { $ghArgs += @("--notes", "Rappy Runs Client $Version.") }
     if ($Prerelease) { $ghArgs += "--prerelease" }
     gh @ghArgs
 }
