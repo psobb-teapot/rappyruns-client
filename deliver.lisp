@@ -57,4 +57,5 @@
          (namestring (merge-pathnames "dist/RappyRunsClient" *client-root*))
          0                       ; delivery level: start low, raise once stable
          :interface :capi
+         :icon-file (namestring (merge-pathnames "icon.ico" *client-root*))
          :startup-bitmap-file nil) ; no "built with LispWorks" splash
