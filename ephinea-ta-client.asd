@@ -16,6 +16,7 @@
                              (:file "version")
                              (:file "i18n")
                              (:file "config")
+                             (:file "credentials")
                              (:file "memory")
                              (:file "win32" :if-feature :lispworks)
                              (:file "winhttp" :if-feature :lispworks)

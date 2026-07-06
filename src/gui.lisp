@@ -512,13 +512,16 @@ on the site says which computer it belongs to."
         "Desktop client")))
 
 (defun prompt-for-token-setup (interface)
-  "First-run setup: while no API token is configured, pair with the
-site instead of asking for a paste - open /pair?code=... in the
-browser and poll until the user approves the connection there; the
-token arrives over the API. Runs again on every launch until a token
-is set; the Settings tab's manual paste stays as the fallback."
+  "First-run setup: while no API token is configured, log in from the
+login.txt next to the exe when there is one, otherwise pair with the
+site - open /pair?code=... in the browser and poll until the user
+approves the connection there; the token arrives over the API. Runs
+again on every launch until a token is set; the Settings tab's manual
+paste stays as the fallback."
   (when (string= (normalize-token (config-value :api-token)) "")
-    (start-pairing-flow interface)))
+    (if (credentials-present-p)
+        (start-file-login-flow interface)
+        (start-pairing-flow interface))))
 
 (defun start-pairing-flow (interface)
   (unless (and *pairing-process* (mp:process-alive-p *pairing-process*))
@@ -568,8 +571,44 @@ launch retries."
                      (tr :pairing-failed (api-error-message condition))
                      :red))))
 
+;;; login.txt file login (credentials.lisp holds the file handling):
+;;; the user placed the file deliberately, so failures land in the
+;;; token status pane and the browser pairing is never started on top.
+
+(defun file-login-label ()
+  (format nil "~a [login.txt]" (pairing-label)))
+
+(defun start-file-login-flow (interface)
+  (mp:process-run-function
+   "eta-client-file-login" '()
+   (lambda () (run-file-login-flow interface))))
+
+(defun run-file-login-flow (interface)
+  (multiple-value-bind (username password) (read-credentials)
+    (if (null username)
+        (set-pane-text interface #'token-status-pane
+                       (tr :file-login-bad-file) :red)
+        (progn
+          (set-pane-text interface #'token-status-pane
+                         (tr :file-login-checking))
+          (handler-case
+              (multiple-value-bind (outcome token)
+                  (login-with-password username password
+                                       :label (file-login-label))
+                (ecase outcome
+                  (:ok (finish-pairing token))
+                  (:unauthorized
+                   (set-pane-text interface #'token-status-pane
+                                  (tr :file-login-invalid) :red))))
+            (api-error (condition)
+              (set-pane-text interface #'token-status-pane
+                             (tr :file-login-failed
+                                 (api-error-message condition))
+                             :red)))))))
+
 (defun finish-pairing (token)
-  "Save and reflect a token that arrived over the pairing API. Uses the
+  "Save and reflect a token that arrived over the pairing or password
+login API. Uses the
 live *INTERFACE* rather than the worker's captured one: a language
 switch may have rebuilt the window during the wait."
   (setf (config-value :api-token) token)

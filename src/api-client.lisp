@@ -257,6 +257,28 @@ and unexpected statuses (transient; the caller keeps polling)."
         (t (error 'api-error
                   :message (format nil "GET /api/pair -> ~a" status)))))))
 
+(defun login-with-password (username password
+                            &key (server-url (config-value :server-url))
+                                 label)
+  "POST /api/login: exchange the login.txt credentials for an API
+token. Returns (values :ok token) on success and (values :unauthorized
+nil) when the server rejects the pair; signals API-ERROR on transport
+failures and unexpected statuses."
+  (multiple-value-bind (status body)
+      (http-request "POST" (api-url server-url "/api/login")
+                    :body (let ((object (make-hash-table :test 'equal)))
+                            (setf (gethash "username" object) username
+                                  (gethash "password" object) password)
+                            (when label (setf (gethash "label" object) label))
+                            (jzon:stringify object)))
+    (let* ((payload (ignore-errors (jzon:parse body)))
+           (token (and (hash-table-p payload) (gethash "token" payload))))
+      (cond
+        ((and (eql status 201) (stringp token)) (values :ok token))
+        ((eql status 401) (values :unauthorized nil))
+        (t (error 'api-error
+                  :message (format nil "POST /api/login -> ~a" status)))))))
+
 (defun fetch-me (&key (server-url (config-value :server-url))
                       (token (config-value :api-token)))
   "Verify TOKEN against GET /api/me.

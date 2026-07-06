@@ -2149,10 +2149,51 @@ store functions that persist never touch the real %APPDATA% queue."
                                  (list :video-path "v.mp4"
                                        :upload-given-up t)))))
 
+;;; ------------------------------------------------------------------
+;;; login.txt credentials parsing
+;;; ------------------------------------------------------------------
+
+(defun run-credentials-tests ()
+  (format t "~&--- login.txt credentials ---~%")
+  (multiple-value-bind (username password)
+      (parse-credentials (format nil "username=Teapot~%password=secret123~%"))
+    (check "plain username= and password= lines parse"
+           (and (equal "Teapot" username) (equal "secret123" password))))
+  (multiple-value-bind (username password)
+      (parse-credentials
+       (format nil "~a# comment~a~%  username = Teapot ~a~%password=a=b=c~a~%"
+               (code-char #xFEFF) #\Return #\Return #\Return))
+    (check "BOM, CRLF, comments and spaces around keys are tolerated"
+           (and (equal "Teapot" username) (equal "a=b=c" password))))
+  (check "a missing password yields NIL NIL"
+         (null (parse-credentials (format nil "username=Teapot~%"))))
+  (check "empty values yield NIL NIL"
+         (null (parse-credentials
+                (format nil "username=Teapot~%password=~%"))))
+  (check "empty text yields NIL NIL"
+         (null (parse-credentials "")))
+  (check "NIL text yields NIL NIL"
+         (null (parse-credentials nil)))
+  (let ((path (merge-pathnames (format nil "eta-test-login-~d.txt"
+                                       (get-internal-real-time))
+                               (uiop:temporary-directory))))
+    (with-open-file (out path :direction :output :if-exists :supersede
+                              :external-format :utf-8)
+      (format out "username=Teapot~%password=secret123~%"))
+    (unwind-protect
+         (multiple-value-bind (username password) (read-credentials path)
+           (check "read-credentials reads a real file"
+                  (and (equal "Teapot" username)
+                       (equal "secret123" password))))
+      (ignore-errors (delete-file path)))
+    (check "read-credentials on a missing file yields NIL NIL"
+           (null (read-credentials path)))))
+
 (defun run-client-tests ()
   (setf *failures* 0)
   (load-quest-defs)
   (run-i18n-tests)
+  (run-credentials-tests)
   (run-signature-policy-tests)
   (run-memory-tests)
   (run-inventory-tests)

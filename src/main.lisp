@@ -288,7 +288,12 @@ update exactly once."
     (capi:display interface)
     (refresh-runs-list interface)
     (check-server interface)
-    (check-token interface)
+    ;; A revoked token heals itself when a login.txt sits next to the
+    ;; exe: the file login just issues a fresh one.
+    (check-token interface
+                 :on-invalid (lambda ()
+                               (when (credentials-present-p)
+                                 (start-file-login-flow interface))))
     (prompt-for-token-setup interface)
     (report-startup-update interface)
     (setf *poll-process*

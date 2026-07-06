@@ -47,5 +47,8 @@
            #:startup-update-decision
            ;; api
            #:fetch-quests #:fetch-me #:normalize-token #:submit-run
+           #:login-with-password
+           ;; login.txt credentials (pure parts, used by tests)
+           #:parse-credentials #:read-credentials #:credentials-path
            ;; store
            #:enqueue-run! #:submit-queued! #:queued-runs))

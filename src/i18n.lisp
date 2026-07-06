@@ -66,6 +66,18 @@
     :token-invalid
     ("Token: invalid or revoked"
      "トークン: 無効または失効済み")
+    :file-login-checking
+    ("Token: logging in with login.txt..."
+     "トークン: login.txt でログイン中...")
+    :file-login-invalid
+    ("Token: login.txt username or password rejected"
+     "トークン: login.txt のユーザー名またはパスワードが正しくありません")
+    :file-login-bad-file
+    ("Token: login.txt is unreadable (needs username= and password= lines, UTF-8)"
+     "トークン: login.txt を読み取れません (username= と password= の行が必要・UTF-8)")
+    :file-login-failed
+    ("Token: login.txt login failed (~a)"
+     "トークン: login.txt ログイン失敗 (~a)")
     :no-active-quest
     ("No active quest"
      "実行中のクエストなし")

@@ -43,16 +43,28 @@ First-time setup in the GUI:
 
 1. On first launch (until a token is set) the client pairs with the
    site: it registers a one-time code (`POST /api/pair`), opens
-   `/pair?code=...` in the browser (requires Discord login) and polls
+   `/pair?code=...` in the browser (requires site login) and polls
    `GET /api/pair/:code` until the connection is approved there. The
    token is issued and delivered over the API - nothing to copy - and
    verified immediately (`Token: OK (name)` in the status row). The
    code expires after 10 minutes; the pairing runs again on the next
    launch until a token is set.
-2. A token created on `/my/tokens` can also be pasted in Settings
+2. Alternatively, a `login.txt` next to `RappyRunsClient.exe` skips the
+   browser entirely: set a client password on `/my/tokens` (while
+   logged in via Discord), then put a UTF-8 text file with
+
+   ```
+   username=YourDiscordName
+   password=your-client-password
+   ```
+
+   next to the exe. On launch the client exchanges it for a token over
+   `POST /api/login` (`src/credentials.lisp`); a revoked token also
+   heals itself this way on the next launch.
+3. A token created on `/my/tokens` can also be pasted in Settings
    ("Save settings" verifies it the same way) - the fallback when the
    browser and the client are not on the same machine.
-3. Leave "Submit automatically" checked; finished quests appear in the
+4. Leave "Submit automatically" checked; finished quests appear in the
    list and are uploaded as drafts.
 
 Config and the offline retry queue live in `%APPDATA%/ephinea-ta-client/`.
