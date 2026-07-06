@@ -14,11 +14,14 @@
 (defparameter +frame-keys+
   #("t" "hp" "tp" "pb" "meseta" "floor" "room" "x" "z"
     "shifta" "deband" "inv" "state" "monsters" "kills"
-    "map_var" "ft" "dt" "ct" "damage" "weapon" "player_locs" "monster_locs")
+    "map_var" "ft" "dt" "ct" "damage" "weapon" "player_locs" "monster_locs"
+    "map")
   "Column names for the compact per-second frame rows, in order.
 player_locs rows are (key floor room x y z facing warping01) lists,
 monster_locs rows (id x y z facing hp frozen01 paralyzed01 confused01);
-everything else is a number or a string.")
+everything else is a number or a string. floor is the quest's floor
+SLOT (quests can point a slot at any map); map is the real map number
+the game has loaded, which is what map names key off.")
 
 (defparameter +attack-states+ '(5 6 7))
 (defconstant +casting-state+ 8)
@@ -325,7 +328,8 @@ one sample later; kills are alive -> dead transitions only."
               (my-damage-dealt telemetry snapshot)
               (telemetry-current-weapon-id telemetry)
               (frame-player-locs (getf snapshot :players))
-              (frame-monster-locs (telemetry-last-monster-sample telemetry)))
+              (frame-monster-locs (telemetry-last-monster-sample telemetry))
+              (or (getf snapshot :map) 0))
         (telemetry-frames telemetry))
   ;; The per-second boss HP histories and monster HP pool advance in
   ;; step with the frames.
