@@ -1790,6 +1790,13 @@ store functions that persist never touch the real %APPDATA% queue."
          (search "awaiting review"
                  (ephinea-ta-client::run-status-label
                   (list :status :submitted :video-attached t))))
+  ;; A hosted upload is auto-approved server-side (issue 100), so its
+  ;; attached label reports approval, never "awaiting review".
+  (check "status label: an approved attached video is not awaiting review"
+         (let ((label (ephinea-ta-client::run-status-label
+                       (list :status :submitted :video-attached t :approved t))))
+           (and (search "approved" label)
+                (not (search "awaiting review" label)))))
   ;; An aborted run's link never enters review, so its label must not
   ;; promise one - it just reports the attached, private video.
   (check "status label: an aborted attached video is not awaiting review"

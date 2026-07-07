@@ -295,6 +295,9 @@
     :status-video-attached
     ("video attached - awaiting review"
      "動画紐付け済み - 承認待ち")
+    :status-video-approved
+    ("video attached - approved"
+     "動画紐付け済み - 承認済み")
     :status-aborted-video-attached
     ("aborted - video attached, private"
      "中断 - 動画紐付け済み・非公開")

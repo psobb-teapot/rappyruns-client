@@ -55,11 +55,18 @@ LIMIT finished ones, preserving order."
 
 (defun run-status-label (entry)
   (if (getf entry :video-attached)
-      ;; An aborted run's link never enters review, so it must not claim
-      ;; to be "awaiting review" like an ordinary attached draft does.
-      (if (getf entry :aborted)
-          (tr :status-aborted-video-attached)
-          (tr :status-video-attached))
+      (cond
+        ;; An aborted run's link never enters review, so it must not claim
+        ;; to be "awaiting review" like an ordinary attached draft does.
+        ((getf entry :aborted)
+         (tr :status-aborted-video-attached))
+        ;; A hosted recording streamed from the client is auto-approved
+        ;; server-side (issue 100), so it is already on the board - never
+        ;; "awaiting review". External URL attaches stay in moderation.
+        ((getf entry :approved)
+         (tr :status-video-approved))
+        (t
+         (tr :status-video-attached)))
       (case (getf entry :status)
         (:queued (tr :status-queued))
         (:submitted (cond ((getf entry :aborted)
@@ -337,7 +344,14 @@ was already on file, which is just as done. Returns the updated entry."
            ;; until the folder budget reaps it (APPLY-RECORDING-RETENTION).
            (when (config-value :delete-after-upload)
              (ignore-errors (uiop:delete-file-if-exists (getf entry :video-path))))
-           (update-run! entry :video-attached t :video-uploaded t))
+           ;; A hosted upload is auto-approved server-side (issue 100), so
+           ;; reflect the reported status: an "approved" run is on the board
+           ;; already and must not read "awaiting review". A :duplicate reply
+           ;; carries the run's real status too (it may still be pending).
+           (update-run! entry :video-attached t :video-uploaded t
+                        :approved (and (hash-table-p payload)
+                                       (equal (gethash "status" payload)
+                                              "approved"))))
           (:rejected
            (let ((code (and (hash-table-p payload) (gethash "error" payload)))
                  (message (and (hash-table-p payload)
