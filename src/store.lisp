@@ -60,9 +60,13 @@ LIMIT finished ones, preserving order."
         ;; to be "awaiting review" like an ordinary attached draft does.
         ((getf entry :aborted)
          (tr :status-aborted-video-attached))
-        ;; A hosted recording streamed from the client is auto-approved
-        ;; server-side (issue 100), so it is already on the board - never
-        ;; "awaiting review". External URL attaches stay in moderation.
+        ;; A hosted recording streamed from the client lands 'held': it
+        ;; is on the server but the player must publish it in the browser
+        ;; (issue 105), so point them there rather than promise a review.
+        ((getf entry :held)
+         (tr :status-video-held))
+        ;; A :duplicate reply may report the run already approved (issue
+        ;; 100), so it must not read "awaiting review".
         ((getf entry :approved)
          (tr :status-video-approved))
         (t
@@ -344,14 +348,16 @@ was already on file, which is just as done. Returns the updated entry."
            ;; until the folder budget reaps it (APPLY-RECORDING-RETENTION).
            (when (config-value :delete-after-upload)
              (ignore-errors (uiop:delete-file-if-exists (getf entry :video-path))))
-           ;; A hosted upload is auto-approved server-side (issue 100), so
-           ;; reflect the reported status: an "approved" run is on the board
-           ;; already and must not read "awaiting review". A :duplicate reply
-           ;; carries the run's real status too (it may still be pending).
-           (update-run! entry :video-attached t :video-uploaded t
-                        :approved (and (hash-table-p payload)
-                                       (equal (gethash "status" payload)
-                                              "approved"))))
+           ;; A fresh hosted upload lands 'held' server-side: it is on
+           ;; the server but not public until the player publishes it in
+           ;; the browser (issue 105), so the label must point them there
+           ;; rather than promise a review. A :duplicate reply carries the
+           ;; run's real status too - it may already be approved.
+           (let ((status (and (hash-table-p payload)
+                              (gethash "status" payload))))
+             (update-run! entry :video-attached t :video-uploaded t
+                          :held (equal status "held")
+                          :approved (equal status "approved"))))
           (:rejected
            (let ((code (and (hash-table-p payload) (gethash "error" payload)))
                  (message (and (hash-table-p payload)

@@ -298,6 +298,9 @@
     :status-video-approved
     ("video attached - approved"
      "動画紐付け済み - 承認済み")
+    :status-video-held
+    ("video uploaded - publish it in the browser"
+     "動画アップロード済み - ブラウザで公開してください")
     :status-aborted-video-attached
     ("aborted - video attached, private"
      "中断 - 動画紐付け済み・非公開")

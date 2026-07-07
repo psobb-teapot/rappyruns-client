@@ -574,9 +574,10 @@ Signals API-ERROR on authentication and transport failures."
                               offset-ms
                               on-progress)
   "POST /api/runs/:id/video-file: stream the recording at FILE-PATH up
-to the server, which relays it into hosted storage. Ordinary drafts are
-auto-approved onto the board (issue 100); aborted runs stay drafts.
-The parsed reply's \"status\" reflects this. OFFSET-MS, when
+to the server, which relays it into hosted storage. Ordinary drafts
+land 'held' - on the server but not public until the player publishes
+them in the browser (issue 105); aborted runs stay drafts. The parsed
+reply's \"status\" reflects this. OFFSET-MS, when
 known, is the video timestamp where the run's timer starts (the
 recorder measures it); the server stores it as video_offset_ms so the
 telemetry timeline seeks land where they should. Returns (values

@@ -1790,8 +1790,15 @@ store functions that persist never touch the real %APPDATA% queue."
          (search "awaiting review"
                  (ephinea-ta-client::run-status-label
                   (list :status :submitted :video-attached t))))
-  ;; A hosted upload is auto-approved server-side (issue 100), so its
-  ;; attached label reports approval, never "awaiting review".
+  ;; A hosted upload lands 'held' server-side (issue 105): its label
+  ;; must point at the browser publish step, not promise a review.
+  (check "status label: a held upload points at the browser, not review"
+         (let ((label (ephinea-ta-client::run-status-label
+                       (list :status :submitted :video-attached t :held t))))
+           (and (search "publish" label)
+                (not (search "awaiting review" label)))))
+  ;; A :duplicate reply can report the run already approved (issue 100),
+  ;; so its attached label reports approval, never "awaiting review".
   (check "status label: an approved attached video is not awaiting review"
          (let ((label (ephinea-ta-client::run-status-label
                        (list :status :submitted :video-attached t :approved t))))
