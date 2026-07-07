@@ -305,12 +305,14 @@ the game."
    (list "-movflags" "+frag_keyframe+empty_moov"
          output-path)))
 
-(defparameter +record-loudness-lufs+ -20
+(defparameter +record-loudness-lufs+ -24
   "loudnorm integrated-loudness target for finished recordings. The
 initial -16 (streaming-platform level) played back too loud for the
 first party testers (issue 84), especially with several perspectives
-of one attempt open at once; -20 keeps quiet captures audible while
-sitting comfortably below typical web video.")
+of one attempt open at once; -20 helped but was still reported too
+loud, so -24 drops another ~4 dB. Kept above the -70..-24 floor where
+loudnorm starts fighting to raise near-silent captures, so quiet
+recordings stay audible while sitting well below typical web video.")
 
 (defun build-remux-args (input-path output-path)
   "ffmpeg argv rewriting the fragmented recording as a regular MP4 with
