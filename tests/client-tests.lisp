@@ -1696,6 +1696,14 @@ store functions that persist never touch the real %APPDATA% queue."
            (equal '(4)
                   (mapcar (lambda (entry) (getf entry :server-id))
                           (ephinea-ta-client::video-candidates)))))
+  ;; An aborted run never auto-uploads, but its recording can still be
+  ;; put on YouTube by hand, so it is a candidate for a copied link.
+  (with-test-store ((list :status :submitted :server-id 9 :aborted t
+                          :video-path "v.mp4"))
+    (check "an aborted run is a candidate for a copied YouTube URL"
+           (equal '(9)
+                  (mapcar (lambda (entry) (getf entry :server-id))
+                          (ephinea-ta-client::video-candidates)))))
   ;; Labels for the new Video column and statuses.
   (check "video label: saved recording"
          (equal "saved" (ephinea-ta-client::run-video-label
@@ -1723,6 +1731,13 @@ store functions that persist never touch the real %APPDATA% queue."
          (search "awaiting review"
                  (ephinea-ta-client::run-status-label
                   (list :status :submitted :video-attached t))))
+  ;; An aborted run's link never enters review, so its label must not
+  ;; promise one - it just reports the attached, private video.
+  (check "status label: an aborted attached video is not awaiting review"
+         (let ((label (ephinea-ta-client::run-status-label
+                       (list :status :submitted :video-attached t :aborted t))))
+           (and (search "aborted" label)
+                (not (search "awaiting review" label)))))
   ;; Clipboard URL recognition.
   (check "watch URLs are recognized"
          (ephinea-ta-client::youtube-video-url

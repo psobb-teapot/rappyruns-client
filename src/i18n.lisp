@@ -289,6 +289,9 @@
     :status-video-attached
     ("video attached - awaiting review"
      "動画紐付け済み - 承認待ち")
+    :status-aborted-video-attached
+    ("aborted - video attached, private"
+     "中断 - 動画紐付け済み・非公開")
     :status-queued
     ("queued"
      "送信待ち")

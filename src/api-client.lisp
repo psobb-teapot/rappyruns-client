@@ -490,7 +490,8 @@ authentication and transport failures (worth retrying / reconfiguring)."
                          &key (server-url (config-value :server-url))
                               (token (config-value :api-token)))
   "POST /api/runs/:id/video: attach VIDEO-URL to the draft SERVER-ID,
-promoting it to pending review. Returns (values outcome payload) where
+promoting it to pending review (an aborted run instead keeps its draft
+state - it never enters review). Returns (values outcome payload) where
 outcome is :attached or :rejected; PAYLOAD is the parsed JSON response.
 Signals API-ERROR on authentication and transport failures."
   (let ((request-body (let ((object (make-hash-table :test 'equal)))

@@ -55,7 +55,11 @@ LIMIT finished ones, preserving order."
 
 (defun run-status-label (entry)
   (if (getf entry :video-attached)
-      (tr :status-video-attached)
+      ;; An aborted run's link never enters review, so it must not claim
+      ;; to be "awaiting review" like an ordinary attached draft does.
+      (if (getf entry :aborted)
+          (tr :status-aborted-video-attached)
+          (tr :status-video-attached))
       (case (getf entry :status)
         (:queued (tr :status-queued))
         (:submitted (cond ((getf entry :aborted)
