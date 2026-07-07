@@ -277,6 +277,48 @@ on the spot and the scan moves on."
           (return entry)
           (update-run! entry :upload-given-up t)))))
 
+(defun video-path-retention-sets ()
+  "Two lists of recording namestrings drawn from the run queue, for the
+local storage sweep (APPLY-RECORDING-RETENTION): PROTECTED, files still
+awaiting their upload - the only copy the leaderboard submit can use, so
+retention must never take them - and UPLOADED, files the site already
+holds, which are the first to reclaim. Returns (values protected
+uploaded). A file on disk matching no queue entry (an old, trimmed run)
+lands in neither and is reaped in the sweep's middle tier. The
+protected predicate mirrors UPLOAD-CANDIDATE's eligibility: aborted and
+given-up entries never upload, so their videos are not protected -
+reset-farm footage is exactly what the budget is meant to reclaim."
+  (let ((protected '())
+        (uploaded '()))
+    (dolist (entry (queued-runs))
+      (let ((path (getf entry :video-path)))
+        (when path
+          (cond
+            ((getf entry :video-attached) (push path uploaded))
+            ((and (getf entry :server-id)
+                  (not (getf entry :aborted))
+                  (not (getf entry :upload-given-up)))
+             (push path protected))))))
+    (values protected uploaded)))
+
+(defun apply-recording-retention (recorder)
+  "Enforce the local recordings size budget, reaping the oldest kept
+videos once the folder exceeds :RECORD-MAX-TOTAL-GB. Consults the run
+queue (VIDEO-PATH-RETENTION-SETS) so a file still awaiting its upload is
+never taken, and so already-uploaded files go first. A no-op with no cap
+set, and only while the recorder is idle - the encoder gets the disk to
+itself and no in-flight tmp/remux file can be caught mid-write."
+  (let ((cap (record-max-total-bytes)))
+    (when (and cap (eq (recorder-state recorder) :idle))
+      (let ((backend (recorder-backend recorder)))
+        (multiple-value-bind (protected uploaded) (video-path-retention-sets)
+          (dolist (path (recordings-to-evict
+                         (ignore-errors
+                           (backend-list-recordings backend
+                                                    (resolve-record-dir)))
+                         cap :protected protected :uploaded uploaded))
+            (ignore-errors (backend-delete-file backend path))))))))
+
 (defun upload-entry-video! (entry &key on-progress)
   "Upload ENTRY's recording to its server draft. Success marks the
 entry attached (same flag as the manual URL flow, so every consumer
@@ -290,6 +332,11 @@ was already on file, which is just as done. Returns the updated entry."
                             :on-progress on-progress)
         (ecase outcome
           ((:attached :duplicate)
+           ;; The site has it now, so the local copy is optional. Delete
+           ;; it immediately when the player opted in; otherwise it stays
+           ;; until the folder budget reaps it (APPLY-RECORDING-RETENTION).
+           (when (config-value :delete-after-upload)
+             (ignore-errors (uiop:delete-file-if-exists (getf entry :video-path))))
            (update-run! entry :video-attached t :video-uploaded t))
           (:rejected
            (let ((code (and (hash-table-p payload) (gethash "error" payload)))

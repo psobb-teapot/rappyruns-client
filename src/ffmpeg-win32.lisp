@@ -428,3 +428,17 @@ fact. Never signals."
 (defmethod backend-list-stale-files ((backend win32-ffmpeg-backend) dir)
   (when (probe-file dir)
     (mapcar #'namestring (uiop:directory-files dir "rec-tmp-*.mp4"))))
+
+(defmethod backend-list-recordings ((backend win32-ffmpeg-backend) dir)
+  (when (probe-file dir)
+    (loop :for path :in (uiop:directory-files dir "*.mp4")
+          ;; Skip the in-progress work files; only the kept, run-named
+          ;; recordings count against the budget.
+          :unless (uiop:string-prefix-p "rec-tmp-" (pathname-name path))
+            :collect (list (namestring path)
+                           (or (ignore-errors
+                                 (with-open-file (s path
+                                                    :element-type '(unsigned-byte 8))
+                                   (file-length s)))
+                               0)
+                           (or (ignore-errors (file-write-date path)) 0)))))

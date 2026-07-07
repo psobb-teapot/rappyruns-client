@@ -69,6 +69,12 @@ Camp machine); BUILD-FFMPEG-ARGS switches to ddagrab for it.")
 (defgeneric backend-list-stale-files (backend dir)
   (:documentation "Leftover rec-tmp-*.mp4 files from a previous session."))
 
+(defgeneric backend-list-recordings (backend dir)
+  (:documentation
+   "Kept recordings in DIR (the finished, run-named files - not the
+rec-tmp-* work files), each as a (namestring size-bytes write-date)
+triple, for the local storage budget (APPLY-RECORDING-RETENTION)."))
+
 ;;; Encoder settings. Not user-facing config: veryfast/29 capped at
 ;;; 1080p costs a few percent CPU at PSOBB resolutions and the quality
 ;;; is fine for run verification. Measured on a real 3200x1800 capture:
@@ -613,3 +619,53 @@ TIMEOUT more for the remux of a kept file."
     (dolist (path (ignore-errors
                     (backend-list-stale-files backend (resolve-record-dir))))
       (ignore-errors (backend-delete-file backend path)))))
+
+;;; Local storage budget. Recordings pile up - a reset-farm can add a
+;;; hundred quest videos in a day at ~21 MB/minute - and nothing ever
+;;; reclaimed them, so the folder grew without bound (see the config
+;;; note on :RECORD-MAX-TOTAL-GB). This mirrors the server's hosted
+;;; retention on the client: once the folder crosses the cap, delete the
+;;; oldest videos until it is back under, uploaded ones first (a copy
+;;; reached the site) and never a file the game is still writing or one
+;;; that has not made it to the server yet.
+
+(defun recordings-to-evict (files cap-bytes &key protected uploaded)
+  "Which of FILES to delete so their total drops to CAP-BYTES. FILES is
+a list of (namestring size-bytes write-date). PROTECTED namestrings are
+never returned (the live capture, and files still awaiting upload - the
+only copy the leaderboard submit can use). UPLOADED namestrings are
+evicted before anything else, since the site already holds a copy;
+within each tier the oldest (smallest write-date) go first. Pure, so
+the tests pin it. Returns the namestrings to delete, in deletion order;
+NIL when the cap is unset or the folder is already under it."
+  (when (and cap-bytes (plusp cap-bytes))
+    (let ((total (reduce #'+ files :key #'second :initial-value 0)))
+      (when (> total cap-bytes)
+        (let* ((candidates (remove-if (lambda (file)
+                                        (member (first file) protected
+                                                :test #'equal))
+                                      files))
+               (by-age (sort (copy-list candidates) #'< :key #'third))
+               ;; Uploaded files ahead of the rest, ages preserved within
+               ;; each tier (BY-AGE is already oldest-first, STABLE-SORT
+               ;; keeps that order among equals).
+               (ordered (stable-sort
+                         (copy-list by-age)
+                         (lambda (a b)
+                           (and (member (first a) uploaded :test #'equal)
+                                (not (member (first b) uploaded
+                                             :test #'equal)))))))
+          (loop :for file :in ordered
+                :while (> total cap-bytes)
+                :collect (first file)
+                :do (decf total (second file))))))))
+
+(defun record-max-total-bytes ()
+  "The recordings-folder cap in bytes from :RECORD-MAX-TOTAL-GB, or NIL
+when it is unset/zero (unlimited)."
+  (let ((gb (config-value :record-max-total-gb)))
+    (when (and (numberp gb) (plusp gb))
+      (round (* gb 1024 1024 1024)))))
+
+;; APPLY-RECORDING-RETENTION drives this from the run queue and lives in
+;; store.lisp (the queue owner, loaded after this file).

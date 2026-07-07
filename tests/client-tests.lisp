@@ -1008,6 +1008,8 @@ switch 0; room 2 cleared = floor 5 switch 2; full clear = register 254."
    (remux-ok :initform t :accessor mock-remux-ok)
    (remux-start-result :initform :ok :accessor mock-remux-start-result)
    (stale :initform '() :accessor mock-stale)
+   (recordings :initform '() :accessor mock-recordings
+               :documentation "(namestring size write-date) triples.")
    (fullscreen-monitor :initform nil :accessor mock-fullscreen-monitor)))
 
 (defun record-event (backend &rest event)
@@ -1061,6 +1063,10 @@ switch 0; room 2 cleared = floor 5 switch 2; full clear = register 254."
 (defmethod backend-list-stale-files ((backend mock-backend) dir)
   (declare (ignore dir))
   (mock-stale backend))
+
+(defmethod backend-list-recordings ((backend mock-backend) dir)
+  (declare (ignore dir))
+  (mock-recordings backend))
 
 (defmethod backend-fullscreen-monitor ((backend mock-backend))
   (mock-fullscreen-monitor backend))
@@ -2239,6 +2245,78 @@ store functions that persist never touch the real %APPDATA% queue."
                                        :upload-given-up t)))))
 
 ;;; ------------------------------------------------------------------
+;;; local recordings storage budget (recording.lisp + store.lisp)
+;;; ------------------------------------------------------------------
+
+(defun run-retention-tests ()
+  (format t "~&--- local storage budget ---~%")
+  (flet ((evict (files cap &rest kw)
+           (apply #'ephinea-ta-client::recordings-to-evict files cap kw)))
+    ;; (namestring size-bytes write-date)
+    (let ((files '(("a.mp4" 500 100) ("b.mp4" 500 200) ("c.mp4" 500 300))))
+      (check "no cap set: nothing is evicted"
+             (null (evict files nil)))
+      (check "under the cap: nothing is evicted"
+             (null (evict files 2000)))
+      (check "over the cap: the oldest go until back under"
+             (equal '("a.mp4") (evict files 1200)))
+      (check "eviction keeps going until the total fits"
+             (equal '("a.mp4" "b.mp4") (evict files 600)))
+      (check "protected files are never evicted"
+             (equal '("b.mp4" "c.mp4")
+                    (evict files 100 :protected '("a.mp4"))))
+      (check "when only protected files remain, eviction stops short"
+             (equal '("c.mp4")
+                    (evict files 100 :protected '("a.mp4" "b.mp4"))))
+      (check "uploaded files are reclaimed before the rest"
+             ;; c is newest but uploaded, so it goes before older a/b.
+             (equal '("c.mp4") (evict files 1200 :uploaded '("c.mp4"))))
+      (check "uploaded first, then oldest-first among the rest"
+             (equal '("c.mp4" "a.mp4")
+                    (evict files 600 :uploaded '("c.mp4"))))))
+  ;; The queue drives which on-disk files are protected vs reclaimable.
+  (with-test-store ((list :status :submitted :server-id 3
+                          :video-path "up.mp4" :video-attached t)
+                    (list :status :submitted :server-id 2
+                          :video-path "pending.mp4")
+                    (list :status :submitted :server-id 1
+                          :video-path "aborted.mp4" :aborted t))
+    (multiple-value-bind (protected uploaded)
+        (ephinea-ta-client::video-path-retention-sets)
+      (check "a file awaiting upload is protected"
+             (member "pending.mp4" protected :test #'equal))
+      (check "an uploaded file is reclaimable first"
+             (member "up.mp4" uploaded :test #'equal))
+      (check "an aborted run's video is neither protected nor uploaded"
+             (and (not (member "aborted.mp4" protected :test #'equal))
+                  (not (member "aborted.mp4" uploaded :test #'equal))))))
+  ;; End to end: the sweep reaps the uploaded file first, spares the
+  ;; pending one, and reaches the unmatched file only when still over.
+  (let* ((backend (make-instance 'mock-backend))
+         (recorder (make-recorder :backend backend))
+         (byte-cap (lambda (bytes) (/ bytes (* 1024 1024 1024)))))
+    (setf (mock-recordings backend)
+          '(("up.mp4" 500 100) ("pending.mp4" 500 200) ("orphan.mp4" 500 300)))
+    (with-recording-config (:record-max-total-gb (funcall byte-cap 400))
+      (with-test-store ((list :status :submitted :server-id 2
+                              :video-path "up.mp4" :video-attached t)
+                        (list :status :submitted :server-id 1
+                              :video-path "pending.mp4"))
+        (ephinea-ta-client::apply-recording-retention recorder)
+        (let ((deleted (mapcar #'second (events-of backend :delete))))
+          (check "uploaded and orphan files are reaped, pending is spared"
+                 (equal '("up.mp4" "orphan.mp4") deleted))))))
+  ;; A capture in progress means the disk is busy; the sweep waits.
+  (let* ((backend (make-instance 'mock-backend))
+         (recorder (make-recorder :backend backend :state :recording)))
+    (setf (mock-recordings backend) '(("a.mp4" 500 100)))
+    (with-recording-config (:record-max-total-gb (/ 1 (* 1024 1024 1024)))
+      (with-test-store ()
+        (ephinea-ta-client::apply-recording-retention recorder)
+        (check "no sweep runs while a capture is in progress"
+               (null (events-of backend :delete)))))))
+
+;;; ------------------------------------------------------------------
 ;;; login.txt credentials parsing
 ;;; ------------------------------------------------------------------
 
@@ -2299,6 +2377,7 @@ store functions that persist never touch the real %APPDATA% queue."
   (run-recorder-tests)
   (run-video-flow-tests)
   (run-upload-queue-tests)
+  (run-retention-tests)
   (run-ux-helper-tests)
   (run-updater-tests)
   (run-config-migration-tests)

@@ -20,6 +20,8 @@ can eventually be retired; a custom URL is never touched.")
         :record-enabled t
         :record-audio t     ; game-only capture (process loopback; see audio-win32)
         :video-upload t     ; upload saved recordings to the site automatically
+        :delete-after-upload nil ; delete the local file once the site has it (opt-in; aborted runs never upload, so their videos stay)
+        :record-max-total-gb 20  ; cap the recordings folder; oldest videos are reaped past this (0/blank = unlimited). See APPLY-RECORDING-RETENTION.
         :ffmpeg-path ""     ; blank = bundled copy next to the exe, or PATH
         :record-dir ""      ; blank = <user home>/Videos/RappyRuns/ (recording.lisp migrates the pre-rename folder)
         :debug nil))        ; developer knobs in the GUI (see DEBUG-MODE-P)

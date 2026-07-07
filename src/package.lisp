@@ -38,6 +38,7 @@
            #:backend-request-stop #:backend-kill-capture
            #:backend-close-capture #:backend-rename-file
            #:backend-delete-file #:backend-list-stale-files
+           #:backend-list-recordings
            #:backend-start-remux #:backend-capture-succeeded-p
            #:backend-fullscreen-monitor
            ;; trigger discovery

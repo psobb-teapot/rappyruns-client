@@ -144,6 +144,20 @@ poll loop re-reads it every iteration.")
                        :callback-type :interface
                        :font *ui-font*
                        :accessor video-upload-check)
+   (delete-after-upload-check capi:check-button
+                              :text (tr :delete-after-upload-label)
+                              :selected (config-value :delete-after-upload)
+                              :selection-callback 'toggle-delete-after-upload-callback
+                              :retract-callback 'toggle-delete-after-upload-callback
+                              :callback-type :interface
+                              :font *ui-font*
+                              :accessor delete-after-upload-check)
+   ;; The local storage budget in one line - what keeps the recordings
+   ;; folder from growing without bound - alongside the hosted note.
+   (record-storage-note capi:title-pane
+                        :text (tr :record-storage-note
+                                  (config-value :record-max-total-gb))
+                        :font *ui-font*)
    ;; The retention policy in one line, sitting under the upload
    ;; toggle it applies to. Uploading defaults to on, but the first
    ;; launch lands on this tab (no token yet), so it is seen before
@@ -253,6 +267,7 @@ poll loop re-reads it every iteration.")
                   :adjust :center)
    (recording-group capi:column-layout
                     '(record-check record-audio-check video-upload-check
+                      delete-after-upload-check record-storage-note
                       video-retention-note recording-row)
                     :title (tr :group-recording) :title-position :frame
                     :title-font *ui-font* :adjust :left)
@@ -659,6 +674,13 @@ recording start, so it takes effect from the next quest."
 unticking also stops the queue after the in-flight file (if any)."
   (setf (config-value :video-upload)
         (capi:button-selected (video-upload-check interface)))
+  (save-config!))
+
+(defun toggle-delete-after-upload-callback (interface)
+  "Applies immediately: the upload worker reads it as each file finishes
+uploading. Only affects files uploaded from now on."
+  (setf (config-value :delete-after-upload)
+        (capi:button-selected (delete-after-upload-check interface)))
   (save-config!))
 
 ;; The cross-thread update helpers use the -IF-ALIVE variant: the

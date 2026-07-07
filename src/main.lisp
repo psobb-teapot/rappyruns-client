@@ -13,6 +13,29 @@
 (defvar *last-heavy-sample* 0
   "Internal real time of the last inventory sample.")
 
+(defparameter +retention-interval-seconds+ 120
+  "How often the local recordings folder is swept against its size
+budget. Listing the folder and stat-ing every file is cheap but not
+free, and the folder only grows a file per finished quest, so a couple
+of minutes between sweeps is ample.")
+
+(defvar *last-retention-sweep* nil
+  "Internal real time of the last recordings-folder budget sweep, or NIL
+before the first one.")
+
+#+lispworks
+(defun maybe-sweep-recordings (recorder)
+  "Reap old recordings past the size budget, throttled so the folder is
+not restat-ed on every idle poll. Runs only while idle (the encoder
+keeps the disk during a capture); errors stay off the poll loop."
+  (let ((now (get-internal-real-time)))
+    (when (or (null *last-retention-sweep*)
+              (>= (- now *last-retention-sweep*)
+                  (* +retention-interval-seconds+
+                     internal-time-units-per-second)))
+      (setf *last-retention-sweep* now)
+      (ignore-errors (apply-recording-retention recorder)))))
+
 (defvar *psobb-rejection* nil
   "Rejection plist (:pid :path :status :signer) for a running PSOBB
 whose exe failed Authenticode verification. The poll loop refuses to
@@ -216,6 +239,7 @@ update exactly once."
                             ;; too, so watch the clipboard here as well.
                             (ignore-errors (check-clipboard interface))
                             (ignore-errors (maybe-start-upload recorder))
+                            (ignore-errors (maybe-sweep-recordings recorder))
                             (update-game-status interface nil detector nil
                                                 recorder *psobb-rejection*)
                             (mp:process-wait-with-timeout
@@ -259,6 +283,7 @@ update exactly once."
                             (setf last-gui-update now)
                             (ignore-errors (check-clipboard interface))
                             (ignore-errors (maybe-start-upload recorder))
+                            (ignore-errors (maybe-sweep-recordings recorder))
                             (update-game-status interface (and reader t)
                                                 detector snapshot recorder)
                             (when (eq (detector-state detector) :in-quest)

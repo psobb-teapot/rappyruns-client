@@ -166,6 +166,12 @@
     :video-upload-label
     ("Upload recordings to the site automatically"
      "録画をサイトへ自動アップロードする")
+    :delete-after-upload-label
+    ("Delete the local file once the site has it"
+     "アップロード完了後にローカルの動画を削除する")
+    :record-storage-note
+    ("The recordings folder is capped at ~a GB; the oldest videos are removed past that."
+     "録画フォルダは最大 ~a GB までで、超過分は古い動画から自動削除されます。")
     :video-retention-note
     ("Top-10 videos are kept; others are deleted after 90 days (see the site's Client page)."
      "上位10位の動画は保持され、それ以外は90日で削除されます (詳細はサイトの Client ページ)。")
