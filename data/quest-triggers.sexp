@@ -9,6 +9,11 @@
 ;;;   :number  in-game quest number (matched first when present)
 ;;;   :start   (:register N) set | (:warp-in) | (:floor-switch FLOOR ID)
 ;;;   :end     (:register N) set | (:floor-switch FLOOR ID)
+;;;            | (:monster-dead ID) -- a specific enemy (by entity id,
+;;;              unique across the quest) has been killed. Find the id by
+;;;              enabling "Log trigger changes", killing the target enemy
+;;;              and reading the "monster ID killed" line from
+;;;              %APPDATA%/ephinea-ta-client/trigger-log.txt.
 ;;;
 ;;; SEGMENT CATEGORIES: several entries may share the same quest
 ;;; (:number / :names); the client times them all in parallel, so one

@@ -5,7 +5,10 @@
 ;;; %APPDATA%/ephinea-ta-client/trigger-log.txt. Used to find the end
 ;;; trigger for a new category (e.g. "kill everything up to room 2"):
 ;;; play the segment with logging on and look at which floor switch (or
-;;; register) fires the moment the last enemy of the room dies.
+;;; register) fires the moment the last enemy of the room dies. Monster
+;;; kills are logged too (with the enemy's entity id), so a
+;;; (:monster-dead ID) / "monster:ID" trigger for one specific enemy can
+;;; be found by killing it and reading the id from the log.
 
 (defvar *trigger-log-stream* nil)
 
@@ -92,6 +95,21 @@ snapshots of the same loaded quest."
                               (+ (* 8 (mod i 32)) bit)
                               (plusp (logand old-byte mask))
                               (plusp (logand new-byte mask)))))))))))
+      ;; Monster kills: an enemy seen alive last frame now at 0 hp. The
+      ;; id printed here is what a "monster:ID" end trigger matches.
+      (let ((old (getf previous :monsters))
+            (new (getf snapshot :monsters)))
+        (when new
+          (dolist (monster new)
+            (let* ((id (getf monster :id))
+                   (was (find id old :key (lambda (m) (getf m :id)))))
+              (when (and was (plusp (getf was :hp 0))
+                         (zerop (getf monster :hp 0)))
+                (incf changes)
+                (format stream "~a ~s monster ~d killed (~a, unitxt ~d)~%"
+                        stamp quest id
+                        (or (getf monster :name) "?")
+                        (getf monster :unitxt 0)))))))
       (when (plusp changes)
         (force-output stream))
       changes))))

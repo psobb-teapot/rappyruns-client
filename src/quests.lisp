@@ -72,7 +72,9 @@ relative to this system's source directory (development)."
         ((equal type "warp-in") '(:warp-in))
         ((equal type "register") (list :register (gethash "register" object)))
         ((equal type "floor-switch")
-         (list :floor-switch (gethash "floor" object) (gethash "switch" object)))))))
+         (list :floor-switch (gethash "floor" object) (gethash "switch" object)))
+        ((equal type "monster")
+         (list :monster-dead (gethash "monster" object)))))))
 
 (defun server-quest->def (quest)
   "A GET /api/quests entry -> quest-def, or NIL when it carries no

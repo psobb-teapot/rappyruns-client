@@ -865,6 +865,59 @@ REGISTER-VALUES an alist of (register-id . value)."
              (null (step-with detector (lobby-reader)))))))
 
 ;;; ------------------------------------------------------------------
+;;; (:monster-dead ID) end trigger: a specific enemy's kill clears the run
+;;; ------------------------------------------------------------------
+
+(defun mon-snapshot (monsters)
+  "Minimal in-quest snapshot (built directly, not via mock memory) for the
+monster-kill detector tests: a warp-in start and a :monsters list."
+  (list :episode 1 :my-index 0
+        :quest-ptr 1
+        :quest-name "Monster Test" :quest-number 9001
+        :difficulty 0
+        :players (list (list :index 0 :name "Ryu" :class "HUcast" :floor 1))
+        :monsters monsters))
+
+(defun mon-lobby ()
+  (list :players (list (list :index 0 :name "Ryu" :class "HUcast" :floor 0))
+        :quest-ptr 0))
+
+(defun run-monster-clear-tests ()
+  (format t "~&--- monster-kill clear trigger ---~%")
+  (let* ((def (ephinea-ta-client::make-quest-def
+               :slug "monster-test-kill-boss" :episode 1
+               :names '("Monster Test") :number 9001
+               :start '(:warp-in) :end '(:monster-dead 7)))
+         (ephinea-ta-client::*quest-defs* (list def)))
+    ;; Killing the target enemy (id 7) clears the run; killing another
+    ;; enemy (id 8) first does not.
+    (let ((detector (make-detector)))
+      (detector-step detector (mon-lobby))            ; arm
+      (detector-step detector (mon-snapshot '((:id 7 :hp 200) (:id 8 :hp 50))))
+      (check "in-quest after warp-in start" (eq :in-quest (detector-state detector)))
+      (sleep 0.02)
+      (check "wrong enemy dying does not clear"
+             (null (detector-step
+                    detector (mon-snapshot '((:id 7 :hp 120) (:id 8 :hp 0))))))
+      (sleep 0.02)
+      (let ((run (first (detector-step
+                         detector (mon-snapshot '((:id 7 :hp 0) (:id 8 :hp 0)))))))
+        (check "target enemy dying emits the run" (not (null run)))
+        (check "monster-clear run slug"
+               (equal "monster-test-kill-boss" (getf run :quest-slug)))
+        (check "detector idle after monster-kill clear"
+               (eq :idle (detector-state detector)))))
+    ;; An enemy only ever seen at 0 hp was never alive, so it must not
+    ;; fire a clear (mirrors telemetry's alive->dead rule).
+    (let ((detector (make-detector)))
+      (detector-step detector (mon-lobby))
+      (detector-step detector (mon-snapshot '((:id 7 :hp 0) (:id 9 :hp 80))))
+      (sleep 0.02)
+      (check "target seen only at 0 hp never clears"
+             (null (detector-step
+                    detector (mon-snapshot '((:id 7 :hp 0) (:id 9 :hp 80)))))))))
+
+;;; ------------------------------------------------------------------
 
 ;;; ------------------------------------------------------------------
 ;;; Server-defined detection categories (GET /api/quests -> quest-def)
@@ -2370,6 +2423,7 @@ store functions that persist never touch the real %APPDATA% queue."
   (run-psostats-telemetry-tests)
   (run-payload-tests)
   (run-detect-tests)
+  (run-monster-clear-tests)
   (run-detect-telemetry-tests)
   (run-server-defs-tests)
   (run-gdv-segment-test)

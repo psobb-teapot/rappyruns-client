@@ -27,6 +27,11 @@
                        ; definition can never re-start within one load
   my-pb                ; own PB gauge on the previous frame
   (pb-flag nil)        ; T when the session belongs in the PB category
+  (seen-alive '())     ; monster :id values seen alive (hp>0) this load;
+                       ; a (:monster-dead ID) end trigger needs to know an
+                       ; enemy was actually alive before its kill counts
+  (killed-ids '())     ; monster :id values confirmed dead (were alive,
+                       ; then observed at 0 hp) this load
   telemetry)           ; per-quest TELEMETRY, created with the first tracker
 
 (defun elapsed-ms (start-time)
@@ -48,7 +53,10 @@
   (let ((tracker (first (active-trackers detector))))
     (and tracker (elapsed-ms (tracker-start-time tracker)))))
 
-(defun trigger-met-p (trigger snapshot)
+(defun trigger-met-p (trigger snapshot &optional killed-ids)
+  "Is TRIGGER satisfied on SNAPSHOT? KILLED-IDS is the run's confirmed
+monster kills (see UPDATE-KILL-TRACKING); only a :monster-dead trigger
+consults it, so start-trigger checks may pass it as NIL."
   (ecase (first trigger)
     (:register (snapshot-register-set-p snapshot (second trigger)))
     (:floor-switch (snapshot-floor-switch-set-p
@@ -56,7 +64,24 @@
     (:warp-in (some (lambda (player)
                       (and (plusp (getf player :floor 0))
                            (not (getf player :warping))))
-                    (getf snapshot :players)))))
+                    (getf snapshot :players)))
+    ;; A specific enemy (by entity :id) has died this run. The room is
+    ;; implicit in the id, which is unique across the loaded quest.
+    (:monster-dead (and (member (second trigger) killed-ids) t))))
+
+(defun update-kill-tracking (detector snapshot)
+  "Fold this frame's :monsters into the detector's per-id life/death
+state. A monster counts as dead only once it has been seen alive (hp>0)
+and is then observed at 0 hp - the same alive->dead rule telemetry uses,
+so an enemy that merely spawns at 0 hp never false-fires a clear."
+  (dolist (monster (getf snapshot :monsters))
+    (let ((id (getf monster :id))
+          (hp (getf monster :hp 0)))
+      (cond ((plusp hp)
+             (pushnew id (detector-seen-alive detector)))
+            ((and (member id (detector-seen-alive detector))
+                  (not (member id (detector-killed-ids detector))))
+             (push id (detector-killed-ids detector)))))))
 
 (defun snapshot-quest-defs (snapshot)
   (if (getf snapshot :quest-name)
@@ -99,6 +124,8 @@ with Shifta up - so a run is No PB until a discharge is seen."
         (detector-quest-ptr detector) nil
         (detector-my-pb detector) nil
         (detector-pb-flag detector) nil
+        (detector-seen-alive detector) '()
+        (detector-killed-ids detector) '()
         (detector-telemetry detector) nil))
 
 (defun start-tracker (detector def snapshot)
@@ -188,13 +215,15 @@ quest mid-run emits the unfinished trackers as :aborted runs."
                  (push (start-tracker detector def snapshot) started)))))
          (when (active-trackers detector)
            (update-pb-tracking detector snapshot)
+           (update-kill-tracking detector snapshot)
            (when (detector-telemetry detector)
              (telemetry-step (detector-telemetry detector) snapshot)))
          ;; End checks skip trackers started this frame: a real end trigger
          ;; cannot fire on the start frame, only stale data could.
          (dolist (tracker (detector-trackers detector))
            (unless (or (tracker-done tracker) (member tracker started))
-             (when (trigger-met-p (quest-def-end (tracker-def tracker)) snapshot)
+             (when (trigger-met-p (quest-def-end (tracker-def tracker)) snapshot
+                                  (detector-killed-ids detector))
                (push (finish-tracker detector tracker) completed))))
          (setf (detector-state detector)
                (if (active-trackers detector) :in-quest :idle))
