@@ -136,6 +136,12 @@ NEWEST FIRST, each (:floor F :switch S :room R :time T) where :room is the
 local player's room when the switch flipped. Feeds the room-clear
 (floor-switch) trigger candidate. Same lifecycle as *RUN-KILL-LOG*.")
 
+(defvar *run-quest* nil
+  "Identity of the quest that produced the current run logs, as a plist
+(:number :name :episode), or NIL. Set when a quest loads and kept into the
+lobby (same lifecycle as the run logs) so the rule-registration form can
+auto-select the quest just played.")
+
 (defun reset-run-logs ()
   (setf *run-kill-log* '() *run-switch-log* '()))
 
@@ -147,10 +153,14 @@ no quest is loaded, so the picker still has the last run's data back in
 the lobby. Safe to call every frame."
   (let ((ptr (and snapshot (getf snapshot :quest-ptr))))
     (when (and ptr (plusp ptr))
-      ;; A fresh load (from the lobby or a different quest): start over.
+      ;; A fresh load (from the lobby or a different quest): start over
+      ;; and remember which quest this run is, for the registration form.
       (when (or (null previous)
                 (not (eql (getf previous :quest-ptr) ptr)))
-        (reset-run-logs))
+        (reset-run-logs)
+        (setf *run-quest* (list :number (getf snapshot :quest-number)
+                                :name (getf snapshot :quest-name)
+                                :episode (getf snapshot :episode))))
       (let* ((me (snapshot-my-player snapshot))
              (floor (and me (getf me :floor)))
              (room (and me (getf me :room)))

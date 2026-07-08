@@ -1128,6 +1128,7 @@ using the SNAPSHOT-FLOOR-SWITCH-SET-P bit layout."
   "A minimal snapshot for run-log tests: a loaded quest at PTR, the local
 player on FLOOR/ROOM, plus MONSTERS and a floor-switch block."
   (list :quest-ptr ptr :my-index 0
+        :episode 1 :quest-number 9001 :quest-name "Room Test"
         :players (list (list :index 0 :floor floor :room room))
         :monsters monsters
         :floor-switches switches))
@@ -1159,7 +1160,11 @@ player on FLOOR/ROOM, plus MONSTERS and a floor-switch block."
                        (fsw-array 1 5)))
          (d (room-snap 1 1 3 '((:id 8 :hp 0 :name "Rag" :unitxt 45))
                        (fsw-array 1 5))))
+    (setf ephinea-ta-client::*run-quest* nil)
     (update-run-logs lobby a)   ; new load -> reset, no kill yet
+    (check "run-quest captured on load"
+           (and ephinea-ta-client::*run-quest*
+                (eql 1 (getf ephinea-ta-client::*run-quest* :episode))))
     (update-run-logs a b)       ; kill 7 (room 2) + switch flip (room 2)
     (update-run-logs b c)       ; walk into room 3
     (update-run-logs c d)       ; kill 8 (room 3)

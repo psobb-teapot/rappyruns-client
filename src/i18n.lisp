@@ -228,6 +228,52 @@
     :rule-enemy-item
     ("~a (id ~a)"
      "~a (id ~a)")
+    ;; Single-form registration dialog
+    :rule-dialog-title
+    ("Register quest rule"
+     "クエストルールを登録")
+    :rule-quest-label
+    ("Quest (auto-detected from your run)"
+     "クエスト(プレイ内容から自動判定)")
+    :rule-name-label
+    ("Rule name"
+     "ルール名")
+    :rule-desc-label
+    ("Description"
+     "説明")
+    :rule-end-label-form
+    ("Clears when"
+     "クリア条件")
+    :rule-start-label-form
+    ("Starts when"
+     "開始条件")
+    :rule-register-ok
+    ("Register"
+     "登録")
+    :rule-cancel
+    ("Cancel"
+     "キャンセル")
+    :rule-need-quest
+    ("Select a quest."
+     "クエストを選択してください。")
+    :rule-need-name
+    ("Enter a rule name."
+     "ルール名を入力してください。")
+    :rule-need-desc
+    ("Enter a description."
+     "説明を入力してください。")
+    :rule-need-end
+    ("Choose a clear condition."
+     "クリア条件を選んでください。")
+    :rule-item-clear
+    ("~a - clear -> floor-switch:~a:~a"
+     "~a - クリア → floor-switch:~a:~a")
+    :rule-item-last
+    ("~a - last: ~a -> monster:~a"
+     "~a - 最後: ~a → monster:~a")
+    :rule-item-enemy
+    ("~a - ~a -> monster:~a"
+     "~a - ~a → monster:~a")
     :rule-end-monster
     ("A specific enemy dies (monster)"
      "特定の敵を倒す (monster)")
