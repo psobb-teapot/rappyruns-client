@@ -207,6 +207,27 @@
     :rule-choose-end
     ("End trigger: how does the rule clear?"
      "終了トリガー: 何でクリアになりますか?")
+    :rule-end-picker
+    ("Pick from this run's rooms / enemies"
+     "この Run の部屋・敵から選ぶ")
+    :rule-choose-room
+    ("Which room?"
+     "どの部屋?")
+    :rule-room-item
+    ("Floor ~a · room ~a  (~a kills)"
+     "フロア ~a · 部屋 ~a  (~a体)")
+    :rule-choose-room-end
+    ("What clears the rule in this room?"
+     "この部屋で何をクリア条件にしますか?")
+    :rule-room-clear
+    ("Room cleared -> floor-switch:~a:~a"
+     "部屋クリア → floor-switch:~a:~a")
+    :rule-room-last-enemy
+    ("Last enemy -> ~a (id ~a)"
+     "最後の敵 → ~a (id ~a)")
+    :rule-enemy-item
+    ("~a (id ~a)"
+     "~a (id ~a)")
     :rule-end-monster
     ("A specific enemy dies (monster)"
      "特定の敵を倒す (monster)")

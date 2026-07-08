@@ -70,6 +70,28 @@ trigger log and last-kill tracking."
                      (zerop (getf monster :hp 0)))
             :collect monster)))
 
+(defun newly-set-floor-switches (previous snapshot)
+  "Floor switches that flipped 0->1 between PREVIOUS and SNAPSHOT, as a
+list of (:floor F :switch S). Clearing a room commonly fires such a
+switch, so this feeds the room-clear trigger candidate. Same bit layout
+as SNAPSHOT-FLOOR-SWITCH-SET-P. Pure."
+  (let ((old (getf previous :floor-switches))
+        (new (getf snapshot :floor-switches))
+        (result '()))
+    (when (and old new)
+      (dotimes (i (min (length old) (length new)))
+        (let ((old-byte (aref old i))
+              (new-byte (aref new i)))
+          (unless (= old-byte new-byte)
+            (dotimes (bit 8)
+              (let ((mask (ash #x80 (- bit))))
+                (when (and (zerop (logand old-byte mask))
+                           (plusp (logand new-byte mask)))
+                  (push (list :floor (floor i 32)
+                              :switch (+ (* 8 (mod i 32)) bit))
+                        result))))))))
+    (nreverse result)))
+
 (defvar *last-kill* nil
   "The most recently killed enemy this quest load, as a plist
 (:id :name :unitxt), or NIL. Set by the poll loop from the alive->dead
@@ -98,6 +120,91 @@ frame regardless of the trigger-log toggle."
                (list :id (getf killed :id)
                      :name (getf killed :name)
                      :unitxt (getf killed :unitxt))))))))
+
+(defvar *run-kill-log* '()
+  "Kills observed during the current or most-recent quest load, NEWEST
+FIRST, each a plist (:id :name :unitxt :floor :room :time). :floor/:room
+are the local player's at kill time (a monster carries no room of its
+own); :time is GET-INTERNAL-REAL-TIME, used only for ordering. Read by
+the GUI room/enemy picker to build a rule. Unlike *LAST-KILL* this is
+kept through the run AND into the lobby - it is only reset when a new
+quest loads - so a rule can be registered after finishing or aborting.")
+
+(defvar *run-switch-log* '()
+  "Floor switches that fired during the current or most-recent quest load,
+NEWEST FIRST, each (:floor F :switch S :room R :time T) where :room is the
+local player's room when the switch flipped. Feeds the room-clear
+(floor-switch) trigger candidate. Same lifecycle as *RUN-KILL-LOG*.")
+
+(defun reset-run-logs ()
+  (setf *run-kill-log* '() *run-switch-log* '()))
+
+(defun update-run-logs (previous snapshot)
+  "Accumulate this frame's kills and floor-switch flips into the run logs,
+tagging each with the local player's floor/room. Resets the logs when a
+new quest loads (a different non-zero quest-ptr); leaves them intact when
+no quest is loaded, so the picker still has the last run's data back in
+the lobby. Safe to call every frame."
+  (let ((ptr (and snapshot (getf snapshot :quest-ptr))))
+    (when (and ptr (plusp ptr))
+      ;; A fresh load (from the lobby or a different quest): start over.
+      (when (or (null previous)
+                (not (eql (getf previous :quest-ptr) ptr)))
+        (reset-run-logs))
+      (let* ((me (snapshot-my-player snapshot))
+             (floor (and me (getf me :floor)))
+             (room (and me (getf me :room)))
+             (time (get-internal-real-time)))
+        (dolist (monster (newly-killed-monsters previous snapshot))
+          (push (list :id (getf monster :id)
+                      :name (getf monster :name)
+                      :unitxt (getf monster :unitxt)
+                      :floor floor :room room :time time)
+                *run-kill-log*))
+        (dolist (sw (newly-set-floor-switches previous snapshot))
+          (push (list :floor (getf sw :floor)
+                      :switch (getf sw :switch)
+                      :room room :time time)
+                *run-switch-log*))))))
+
+(defun room-clear-switch (room last-kill)
+  "The floor switch from *RUN-SWITCH-LOG* that best marks ROOM's clear:
+same player room as ROOM, nearest in time to LAST-KILL. Correlation is on
+room (both logs record the player's room), while the returned switch keeps
+its own :floor for the trigger. NIL when no switch fired in the room."
+  (let ((rm (getf room :room))
+        (target (and last-kill (getf last-kill :time)))
+        (best nil) (best-dist nil))
+    (dolist (sw *run-switch-log* best)
+      (when (eql (getf sw :room) rm)
+        (let ((dist (if target (abs (- (getf sw :time) target)) 0)))
+          (when (or (null best) (< dist best-dist))
+            (setf best sw best-dist dist)))))))
+
+(defun run-rooms ()
+  "Group *RUN-KILL-LOG* into rooms for the rule picker. Returns a list of
+room plists in the order rooms were first entered:
+  (:floor F :room R :kills (kill... oldest first)
+   :last-kill kill :switch (:floor :switch ...)|nil)
+:last-kill is the room's final kill; :switch is the room-clear candidate
+from ROOM-CLEAR-SWITCH. Pure; reads the run-log globals."
+  (let ((kills (reverse *run-kill-log*))   ; oldest first
+        (rooms '()))                        ; (key . plist), reverse first-seen
+    (dolist (kill kills)
+      (let* ((key (cons (getf kill :floor) (getf kill :room)))
+             (cell (assoc key rooms :test #'equal)))
+        (if cell
+            (setf (getf (cdr cell) :kills)
+                  (append (getf (cdr cell) :kills) (list kill)))
+            (push (cons key (list :floor (getf kill :floor)
+                                  :room (getf kill :room)
+                                  :kills (list kill)))
+                  rooms))))
+    (loop :for (nil . room) :in (nreverse rooms)
+          :for last-kill := (car (last (getf room :kills)))
+          :collect (list* :last-kill last-kill
+                          :switch (room-clear-switch room last-kill)
+                          room))))
 
 (defun log-trigger-changes (previous snapshot)
   "Append register / floor-switch diffs between two consecutive

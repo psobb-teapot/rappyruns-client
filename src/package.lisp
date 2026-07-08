@@ -44,6 +44,7 @@
            ;; trigger discovery
            #:log-trigger-changes #:start-trigger-log #:close-trigger-log
            #:newly-killed-monsters #:update-last-kill
+           #:newly-set-floor-switches #:update-run-logs #:run-rooms
            ;; version / self-update (pure parts, used by tests)
            #:client-version #:parse-version #:version< #:update-available-p
            #:parse-release-json #:updater-script-text #:valid-update-zip-p

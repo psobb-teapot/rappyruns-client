@@ -1110,6 +1110,83 @@ switch 0; room 2 cleared = floor 5 switch 2; full clear = register 254."
              (eql 1234 (gethash "monster" (gethash "end" parsed)))))))
 
 ;;; ------------------------------------------------------------------
+;;; Room/enemy rule picker: run-log accumulation and room grouping
+;;; ------------------------------------------------------------------
+
+(defun fsw-array (&rest floor-switch-pairs)
+  "A 32*18 floor-switch byte block with the given (floor switch) bits on,
+using the SNAPSHOT-FLOOR-SWITCH-SET-P bit layout."
+  (let ((a (make-array (* 32 18) :element-type '(unsigned-byte 8)
+                                 :initial-element 0)))
+    (loop :for (f s) :on floor-switch-pairs :by #'cddr
+          :for off := (+ (* 32 f) (floor s 8))
+          :do (setf (aref a off) (logior (aref a off)
+                                         (ash #x80 (- (mod s 8))))))
+    a))
+
+(defun room-snap (ptr floor room monsters switches)
+  "A minimal snapshot for run-log tests: a loaded quest at PTR, the local
+player on FLOOR/ROOM, plus MONSTERS and a floor-switch block."
+  (list :quest-ptr ptr :my-index 0
+        :players (list (list :index 0 :floor floor :room room))
+        :monsters monsters
+        :floor-switches switches))
+
+(defun run-room-picker-tests ()
+  (format t "~&--- room/enemy rule picker ---~%")
+  ;; newly-set-floor-switches: only 0->1 transitions.
+  (let ((clear (fsw-array))
+        (on (fsw-array 5 2)))
+    (let ((flipped (newly-set-floor-switches (list :floor-switches clear)
+                                             (list :floor-switches on))))
+      (check "floor-switch 0->1 detected"
+             (and (= 1 (length flipped))
+                  (eql 5 (getf (first flipped) :floor))
+                  (eql 2 (getf (first flipped) :switch)))))
+    (check "floor-switch 1->0 ignored"
+           (null (newly-set-floor-switches (list :floor-switches on)
+                                           (list :floor-switches clear)))))
+  ;; update-run-logs + run-rooms end to end.
+  (setf ephinea-ta-client::*run-kill-log* '()
+        ephinea-ta-client::*run-switch-log* '())
+  (let* ((clear (fsw-array))
+         (lobby (list :quest-ptr 0))
+         (a (room-snap 1 1 2 '((:id 7 :hp 100 :name "Booma" :unitxt 44)) clear))
+         ;; kill 7 in room 2 and flip floor 1 switch 5 the same frame
+         (b (room-snap 1 1 2 '((:id 7 :hp 0 :name "Booma" :unitxt 44))
+                       (fsw-array 1 5)))
+         (c (room-snap 1 1 3 '((:id 8 :hp 80 :name "Rag" :unitxt 45))
+                       (fsw-array 1 5)))
+         (d (room-snap 1 1 3 '((:id 8 :hp 0 :name "Rag" :unitxt 45))
+                       (fsw-array 1 5))))
+    (update-run-logs lobby a)   ; new load -> reset, no kill yet
+    (update-run-logs a b)       ; kill 7 (room 2) + switch flip (room 2)
+    (update-run-logs b c)       ; walk into room 3
+    (update-run-logs c d)       ; kill 8 (room 3)
+    (let ((rooms (run-rooms)))
+      (check "run-rooms groups two rooms" (= 2 (length rooms)))
+      (let ((r2 (find 2 rooms :key (lambda (r) (getf r :room))))
+            (r3 (find 3 rooms :key (lambda (r) (getf r :room)))))
+        (check "room 2 last kill is enemy 7"
+               (and r2 (eql 7 (getf (getf r2 :last-kill) :id))))
+        (check "room 2 kill tagged with its floor/room"
+               (and r2 (eql 1 (getf (first (getf r2 :kills)) :floor))
+                    (eql 2 (getf (first (getf r2 :kills)) :room))))
+        (check "room 2 correlated clear switch is floor 1 switch 5"
+               (and r2 (getf r2 :switch)
+                    (eql 1 (getf (getf r2 :switch) :floor))
+                    (eql 5 (getf (getf r2 :switch) :switch))))
+        (check "room 3 last kill is enemy 8"
+               (and r3 (eql 8 (getf (getf r3 :last-kill) :id))))
+        (check "room 3 has no clear switch" (and r3 (null (getf r3 :switch))))))
+    ;; Leaving to the lobby keeps the data for post-run registration.
+    (update-run-logs d lobby)
+    (check "run logs survive into the lobby" (= 2 (length (run-rooms))))
+    ;; A new quest load resets them.
+    (update-run-logs lobby (room-snap 2 1 1 '() clear))
+    (check "a new quest load resets the run logs" (null (run-rooms)))))
+
+;;; ------------------------------------------------------------------
 ;;; Recorder: capture-backend mock and state machine tests
 ;;; ------------------------------------------------------------------
 
@@ -2509,6 +2586,7 @@ store functions that persist never touch the real %APPDATA% queue."
   (run-gdv-segment-test)
   (run-trigger-log-tests)
   (run-quest-rule-tests)
+  (run-room-picker-tests)
   (run-recorder-tests)
   (run-video-flow-tests)
   (run-upload-queue-tests)

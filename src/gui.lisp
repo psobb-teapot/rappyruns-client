@@ -738,19 +738,71 @@ back to manual id entry."
       (capi:prompt-for-integer (tr :rule-register-prompt) :min 0 :max 255)
     (and okp n (list :register n))))
 
-(defun prompt-end-trigger ()
-  "Ask for the rule's end trigger. Returns an internal trigger list or NIL
-if cancelled at any step."
-  (let ((monster (tr :rule-end-monster))
-        (floor-switch (tr :rule-end-floor-switch))
-        (register (tr :rule-end-register)))
+(defun room-picker-label (room)
+  "List label for a room in the run: floor, room and kill count."
+  (tr :rule-room-item (getf room :floor) (getf room :room)
+      (length (getf room :kills))))
+
+(defun enemy-item-label (kill)
+  (tr :rule-enemy-item (or (getf kill :name) "?") (getf kill :id)))
+
+(defun prompt-room-end (room)
+  "Given a chosen ROOM (from RUN-ROOMS), offer the room-clear floor switch
+(when one was seen), the room's last enemy, and each killed enemy - each
+as an end trigger. Returns an internal trigger list or NIL if cancelled."
+  (let* ((sw (getf room :switch))
+         (last (getf room :last-kill))
+         (clear-item (and sw (tr :rule-room-clear
+                                 (getf sw :floor) (getf sw :switch))))
+         (last-item (and last (tr :rule-room-last-enemy
+                                  (or (getf last :name) "?") (getf last :id))))
+         ;; Distinct enemies by id, in kill order.
+         (enemies (remove-duplicates (getf room :kills)
+                                     :key (lambda (k) (getf k :id))
+                                     :from-end t))
+         (enemy-items (mapcar #'enemy-item-label enemies))
+         (choices (append (when clear-item (list clear-item))
+                          (when last-item (list last-item))
+                          enemy-items)))
     (multiple-value-bind (choice okp)
-        (capi:prompt-with-list (list monster floor-switch register)
-                               (tr :rule-choose-end))
+        (capi:prompt-with-list choices (tr :rule-choose-room-end))
       (when (and okp choice)
-        (cond ((string= choice monster) (prompt-monster-trigger))
-              ((string= choice floor-switch) (prompt-floor-switch-trigger))
-              ((string= choice register) (prompt-register-trigger)))))))
+        (cond
+          ((and clear-item (string= choice clear-item))
+           (list :floor-switch (getf sw :floor) (getf sw :switch)))
+          ((and last-item (string= choice last-item))
+           (list :monster-dead (getf last :id)))
+          (t
+           (let ((kill (find choice enemies
+                             :key #'enemy-item-label :test #'string=)))
+             (and kill (list :monster-dead (getf kill :id))))))))))
+
+(defun prompt-room-picker (rooms)
+  "Pick a room from the run, then an end trigger within it."
+  (multiple-value-bind (room okp)
+      (capi:prompt-with-list rooms (tr :rule-choose-room)
+                             :print-function 'room-picker-label)
+    (when (and okp room)
+      (prompt-room-end room))))
+
+(defun prompt-end-trigger ()
+  "Ask for the rule's end trigger. When this run left room/enemy data, the
+picker is offered first; the manual options remain as a fallback. Returns
+an internal trigger list or NIL if cancelled at any step."
+  (let ((picker (tr :rule-end-picker))
+        (monster (tr :rule-end-monster))
+        (floor-switch (tr :rule-end-floor-switch))
+        (register (tr :rule-end-register))
+        (rooms (run-rooms)))
+    (let ((choices (append (when rooms (list picker))
+                           (list monster floor-switch register))))
+      (multiple-value-bind (choice okp)
+          (capi:prompt-with-list choices (tr :rule-choose-end))
+        (when (and okp choice)
+          (cond ((string= choice picker) (prompt-room-picker rooms))
+                ((string= choice monster) (prompt-monster-trigger))
+                ((string= choice floor-switch) (prompt-floor-switch-trigger))
+                ((string= choice register) (prompt-register-trigger))))))))
 
 (defun prompt-start-override ()
   "Ask whether to inherit the parent's start trigger (the usual case) or

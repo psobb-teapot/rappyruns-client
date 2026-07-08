@@ -275,6 +275,10 @@ update exactly once."
                         ;; the rule-registration dialog reads it any time.
                         (ignore-errors
                           (update-last-kill previous-snapshot snapshot))
+                        ;; Accumulate this run's kills / switch flips by
+                        ;; room, for the post-run room/enemy rule picker.
+                        (ignore-errors
+                          (update-run-logs previous-snapshot snapshot))
                         (setf previous-snapshot snapshot)
                         (when *retry-requested*
                           (setf *retry-requested* nil)
