@@ -257,22 +257,32 @@ reads the run-log globals."
 
 (defun run-room-rows ()
   "Flatten RUN-ROOMS into pickable rows for the live Rooms list. Each row
-is a plist (:area LABEL :kind :clear|:enemy :name NAME|nil :trigger LIST):
-per room a :clear row when a clearing switch was seen, then one :enemy row
-per distinct enemy (in kill order). Pure; the GUI renders and, on click,
-uses :trigger as the rule's end condition."
+is a plist (:area LABEL :kind :clear|:enemy :name NAME|nil :trigger LIST).
+Per room:
+  - a :clear row (\"clear this room\"): the door floor-switch when one
+    fired in the room, otherwise the room's LAST enemy dying - i.e. all
+    enemies dead. Most rooms fire no switch (the room boundary comes from
+    the player's room field, not a switch), so the last-enemy fallback is
+    what makes \"clear the room\" selectable everywhere;
+  - then one :enemy row per distinct enemy (kill order) for a specific kill.
+Pure; the GUI renders and, on click, uses :trigger as the rule's end
+condition."
   (loop :for room :in (run-rooms)
         :for area := (room-area-label room)
-        :nconc (let ((sw (getf room :switch))
-                     (enemies (remove-duplicates (getf room :kills)
-                                                 :key (lambda (k) (getf k :id))
-                                                 :from-end t)))
+        :nconc (let* ((sw (getf room :switch))
+                      (last (getf room :last-kill))
+                      (enemies (remove-duplicates (getf room :kills)
+                                                  :key (lambda (k) (getf k :id))
+                                                  :from-end t)))
                  (append
-                  (when sw
-                    (list (list :area area :kind :clear :name nil
-                                :trigger (list :floor-switch
-                                               (getf sw :floor)
-                                               (getf sw :switch)))))
+                  (cond
+                    (sw (list (list :area area :kind :clear :name nil
+                                    :trigger (list :floor-switch
+                                                   (getf sw :floor)
+                                                   (getf sw :switch)))))
+                    (last (list (list :area area :kind :clear :name nil
+                                      :trigger (list :monster-dead
+                                                     (getf last :id))))))
                   (loop :for k :in enemies
                         :collect (list :area area :kind :enemy
                                        :name (getf k :name)

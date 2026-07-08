@@ -1193,13 +1193,20 @@ block."
       (check "room-area-label uses the map name"
              (string= "Forest 1 · room 2" (room-area-label r2))))
     (let ((rows (run-room-rows)))
-      ;; room 2: clear row + enemy 7; room 3: enemy 8 (no switch) = 3 rows.
-      (check "run-room-rows count" (= 3 (length rows)))
-      (let ((clear (find :clear rows :key (lambda (r) (getf r :kind)))))
-        (check "clear row trigger is the floor-switch"
-               (equal '(:floor-switch 1 5) (getf clear :trigger)))
-        (check "clear row area is room 2"
-               (string= "Forest 1 · room 2" (getf clear :area))))
+      ;; room 2: clear(switch) + enemy 7; room 3: clear(last enemy) + enemy 8
+      ;; = 4 rows (every room gets a clear row).
+      (check "run-room-rows count" (= 4 (length rows)))
+      (let ((clears (remove :clear rows :key (lambda (r) (getf r :kind))
+                            :test-not #'eq)))
+        (check "every room has a clear row" (= 2 (length clears)))
+        ;; room 2 clear uses its door switch...
+        (check "room 2 clear is the floor-switch"
+               (find '(:floor-switch 1 5) clears
+                     :key (lambda (r) (getf r :trigger)) :test #'equal))
+        ;; ...room 3 has no switch, so clear falls back to its last enemy (8).
+        (check "room 3 clear falls back to the last enemy"
+               (find '(:monster-dead 8) clears
+                     :key (lambda (r) (getf r :trigger)) :test #'equal)))
       (let ((enemy (find :enemy rows :key (lambda (r) (getf r :kind)))))
         (check "enemy row trigger is monster-dead"
                (eq :monster-dead (first (getf enemy :trigger))))))
