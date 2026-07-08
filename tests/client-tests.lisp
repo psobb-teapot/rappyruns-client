@@ -1815,6 +1815,36 @@ store functions that persist never touch the real %APPDATA% queue."
            (eql 42 (getf (ephinea-ta-client::submission-updates
                           :duplicate payload)
                          :server-id))))
+  ;; A fresh submission carries the board standing for the reward hint.
+  (let ((payload (make-hash-table :test 'equal))
+        (standing (make-hash-table :test 'equal)))
+    (setf (gethash "id" payload) 7
+          (gethash "rank" standing) 2
+          (gethash "parties" standing) 5
+          (gethash "previous_best_ms" standing) 605000
+          (gethash "delta_ms" standing) -3210
+          (gethash "standing" payload) standing)
+    (let ((updates (ephinea-ta-client::submission-updates :created payload)))
+      (check "created runs carry the board rank and party count"
+             (and (eql 2 (getf updates :standing-rank))
+                  (eql 5 (getf updates :standing-parties))))
+      (check "created runs carry the personal-best delta and previous time"
+             (and (eql -3210 (getf updates :standing-delta-ms))
+                  (eql 605000 (getf updates :standing-prev-ms))))))
+  (check "a submission with no standing block adds no standing keys"
+         (let ((payload (make-hash-table :test 'equal)))
+           (setf (gethash "id" payload) 7)
+           (null (getf (ephinea-ta-client::submission-updates :created payload)
+                       :standing-rank))))
+  (check "a first-time standing carries a rank but no delta"
+         (let ((payload (make-hash-table :test 'equal))
+               (standing (make-hash-table :test 'equal)))
+           (setf (gethash "rank" standing) 1
+                 (gethash "parties" standing) 1
+                 (gethash "standing" payload) standing)
+           (let ((updates (ephinea-ta-client::submission-updates :created payload)))
+             (and (eql 1 (getf updates :standing-rank))
+                  (null (getf updates :standing-delta-ms))))))
   (check "rejected runs carry a reason, not a server id"
          (let ((payload (make-hash-table :test 'equal)))
            (setf (gethash "message" payload) "nope")
@@ -2041,6 +2071,28 @@ store functions that persist never touch the real %APPDATA% queue."
                   (list :status :rejected :reason "too fast"))))
   (check "format-run-time formats minutes:seconds.millis"
          (string= "9:59.123" (ephinea-ta-client::format-run-time 599123)))
+  ;; Reward hint: personal-best delta and provisional board rank the
+  ;; server returns with a fresh submission.
+  (check "format-improvement-ms shows a sub-minute delta in seconds"
+         (string= "3.21s" (ephinea-ta-client::format-improvement-ms 3210)))
+  (check "run-standing-note announces a personal best with its delta"
+         (let ((note (ephinea-ta-client::run-standing-note
+                      (list :standing-rank 2 :standing-parties 5
+                            :standing-delta-ms -3210))))
+           (and note (search "3.21" note) (search "#2" note))))
+  (check "run-standing-note without a personal best just reports the rank"
+         (let ((note (ephinea-ta-client::run-standing-note
+                      (list :standing-rank 3 :standing-parties 8
+                            :standing-delta-ms 1500))))
+           (and note (search "#3" note) (not (search "PB" note)))))
+  (check "run-standing-note is NIL when the server sent no standing"
+         (null (ephinea-ta-client::run-standing-note (list :status :submitted))))
+  (check "the submitted status label appends the standing note"
+         (with-recording-config (:video-upload t)
+           (let ((label (ephinea-ta-client::run-status-label
+                         (list :status :submitted
+                               :standing-rank 1 :standing-parties 4))))
+             (and (search "draft" label) (search "#1" label)))))
   ;; Trimming: unfinished entries survive, finished ones are capped.
   (let* ((runs (loop :for i :from 0 :below 70
                      :collect (list :status (case (mod i 7)

@@ -53,6 +53,26 @@ LIMIT finished ones, preserving order."
     (multiple-value-bind (minutes seconds) (floor total-seconds 60)
       (format nil "~d:~2,'0d.~3,'0d" minutes seconds msec))))
 
+(defun format-improvement-ms (ms)
+  "A positive time improvement MS as a compact hint: seconds with two
+decimals under a minute (how personal bests usually land), the m:ss.mmm
+clock above it."
+  (if (< ms 60000)
+      (format nil "~,2fs" (/ ms 1000.0))
+      (format-run-time ms)))
+
+(defun run-standing-note (entry)
+  "The reward hint for a freshly submitted draft: the personal-best
+delta and provisional board rank the server reported (STANDING-UPDATES),
+or NIL when it sent none."
+  (let ((rank (getf entry :standing-rank))
+        (parties (getf entry :standing-parties)))
+    (when (and rank parties)
+      (let ((delta (getf entry :standing-delta-ms)))
+        (if (and delta (minusp delta))
+            (tr :standing-pb (format-improvement-ms (- delta)) rank parties)
+            (tr :standing-rank rank parties))))))
+
 (defun run-status-label (entry)
   (if (getf entry :video-attached)
       (cond
@@ -73,14 +93,16 @@ LIMIT finished ones, preserving order."
          (tr :status-video-attached)))
       (case (getf entry :status)
         (:queued (tr :status-queued))
-        (:submitted (cond ((getf entry :aborted)
-                           (tr :status-draft-aborted))
-                          ((not (getf entry :video-path))
-                           (tr :status-draft-add))
-                          ((and (config-value :video-upload)
-                                (not (getf entry :upload-given-up)))
-                           (tr :status-draft-auto-upload))
-                          (t (tr :status-draft-upload))))
+        (:submitted (let ((base (cond ((getf entry :aborted)
+                                       (tr :status-draft-aborted))
+                                      ((not (getf entry :video-path))
+                                       (tr :status-draft-add))
+                                      ((and (config-value :video-upload)
+                                            (not (getf entry :upload-given-up)))
+                                       (tr :status-draft-auto-upload))
+                                      (t (tr :status-draft-upload))))
+                          (note (run-standing-note entry)))
+                      (if note (format nil "~a · ~a" base note) base)))
         (:duplicate (tr :status-duplicate))
         (:rejected (tr :status-rejected (or (getf entry :reason) "?")))
         (:failed (tr :status-failed (or (getf entry :reason) "?")))
@@ -165,15 +187,34 @@ are not already present.)"
     (save-queue!)
     new))
 
+(defun standing-updates (payload)
+  "The board-standing keys the server sent with a fresh submission (rank
+and party count, plus the personal-best delta when the submitter had a
+prior time there), or NIL when it sent none - an older server, or an
+aborted run, which never boards. These drive RUN-STANDING-NOTE, the
+reward hint shown the moment a run is auto-submitted."
+  (let ((standing (and (hash-table-p payload) (gethash "standing" payload))))
+    (when (hash-table-p standing)
+      (let ((rank (gethash "rank" standing))
+            (parties (gethash "parties" standing))
+            (prev (gethash "previous_best_ms" standing))
+            (delta (gethash "delta_ms" standing)))
+        (when (and (integerp rank) (integerp parties))
+          (append (list :standing-rank rank :standing-parties parties)
+                  (when (and (integerp prev) (integerp delta))
+                    (list :standing-prev-ms prev :standing-delta-ms delta))))))))
+
 (defun submission-updates (outcome payload)
   "SUBMIT-RUN's result -> the plist of updates for the queue entry. The
-server id is kept so a video can later be attached over the API."
+server id is kept so a video can later be attached over the API, and a
+fresh submission also carries the board standing the server computed."
   (let ((server-id (and (hash-table-p payload) (gethash "id" payload)))
         (url (and (hash-table-p payload) (gethash "url" payload)))
         (errors (and (hash-table-p payload) (gethash "errors" payload)))
         (message (and (hash-table-p payload) (gethash "message" payload))))
     (ecase outcome
-      (:created (list :status :submitted :url url :server-id server-id))
+      (:created (append (list :status :submitted :url url :server-id server-id)
+                        (standing-updates payload)))
       (:duplicate (list :status :duplicate :url url :server-id server-id))
       (:rejected (list :status :rejected
                        :reason (format nil "~@[~a ~]~@[~{~a~^; ~}~]"

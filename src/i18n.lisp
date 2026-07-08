@@ -504,6 +504,12 @@
     :status-draft-aborted
     ("aborted - private, recording kept locally"
      "中断 - 非公開・録画はローカル保存のみ")
+    :standing-pb
+    ("PB! -~a, prov. #~d of ~d"
+     "自己ベスト! -~a・暫定~d/~d位")
+    :standing-rank
+    ("prov. #~d of ~d"
+     "暫定~d/~d位")
     :status-duplicate
     ("duplicate (already on server)"
      "重複 (サーバーに登録済み)")
