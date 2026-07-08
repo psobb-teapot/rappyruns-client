@@ -905,10 +905,17 @@ to fill the value fields for a manual option."
         (format nil "→ ~a" (rule-trigger-label x)))))
 
 (defun qrd-end-changed (interface)
-  "Refresh the preview line when the end selection changes."
-  (let ((item (capi:choice-selected-item (qrd-end-pane interface))))
+  "Refresh the preview line and enable the value fields only for the manual
+options (val2 only for floor-switch), so it reads clearly that the fields
+are ignored when a room/enemy from the run is selected."
+  (let* ((item (capi:choice-selected-item (qrd-end-pane interface)))
+         (marker (and item (cdr item)))
+         (manual (and (rule-manual-marker-p marker) t)))
     (setf (capi:title-pane-text (qrd-preview-pane interface))
-          (if item (qrd-end-preview-text item) ""))))
+          (if item (qrd-end-preview-text item) "")
+          (capi:simple-pane-enabled (qrd-val1-pane interface)) manual
+          (capi:simple-pane-enabled (qrd-val2-pane interface))
+          (eq marker :floor-switch))))
 
 (defun qrd-resolve-end (interface item)
   "Resolve the selected end ITEM to an internal trigger: a ready trigger
