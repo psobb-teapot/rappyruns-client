@@ -16,6 +16,26 @@ poll loop re-reads it every iteration.")
 (defvar *last-window-title* nil
   "Cache so the 4x-per-second GUI tick only calls SetWindowText on change.")
 
+(defvar *moderator-p* nil
+  "Whether the verified account may author quest rules (role moderator or
+admin). Drives the two moderator-only pieces of UI - the Rooms tab and
+the Advanced 'register rule' button - which a normal user can't use (the
+server rejects the POST), so hiding them keeps the window uncluttered.
+Seeded from the cached :MODERATOR config in MAIN so a returning
+moderator's window is right on the first frame, then re-verified from
+/api/me by CHECK-TOKEN, which rebuilds the window if it changed.")
+
+(defun client-tab-items ()
+  "Main-window tab entries as (LABEL PANE-NAME) pairs. The Rooms tab
+lists the live run's rooms and enemies solely to author quest-clear
+rules, so it appears only for moderators (*MODERATOR-P*); normal users,
+who cannot create rules, never see it."
+  (append
+   (list (list (tr :tab-runs) 'runs-tab))
+   (when *moderator-p*
+     (list (list (tr :tab-rooms) 'rooms-tab)))
+   (list (list (tr :tab-settings) 'settings-tab))))
+
 ;; RUN-STATUS-LABEL and FORMAT-RUN-TIME live in store.lisp (pure CL,
 ;; covered by the SBCL tests).
 
@@ -250,7 +270,14 @@ poll loop re-reads it every iteration.")
                     check-updates-button)
                   :title (tr :group-updates) :title-position :frame
                   :title-font *ui-font* :adjust :left)
-   (advanced-group capi:column-layout '(trigger-log-check register-rule-button)
+   ;; The 'register rule' button authors quest rules and is moderator-only
+   ;; (the server rejects the POST otherwise), so it drops out of the
+   ;; layout for normal users - just like the Rooms tab. The pane always
+   ;; exists so its callback stays wired either way.
+   (advanced-group capi:column-layout
+                   (if *moderator-p*
+                       '(trigger-log-check register-rule-button)
+                       '(trigger-log-check))
                    :title (tr :group-advanced) :title-position :frame
                    :title-font *ui-font* :adjust :left)
    (settings-tab capi:column-layout
@@ -259,15 +286,18 @@ poll loop re-reads it every iteration.")
                  :adjust :left)
    (rooms-tab capi:column-layout '(rooms-hint rooms-list) :adjust :left)
    (main-tabs capi:tab-layout ()
-              :items `((,(tr :tab-runs) runs-tab)
-                       (,(tr :tab-rooms) rooms-tab)
-                       (,(tr :tab-settings) settings-tab))
+              :items (client-tab-items)
               :font *ui-font*
               :print-function 'first
               :visible-child-function 'second
               ;; First launch without a token lands on Settings (step 1
-              ;; of the flow); otherwise straight to the Runs tab.
-              :selection (if (string= (config-value :api-token) "") 1 0)))
+              ;; of the flow); otherwise straight to the Runs tab. The
+              ;; Settings index shifts with the optional Rooms tab, so
+              ;; find it rather than hard-coding a position.
+              :selection (if (string= (config-value :api-token) "")
+                             (position 'settings-tab (client-tab-items)
+                                       :key 'second)
+                             0)))
   (:default-initargs
    :title "Rappy Runs Client"
    :layout 'main-tabs
@@ -319,8 +349,16 @@ poll loop never picks up a dead interface."
             (capi:text-input-pane-text (server-url-input old))
             (capi:text-input-pane-text (api-token-input new))
             (capi:text-input-pane-text (api-token-input old)))
-      (setf (capi:choice-selection (slot-value new 'main-tabs))
-            (capi:choice-selection (slot-value old 'main-tabs)))
+      ;; Carry over the selected tab by identity, not index: a
+      ;; moderator-status rebuild changes the tab set (the Rooms tab
+      ;; appears or vanishes), so the old index can point at a different
+      ;; tab or none at all. Match on the tab's pane symbol, falling back
+      ;; to the first tab when the old one is gone.
+      (let* ((old-item (capi:choice-selected-item (slot-value old 'main-tabs)))
+             (pane (and (consp old-item) (second old-item)))
+             (items (capi:collection-items (slot-value new 'main-tabs))))
+        (setf (capi:choice-selection (slot-value new 'main-tabs))
+              (or (position pane items :key 'second :test 'eq) 0)))
       (capi:display new)
       (setf *interface* new
             *last-window-title* nil)
@@ -1024,6 +1062,25 @@ cross-check the builtin trigger slugs against the server."
          (set-pane-text interface #'server-status-pane
                         (server-status-error-text condition) :red))))))
 
+(defun moderator-role-p (role)
+  "True when a /api/me ROLE string grants quest authoring (moderator or
+admin); mirrors the server's MODELS:MODERATOR-P."
+  (and (member role '("moderator" "admin") :test #'equal) t))
+
+(defun apply-moderator-role (interface user)
+  "Sync the moderator-only UI to the /api/me USER hash. When the role
+crosses the moderator boundary, cache it and rebuild the window so the
+Rooms tab and the Advanced 'register rule' button appear or vanish.
+Only the change triggers a rebuild, so the CHECK-TOKEN that REBUILD
+issues sees no change and does not loop."
+  (let ((now (moderator-role-p (and user (gethash "role" user)))))
+    (unless (eq now *moderator-p*)
+      (setf *moderator-p* now
+            (config-value :moderator) now)
+      (save-config!)
+      (capi:execute-with-interface-if-alive
+       interface (lambda () (rebuild-interface interface))))))
+
 (defun check-token (interface &key on-invalid notify)
   "Verify the configured API token against /api/me on a background
 thread and reflect the outcome in the token-status pane. ON-INVALID
@@ -1045,6 +1102,7 @@ the Save settings flow."
                       (let ((name (gethash "username" user)))
                         (set-pane-text interface #'token-status-pane
                                        (tr :token-ok name))
+                        (apply-moderator-role interface user)
                         (when notify
                           (capi:execute-with-interface-if-alive
                            interface

@@ -307,7 +307,11 @@ update exactly once."
 (defun main ()
   (setf *stop-requested* nil)
   (load-config!)
-  (setf *language* (valid-language (config-value :language)))
+  (setf *language* (valid-language (config-value :language))
+        ;; Seed from the last verified role so a moderator's Rooms tab and
+        ;; rule button are present on the first frame; CHECK-TOKEN re-verifies
+        ;; against /api/me and rebuilds the window if it changed.
+        *moderator-p* (and (config-value :moderator) t))
   (cleanup-old-update-files)
   ;; Self-update BEFORE the main window exists, so an outdated build
   ;; never flashes at the user just to quit and relaunch. Does not

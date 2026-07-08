@@ -32,6 +32,7 @@ can eventually be retired; a custom URL is never touched.")
         :record-max-total-gb 20  ; cap the recordings folder; oldest videos are reaped past this (0/blank = unlimited). See APPLY-RECORDING-RETENTION.
         :ffmpeg-path ""     ; blank = bundled copy next to the exe, or PATH
         :record-dir ""      ; blank = <user home>/Videos/RappyRuns/ (recording.lisp migrates the pre-rename folder)
+        :moderator nil      ; cached /api/me role: shows the moderator-only Rooms tab + rule button on the first frame (refreshed and re-verified by CHECK-TOKEN; server enforces the real permission)
         :debug nil))        ; developer knobs in the GUI (see DEBUG-MODE-P)
 
 (defvar *config* nil)
