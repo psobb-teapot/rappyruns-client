@@ -1126,9 +1126,10 @@ using the SNAPSHOT-FLOOR-SWITCH-SET-P bit layout."
 
 (defun room-snap (ptr floor room monsters switches)
   "A minimal snapshot for run-log tests: a loaded quest at PTR, the local
-player on FLOOR/ROOM, plus MONSTERS and a floor-switch block."
+player on FLOOR/ROOM (map 1 = Forest 1), plus MONSTERS and a floor-switch
+block."
   (list :quest-ptr ptr :my-index 0
-        :episode 1 :quest-number 9001 :quest-name "Room Test"
+        :episode 1 :quest-number 9001 :quest-name "Room Test" :map 1
         :players (list (list :index 0 :floor floor :room room))
         :monsters monsters
         :floor-switches switches))
@@ -1184,6 +1185,24 @@ player on FLOOR/ROOM, plus MONSTERS and a floor-switch block."
         (check "room 3 last kill is enemy 8"
                (and r3 (eql 8 (getf (getf r3 :last-kill) :id))))
         (check "room 3 has no clear switch" (and r3 (null (getf r3 :switch))))))
+    ;; Area names and flattened pickable rows.
+    (check "client-map-name in range" (string= "Forest 1" (client-map-name 1)))
+    (check "client-map-name out of range" (string= "Map 99" (client-map-name 99)))
+    (check "room carries its map" (eql 1 (getf (first (run-rooms)) :map)))
+    (let ((r2 (find 2 (run-rooms) :key (lambda (r) (getf r :room)))))
+      (check "room-area-label uses the map name"
+             (string= "Forest 1 · room 2" (room-area-label r2))))
+    (let ((rows (run-room-rows)))
+      ;; room 2: clear row + enemy 7; room 3: enemy 8 (no switch) = 3 rows.
+      (check "run-room-rows count" (= 3 (length rows)))
+      (let ((clear (find :clear rows :key (lambda (r) (getf r :kind)))))
+        (check "clear row trigger is the floor-switch"
+               (equal '(:floor-switch 1 5) (getf clear :trigger)))
+        (check "clear row area is room 2"
+               (string= "Forest 1 · room 2" (getf clear :area))))
+      (let ((enemy (find :enemy rows :key (lambda (r) (getf r :kind)))))
+        (check "enemy row trigger is monster-dead"
+               (eq :monster-dead (first (getf enemy :trigger))))))
     ;; Leaving to the lobby keeps the data for post-run registration.
     (update-run-logs d lobby)
     (check "run logs survive into the lobby" (= 2 (length (run-rooms))))

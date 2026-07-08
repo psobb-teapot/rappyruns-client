@@ -123,12 +123,13 @@ frame regardless of the trigger-log toggle."
 
 (defvar *run-kill-log* '()
   "Kills observed during the current or most-recent quest load, NEWEST
-FIRST, each a plist (:id :name :unitxt :floor :room :time). :floor/:room
-are the local player's at kill time (a monster carries no room of its
-own); :time is GET-INTERNAL-REAL-TIME, used only for ordering. Read by
-the GUI room/enemy picker to build a rule. Unlike *LAST-KILL* this is
-kept through the run AND into the lobby - it is only reset when a new
-quest loads - so a rule can be registered after finishing or aborting.")
+FIRST, each a plist (:id :name :unitxt :floor :room :map :time). :floor/
+:room are the local player's at kill time (a monster carries no room of
+its own); :map is the snapshot's real loaded map number (for area names);
+:time is GET-INTERNAL-REAL-TIME, used only for ordering. Read by the GUI
+room/enemy picker to build a rule. Unlike *LAST-KILL* this is kept through
+the run AND into the lobby - it is only reset when a new quest loads - so
+a rule can be registered after finishing or aborting.")
 
 (defvar *run-switch-log* '()
   "Floor switches that fired during the current or most-recent quest load,
@@ -164,12 +165,13 @@ the lobby. Safe to call every frame."
       (let* ((me (snapshot-my-player snapshot))
              (floor (and me (getf me :floor)))
              (room (and me (getf me :room)))
+             (map (getf snapshot :map))
              (time (get-internal-real-time)))
         (dolist (monster (newly-killed-monsters previous snapshot))
           (push (list :id (getf monster :id)
                       :name (getf monster :name)
                       :unitxt (getf monster :unitxt)
-                      :floor floor :room room :time time)
+                      :floor floor :room room :map map :time time)
                 *run-kill-log*))
         (dolist (sw (newly-set-floor-switches previous snapshot))
           (push (list :floor (getf sw :floor)
@@ -194,10 +196,11 @@ its own :floor for the trigger. NIL when no switch fired in the room."
 (defun run-rooms ()
   "Group *RUN-KILL-LOG* into rooms for the rule picker. Returns a list of
 room plists in the order rooms were first entered:
-  (:floor F :room R :kills (kill... oldest first)
+  (:floor F :room R :map M :kills (kill... oldest first)
    :last-kill kill :switch (:floor :switch ...)|nil)
-:last-kill is the room's final kill; :switch is the room-clear candidate
-from ROOM-CLEAR-SWITCH. Pure; reads the run-log globals."
+:last-kill is the room's final kill; :map is the area map number (for the
+label); :switch is the room-clear candidate from ROOM-CLEAR-SWITCH. Pure;
+reads the run-log globals."
   (let ((kills (reverse *run-kill-log*))   ; oldest first
         (rooms '()))                        ; (key . plist), reverse first-seen
     (dolist (kill kills)
@@ -208,6 +211,7 @@ from ROOM-CLEAR-SWITCH. Pure; reads the run-log globals."
                   (append (getf (cdr cell) :kills) (list kill)))
             (push (cons key (list :floor (getf kill :floor)
                                   :room (getf kill :room)
+                                  :map (getf kill :map)
                                   :kills (list kill)))
                   rooms))))
     (loop :for (nil . room) :in (nreverse rooms)
@@ -215,6 +219,65 @@ from ROOM-CLEAR-SWITCH. Pure; reads the run-log globals."
           :collect (list* :last-kill last-kill
                           :switch (room-clear-switch room last-kill)
                           room))))
+
+;;; Area names: a room's :map number -> a human area label, mirroring the
+;;; site (src/views.lisp +map-names+ / room-area-text). The client reads
+;;; the real loaded map (+current-map-address+, snapshot :map), which
+;;; indexes this table directly, so no episode/floor-slot fallback is
+;;; needed. English only (area names are proper nouns used as-is in JA).
+
+(defparameter +map-names+
+  #("Pioneer II" "Forest 1" "Forest 2" "Cave 1" "Cave 2" "Cave 3"
+    "Mine 1" "Mine 2" "Ruins 1" "Ruins 2" "Ruins 3"
+    "Under the Dome" "Underground Channel" "Control Room" "????"
+    "Lobby" "BA Spaceship" "BA Temple" "Lab"
+    "Temple Alpha" "Temple Beta 2" "Spaceship Alpha" "Spaceship Beta"
+    "CCA" "Jungle North" "Jungle East" "Mountain" "Seaside"
+    "Seabed Upper" "Seabed Lower" "Cliffs of Gal Da Val"
+    "Test Subject Disposal Area" "Temple Final" "Spaceship Final"
+    "Seaside at Night" "Control Tower"
+    "Crater East" "Crater West" "Crater South" "Crater North"
+    "Crater Interior" "Desert 1" "Desert 2" "Desert 3"
+    "Meteor Impact Site" "Pioneer II"))
+
+(defun client-map-name (number)
+  "Area name for a map NUMBER, or \"Map N\" when out of range/unknown."
+  (if (and (integerp number) (< -1 number (length +map-names+)))
+      (aref +map-names+ number)
+      (format nil "Map ~a" number)))
+
+(defun room-area-label (room)
+  "\"<area> · room <n>\" for a ROOM plist (from RUN-ROOMS), or
+\"Room <n>\" when the map is unknown. Matches the site's room label."
+  (let ((map (getf room :map))
+        (rm (getf room :room)))
+    (if (integerp map)
+        (format nil "~a · room ~a" (client-map-name map) rm)
+        (format nil "Room ~a" rm))))
+
+(defun run-room-rows ()
+  "Flatten RUN-ROOMS into pickable rows for the live Rooms list. Each row
+is a plist (:area LABEL :kind :clear|:enemy :name NAME|nil :trigger LIST):
+per room a :clear row when a clearing switch was seen, then one :enemy row
+per distinct enemy (in kill order). Pure; the GUI renders and, on click,
+uses :trigger as the rule's end condition."
+  (loop :for room :in (run-rooms)
+        :for area := (room-area-label room)
+        :nconc (let ((sw (getf room :switch))
+                     (enemies (remove-duplicates (getf room :kills)
+                                                 :key (lambda (k) (getf k :id))
+                                                 :from-end t)))
+                 (append
+                  (when sw
+                    (list (list :area area :kind :clear :name nil
+                                :trigger (list :floor-switch
+                                               (getf sw :floor)
+                                               (getf sw :switch)))))
+                  (loop :for k :in enemies
+                        :collect (list :area area :kind :enemy
+                                       :name (getf k :name)
+                                       :trigger (list :monster-dead
+                                                      (getf k :id))))))))
 
 (defun log-trigger-changes (previous snapshot)
   "Append register / floor-switch diffs between two consecutive

@@ -89,6 +89,9 @@
     :tab-runs
     ("Runs"
      "記録")
+    :tab-rooms
+    ("Rooms"
+     "部屋")
     :tab-settings
     ("Settings"
      "設定")
@@ -107,6 +110,22 @@
     :col-status
     ("Status"
      "状態")
+    ;; Rooms tab (live rooms/monsters list)
+    :col-area
+    ("Area"
+     "エリア")
+    :col-condition
+    ("Condition"
+     "条件")
+    :col-trigger
+    ("Trigger"
+     "トリガー")
+    :rooms-hint
+    ("Rooms and enemies of this run - double-click one to register a rule from it."
+     "この Run の部屋・敵。行をダブルクリックするとそれを条件にルールを登録できます。")
+    :rooms-clear
+    ("clear"
+     "クリア")
     :upload-button
     ("Upload to YouTube"
      "YouTube にアップロード")
@@ -265,6 +284,18 @@
     :rule-need-end
     ("Choose a clear condition."
      "クリア条件を選んでください。")
+    :rule-need-values
+    ("Enter valid values for the manual trigger (id 0-65535, floor 0-17, switch/register 0-255)."
+     "手動トリガーの値を正しく入力してください (id 0-65535・フロア 0-17・switch/register 0-255)。")
+    :rule-val1-label
+    ("Value 1"
+     "値1")
+    :rule-val2-label
+    ("Value 2"
+     "値2")
+    :rule-manual-hint
+    ("Manual: fill the value fields below (monster=id, floor-switch=floor & switch, register=value)."
+     "手動: 下の値欄に入力 (monster=id、floor-switch=フロアとswitch、register=値)。")
     :rule-item-clear
     ("~a - clear -> floor-switch:~a:~a"
      "~a - クリア → floor-switch:~a:~a")

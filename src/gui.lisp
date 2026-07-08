@@ -68,6 +68,27 @@ poll loop re-reads it every iteration.")
               :action-callback 'runs-list-action-callback
               :callback-type :data-interface
               :visible-min-height '(:character 8))
+   ;; Live rooms/monsters of the current or most-recent run. Fills as you
+   ;; play; double-click a row to register a rule from that condition.
+   (rooms-hint capi:title-pane
+               :text (tr :rooms-hint)
+               :font *ui-font*)
+   (rooms-list capi:multi-column-list-panel
+               :font *ui-font*
+               :header-args (list :font *ui-font*)
+               :columns `((:title ,(tr :col-area) :width (:character 30))
+                          (:title ,(tr :col-condition) :width (:character 20))
+                          (:title ,(tr :col-trigger) :width (:character 22)))
+               :items '()
+               :column-function
+               (lambda (row)
+                 (list (getf row :area)
+                       (rooms-row-condition row)
+                       (rule-trigger-label (getf row :trigger))))
+               :accessor rooms-list-pane
+               :action-callback 'rooms-list-action-callback
+               :callback-type :data-interface
+               :visible-min-height '(:character 10))
    (language-radio capi:radio-button-panel
                    :items *languages*
                    :print-function 'language-label
@@ -288,8 +309,10 @@ poll loop re-reads it every iteration.")
                  '(language-group connection-group completion-group
                    recording-group updates-group advanced-group)
                  :adjust :left)
+   (rooms-tab capi:column-layout '(rooms-hint rooms-list) :adjust :left)
    (main-tabs capi:tab-layout ()
               :items `((,(tr :tab-runs) runs-tab)
+                       (,(tr :tab-rooms) rooms-tab)
                        (,(tr :tab-settings) settings-tab))
               :font *ui-font*
               :print-function 'first
@@ -694,6 +717,17 @@ number, else episode + name), or NIL - used to pre-select the form's quest."
                                                   :test #'equal)))))
                         parents))))))
 
+(defun rule-trigger-label (trigger)
+  "Canonical trigger string for a preview / list cell, or \"\" for NIL."
+  (if (null trigger)
+      ""
+      (ecase (first trigger)
+        (:warp-in "warp-in")
+        (:register (format nil "register:~d" (second trigger)))
+        (:floor-switch (format nil "floor-switch:~d:~d"
+                               (second trigger) (third trigger)))
+        (:monster-dead (format nil "monster:~d" (second trigger))))))
+
 (defun rule-error-message (payload)
   "A human string from an /api/quests error PAYLOAD - its \"message\" or
 joined \"errors\" - or \"?\" when neither is present."
@@ -705,90 +739,54 @@ joined \"errors\" - or \"?\" when neither is present."
                     (format nil "~{~a~^; ~}" (coerce errors 'list))))))
       "?"))
 
-(defun prompt-monster-id ()
-  (multiple-value-bind (id okp)
-      (capi:prompt-for-integer (tr :rule-monster-id-prompt) :min 0 :max 65535)
-    (and okp id (list :monster-dead id))))
+(defun rooms-row-condition (row)
+  "The condition text for a RUN-ROOM-ROWS row: \"clear\" or the enemy name."
+  (if (eq (getf row :kind) :clear) (tr :rooms-clear) (getf row :name)))
 
-(defun prompt-floor-switch-trigger ()
-  (multiple-value-bind (floor okp1)
-      (capi:prompt-for-integer (tr :rule-floor-prompt) :min 0 :max 17)
-    (when (and okp1 floor)
-      (multiple-value-bind (switch okp2)
-          (capi:prompt-for-integer (tr :rule-switch-prompt) :min 0 :max 255)
-        (when (and okp2 switch)
-          (list :floor-switch floor switch))))))
+(defun rooms-row-label (row)
+  "\"<area> - <condition>\" label for a run-room row."
+  (format nil "~a - ~a" (getf row :area) (rooms-row-condition row)))
 
-(defun prompt-register-trigger ()
-  (multiple-value-bind (n okp)
-      (capi:prompt-for-integer (tr :rule-register-prompt) :min 0 :max 255)
-    (and okp n (list :register n))))
-
-(defun room-picker-label (room)
-  "Short area label for a room in the run: floor, room and kill count."
-  (tr :rule-room-item (getf room :floor) (getf room :room)
-      (length (getf room :kills))))
-
-(defun rule-end-items (rooms)
-  "Flat ( (label . trigger-or-marker) ... ) for the end-trigger dropdown:
-each room's clear switch, last enemy and remaining enemies (labelled with
-the room), then manual fallbacks that work with no run data. A marker is a
-keyword (:monster/:floor-switch/:register) resolved to a trigger by
-QRD-RESOLVE-TRIGGER when the form is submitted."
-  (let ((out '()))
-    (dolist (room rooms)
-      (let* ((area (room-picker-label room))
-             (sw (getf room :switch))
-             (last (getf room :last-kill))
-             (enemies (remove-duplicates (getf room :kills)
-                                         :key (lambda (k) (getf k :id))
-                                         :from-end t)))
-        (when sw
-          (push (cons (tr :rule-item-clear area (getf sw :floor) (getf sw :switch))
-                      (list :floor-switch (getf sw :floor) (getf sw :switch)))
-                out))
-        (when last
-          (push (cons (tr :rule-item-last area (or (getf last :name) "?")
-                          (getf last :id))
-                      (list :monster-dead (getf last :id)))
-                out))
-        (dolist (k enemies)
-          (unless (and last (eql (getf k :id) (getf last :id)))
-            (push (cons (tr :rule-item-enemy area (or (getf k :name) "?")
-                            (getf k :id))
-                        (list :monster-dead (getf k :id)))
-                  out)))))
-    (append (nreverse out)
-            (list (cons (tr :rule-end-monster) :monster)
-                  (cons (tr :rule-end-floor-switch) :floor-switch)
-                  (cons (tr :rule-end-register) :register)))))
+(defun rule-end-items ()
+  "( (label . trigger-or-marker) ... ) for the end dropdown: this run's
+rooms/enemies (from RUN-ROOM-ROWS, area-labelled) plus manual fallbacks.
+A marker keyword (:monster/:floor-switch/:register) is resolved from the
+form's value fields at submit time."
+  (append
+   (mapcar (lambda (row) (cons (rooms-row-label row) (getf row :trigger)))
+           (run-room-rows))
+   (list (cons (tr :rule-end-monster) :monster)
+         (cons (tr :rule-end-floor-switch) :floor-switch)
+         (cons (tr :rule-end-register) :register))))
 
 (defun rule-start-items ()
-  "( (label . X) ... ) for the start dropdown: inherit (default), warp-in,
-or a manual floor-switch / register marker."
+  "( (label . X) ... ) for the start dropdown: inherit (default) or
+warp-in. Floor-switch / register start overrides are rare - the site's
+/mod/quests form covers them - so they are kept out of the client form."
   (list (cons (tr :rule-start-inherit) :inherit)
-        (cons (tr :rule-start-warp-in) (list :warp-in))
-        (cons (tr :rule-start-floor-switch) :floor-switch)
-        (cons (tr :rule-start-register) :register)))
+        (cons (tr :rule-start-warp-in) (list :warp-in))))
 
-(defun qrd-resolve-trigger (item)
-  "ITEM is (label . X): X is either a ready internal trigger list or a
-manual marker keyword needing number entry. Returns a trigger list, or NIL
-when the manual sub-prompt is cancelled."
-  (case (cdr item)
-    (:monster (prompt-monster-id))
-    (:floor-switch (prompt-floor-switch-trigger))
-    (:register (prompt-register-trigger))
-    (t (cdr item))))
+(defun rule-manual-marker-p (x)
+  "True when an end item's value is a manual marker (needs the value
+fields), rather than a ready trigger list."
+  (member x '(:monster :floor-switch :register)))
 
-(defun qrd-resolve-start (item)
-  "ITEM is (label . X): the :INHERIT sentinel, a ready trigger list, or a
-manual marker. Returns :INHERIT, a trigger list, or NIL if cancelled."
-  (case (cdr item)
-    (:inherit :inherit)
-    (:floor-switch (prompt-floor-switch-trigger))
-    (:register (prompt-register-trigger))
-    (t (cdr item))))
+(defun parse-int-in-range (string min max)
+  "Parse STRING as an integer in [MIN, MAX], or NIL."
+  (let ((n (ignore-errors (parse-integer (string-trim " " (or string ""))))))
+    (and n (<= min n max) n)))
+
+(defun resolve-manual-trigger (marker val1 val2)
+  "Build a trigger from a manual MARKER and the two value-field strings, or
+NIL when a value is missing/out of range."
+  (ecase marker
+    (:monster (let ((id (parse-int-in-range val1 0 65535)))
+                (and id (list :monster-dead id))))
+    (:floor-switch (let ((floor (parse-int-in-range val1 0 17))
+                         (switch (parse-int-in-range val2 0 255)))
+                     (and floor switch (list :floor-switch floor switch))))
+    (:register (let ((n (parse-int-in-range val1 0 255)))
+                 (and n (list :register n))))))
 
 (defun post-quest-rule-in-background (interface parent-slug name description
                                       end start)
@@ -827,10 +825,12 @@ it. START is an internal trigger list, or NIL to inherit the parent's."
 
 ;;; The single registration form. Everything is visible at once: the quest
 ;;; (pre-selected from the run just played), name, description, the clear
-;;; condition (a flat list of this run's rooms/enemies plus manual entries)
-;;; and the start trigger (inherit by default). Register validates and, on
-;;; success, hands the POST to a worker; no follow-up confirmation dialog -
-;;; the form itself is the review.
+;;; condition (this run's rooms/enemies plus manual entries) with a live
+;;; trigger preview and inline value fields for the manual options, and the
+;;; start trigger (inherit by default). A Rooms-tab click opens the same
+;;; form with the clicked condition pre-selected. Register validates and
+;;; hands the POST to a worker; no follow-up confirmation - the form is the
+;;; review.
 
 (capi:define-interface quest-rule-dialog ()
   ()
@@ -838,29 +838,44 @@ it. START is an internal trigger list, or NIL to inherit the parent's."
    (quest-pane capi:option-pane
                :title (tr :rule-quest-label) :title-position :top
                :print-function 'quest-parent-label
-               :visible-min-width '(:character 46)
+               :visible-min-width '(:character 48)
                :font *ui-font* :title-font *ui-font*
                :accessor qrd-quest-pane)
    (name-pane capi:text-input-pane
               :title (tr :rule-name-label) :title-position :top
-              :visible-min-width '(:character 46)
+              :visible-min-width '(:character 48)
               :font *ui-font* :title-font *ui-font*
               :accessor qrd-name-pane)
    (desc-pane capi:text-input-pane
               :title (tr :rule-desc-label) :title-position :top
-              :visible-min-width '(:character 46)
+              :visible-min-width '(:character 48)
               :font *ui-font* :title-font *ui-font*
               :accessor qrd-desc-pane)
    (end-pane capi:option-pane
              :title (tr :rule-end-label-form) :title-position :top
              :print-function 'car
-             :visible-min-width '(:character 46)
+             :selection-callback 'qrd-end-changed :callback-type :interface
+             :visible-min-width '(:character 48)
              :font *ui-font* :title-font *ui-font*
              :accessor qrd-end-pane)
+   (preview-pane capi:title-pane
+                 :text ""
+                 :font *ui-font*
+                 :accessor qrd-preview-pane)
+   (val1-pane capi:text-input-pane
+              :title (tr :rule-val1-label) :title-position :left
+              :visible-min-width '(:character 10)
+              :font *ui-font* :title-font *ui-font*
+              :accessor qrd-val1-pane)
+   (val2-pane capi:text-input-pane
+              :title (tr :rule-val2-label) :title-position :left
+              :visible-min-width '(:character 10)
+              :font *ui-font* :title-font *ui-font*
+              :accessor qrd-val2-pane)
    (start-pane capi:option-pane
                :title (tr :rule-start-label-form) :title-position :top
                :print-function 'car
-               :visible-min-width '(:character 46)
+               :visible-min-width '(:character 48)
                :font *ui-font* :title-font *ui-font*
                :accessor qrd-start-pane)
    (ok-button capi:push-button :text (tr :rule-register-ok)
@@ -869,17 +884,46 @@ it. START is an internal trigger list, or NIL to inherit the parent's."
                   :callback 'qrd-cancel :callback-type :interface
                   :font *ui-font*))
   (:layouts
+   ;; The two value fields only matter for the manual end options; they
+   ;; sit under the preview, which spells out when they are needed.
+   (values-row capi:row-layout '(val1-pane val2-pane))
    (buttons capi:row-layout '(nil ok-button cancel-button))
    (main capi:column-layout
-         '(quest-pane name-pane desc-pane end-pane start-pane buttons)
+         '(quest-pane name-pane desc-pane end-pane preview-pane values-row
+           start-pane buttons)
          :adjust :left :internal-border 16 :gap 8))
   (:default-initargs
    :title (tr :rule-dialog-title)
    :layout 'main))
 
+(defun qrd-end-preview-text (item)
+  "Preview line for the selected end ITEM: the resolved trigger, or a hint
+to fill the value fields for a manual option."
+  (let ((x (cdr item)))
+    (if (rule-manual-marker-p x)
+        (tr :rule-manual-hint)
+        (format nil "→ ~a" (rule-trigger-label x)))))
+
+(defun qrd-end-changed (interface)
+  "Refresh the preview line when the end selection changes."
+  (let ((item (capi:choice-selected-item (qrd-end-pane interface))))
+    (setf (capi:title-pane-text (qrd-preview-pane interface))
+          (if item (qrd-end-preview-text item) ""))))
+
+(defun qrd-resolve-end (interface item)
+  "Resolve the selected end ITEM to an internal trigger: a ready trigger
+list passes through; a manual marker reads the value fields. NIL when a
+manual value is missing/out of range."
+  (let ((x (cdr item)))
+    (if (rule-manual-marker-p x)
+        (resolve-manual-trigger
+         x (capi:text-input-pane-text (qrd-val1-pane interface))
+         (capi:text-input-pane-text (qrd-val2-pane interface)))
+        x)))
+
 (defun qrd-ok (interface)
-  "Validate the form and, on success, close the dialog returning the rule.
-A missing field or a cancelled manual sub-entry keeps the dialog open."
+  "Validate the form and, on success, close returning the rule. A missing
+field keeps the dialog open with a message."
   (let ((parent (capi:choice-selected-item (qrd-quest-pane interface)))
         (name (string-trim " " (capi:text-input-pane-text
                                  (qrd-name-pane interface))))
@@ -893,25 +937,28 @@ A missing field or a cancelled manual sub-entry keeps the dialog open."
       ((string= desc "") (capi:display-message "~a" (tr :rule-need-desc)))
       ((null end-item) (capi:display-message "~a" (tr :rule-need-end)))
       (t
-       (let ((end (qrd-resolve-trigger end-item)))
-         (when end
-           (let ((start (qrd-resolve-start start-item)))
-             (when start
+       (let ((end (qrd-resolve-end interface end-item)))
+         (if (null end)
+             (capi:display-message "~a" (tr :rule-need-values))
+             (let ((start (cdr start-item)))
                (capi:exit-dialog
                 (list :parent (gethash "slug" parent)
                       :name name :desc desc :end end
-                      :start (unless (eq start :inherit) start)))))))))))
+                      :start (unless (eq start :inherit) start))))))))))
 
 (defun qrd-cancel (interface)
   (declare (ignore interface))
   (capi:abort-dialog))
 
-(defun show-quest-rule-dialog (parents rooms detected)
-  "Build and modally show the form. Returns a plist (:parent :name :desc
-:end :start) on Register, or NIL on Cancel."
-  (let ((dlg (make-instance 'quest-rule-dialog))
-        (end-items (rule-end-items rooms))
-        (start-items (rule-start-items)))
+(defun show-quest-rule-dialog (parents detected &optional preset)
+  "Build and modally show the form. PRESET, when non-NIL, is a
+(label . trigger) prepended to the end list and pre-selected (the Rooms-tab
+click path). Returns a plist (:parent :name :desc :end :start) on Register,
+or NIL on Cancel."
+  (let* ((dlg (make-instance 'quest-rule-dialog))
+         (end-items (let ((items (rule-end-items)))
+                      (if preset (cons preset items) items)))
+         (start-items (rule-start-items)))
     (setf (capi:collection-items (qrd-quest-pane dlg)) parents
           (capi:choice-selected-item (qrd-quest-pane dlg))
           (or detected (first parents))
@@ -919,11 +966,13 @@ A missing field or a cancelled manual sub-entry keeps the dialog open."
           (capi:choice-selected-item (qrd-end-pane dlg)) (first end-items)
           (capi:collection-items (qrd-start-pane dlg)) start-items
           (capi:choice-selected-item (qrd-start-pane dlg)) (first start-items))
+    (qrd-end-changed dlg)
     (capi:display-dialog dlg)))
 
-(defun run-quest-rule-flow (interface)
-  "Fetch the quest catalog off the GUI thread, then show the single-form
-dialog on it; on Register, POST the rule in a worker."
+(defun run-quest-rule-flow (interface &optional preset)
+  "Fetch the quest catalog off the GUI thread, then show the form on it;
+on Register, POST the rule in a worker. PRESET pre-selects an end trigger
+(from a Rooms-tab click)."
   (handler-case
       (let ((parents (timeable-quests (fetch-quests))))
         (capi:execute-with-interface-if-alive
@@ -932,8 +981,9 @@ dialog on it; on Register, POST the rule in a worker."
            (if (null parents)
                (capi:display-message "~a" (tr :rule-no-parents))
                (let ((result (show-quest-rule-dialog
-                              parents (run-rooms)
-                              (detected-parent parents *run-quest*))))
+                              parents
+                              (detected-parent parents *run-quest*)
+                              preset)))
                  (when result
                    (post-quest-rule-in-background
                     interface (getf result :parent) (getf result :name)
@@ -947,10 +997,22 @@ dialog on it; on Register, POST the rule in a worker."
           "~a" (tr :rule-fetch-failed (api-error-message condition))))))))
 
 (defun register-quest-rule-callback (interface)
-  "Advanced > Register quest rule: fetch quests then walk the dialogs."
+  "Advanced > Register quest rule: open the form (no preset)."
   (mp:process-run-function
    "eta-client-quest-rule" '()
    (lambda () (run-quest-rule-flow interface))))
+
+(defun rooms-row-preset (row)
+  "A (label . trigger) preset for the form from a clicked Rooms-tab ROW."
+  (cons (rooms-row-label row) (getf row :trigger)))
+
+(defun rooms-list-action-callback (row interface)
+  "Double-click a Rooms-tab row: open the registration form with that
+room/enemy as the pre-selected clear condition."
+  (when (getf row :trigger)
+    (mp:process-run-function
+     "eta-client-quest-rule" '()
+     (lambda () (run-quest-rule-flow interface (rooms-row-preset row))))))
 
 (defun toggle-record-callback (interface)
   "Apply the recording toggle immediately (no Save needed). Turning it
@@ -1006,6 +1068,30 @@ any thread. Errors get :red so they stand out from routine status."
      (lambda ()
        (setf (capi:collection-items (runs-list-pane interface))
              (coerce runs 'vector))))))
+
+(defvar *rooms-list-signature* nil
+  "Cheap signature of the rooms list last pushed to the GUI, so the ~4x/sec
+tick only rebuilds the pane when the run's kills/switches changed - keeping
+selection and scroll stable while the user clicks in the lobby.")
+
+(defun rooms-list-signature ()
+  "A value that changes whenever RUN-ROOM-ROWS would: kill and switch
+counts plus the newest kill id."
+  (list (length *run-kill-log*) (length *run-switch-log*)
+        (getf (first *run-kill-log*) :id)))
+
+(defun refresh-rooms-list (interface)
+  "Rebuild the Rooms pane from RUN-ROOM-ROWS, but only when the underlying
+run data changed."
+  (let ((sig (rooms-list-signature)))
+    (unless (equal sig *rooms-list-signature*)
+      (setf *rooms-list-signature* sig)
+      (let ((rows (run-room-rows)))
+        (capi:execute-with-interface-if-alive
+         interface
+         (lambda ()
+           (setf (capi:collection-items (rooms-list-pane interface))
+                 (coerce rows 'vector))))))))
 
 (defun check-server (interface)
   "Fetch quests, load any moderator-defined detection categories, and
@@ -1293,4 +1379,6 @@ silent, exactly like the old silent startup check."
          (format nil "~a~:[~; [REC]~] - Rappy Runs Client"
                  (format-run-time (detector-elapsed-ms detector))
                  recording-p)
-         "Rappy Runs Client"))))
+         "Rappy Runs Client"))
+    ;; Keep the live Rooms tab current (rebuilds only on change).
+    (refresh-rooms-list interface)))
