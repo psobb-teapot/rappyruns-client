@@ -2359,9 +2359,17 @@ store functions that persist never touch the real %APPDATA% queue."
                       :server-url)))
   (check "the dropped token-prompt-shown key is scrubbed"
          (let ((migrated (ephinea-ta-client::migrate-config
-                          (list :token-prompt-shown t :auto-submit t))))
+                          (list :token-prompt-shown t :record-audio t))))
            (and (null (getf migrated :token-prompt-shown))
-                (getf migrated :auto-submit))))
+                (getf migrated :record-audio))))
+  ;; The forced (hidden) settings are scrubbed on load so a stale saved
+  ;; value can never override the fixed default.
+  (check "forced config keys are scrubbed so the default wins"
+         (let ((migrated (ephinea-ta-client::migrate-config
+                          (list :completion-sound t :delete-after-upload nil
+                                :auto-submit nil))))
+           (every (lambda (key) (null (getf migrated key)))
+                  ephinea-ta-client::+forced-config-keys+)))
   ;; The default recordings folder rename (Videos/EphineaTA -> RappyRuns).
   (check "a fresh install uses the new recordings folder"
          (eq :use-new (ephinea-ta-client::default-record-dir-choice nil nil)))

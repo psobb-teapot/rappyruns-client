@@ -8,19 +8,27 @@
 rewritten to the new default on load (LOAD-CONFIG!), so the old domain
 can eventually be retired; a custom URL is never touched.")
 
+;; The six +forced-config-keys+ below are no longer user-adjustable:
+;; their GUI controls were removed and MIGRATE-CONFIG scrubs any saved
+;; value so CONFIG-VALUE always resolves to the default here. Edit the
+;; behavior by changing the default in *DEFAULT-CONFIG*.
+(defparameter +forced-config-keys+
+  '(:auto-submit :submit-aborted :completion-sound
+    :record-enabled :video-upload :delete-after-upload))
+
 (defparameter *default-config*
   (list :server-url "https://rappyruns-production.up.railway.app"
         :api-token ""
         :language :en      ; UI language, :en or :ja (i18n.lisp)
-        :auto-submit t
-        :submit-aborted t   ; record quests quit mid-run (private on the server)
+        :auto-submit t          ; forced (hidden): always submit on completion
+        :submit-aborted t       ; forced (hidden): record quests quit mid-run (private on the server)
         :auto-update t      ; install new GitHub releases at startup, unattended (updater.lisp)
-        :completion-sound t
+        :completion-sound nil   ; forced (hidden): no completion sound
         :trigger-log nil
-        :record-enabled t
+        :record-enabled t       ; forced (hidden): always record quest videos
         :record-audio t     ; game-only capture (process loopback; see audio-win32)
-        :video-upload t     ; upload saved recordings to the site automatically
-        :delete-after-upload nil ; delete the local file once the site has it (opt-in; aborted runs never upload, so their videos stay)
+        :video-upload t         ; forced (hidden): always upload saved recordings
+        :delete-after-upload t  ; forced (hidden): drop the local file once the site has it
         :record-max-total-gb 20  ; cap the recordings folder; oldest videos are reaped past this (0/blank = unlimited). See APPLY-RECORDING-RETENTION.
         :ffmpeg-path ""     ; blank = bundled copy next to the exe, or PATH
         :record-dir ""      ; blank = <user home>/Videos/RappyRuns/ (recording.lisp migrates the pre-rename folder)
@@ -59,10 +67,13 @@ can eventually be retired; a custom URL is never touched.")
 (defun migrate-config (config)
   "Bring an older config file up to date (pure, so the tests can pin it).
 Scrubs the dropped :token-prompt-shown key (the token nudge now repeats
-until a token is set) and retargets the old default server URL to the
-new domain (both serve the same app while both exist); a custom URL is
-never touched."
+until a token is set), drops any saved value for the +FORCED-CONFIG-KEYS+
+so those behaviors always fall back to the fixed default, and retargets
+the old default server URL to the new domain (both serve the same app
+while both exist); a custom URL is never touched."
   (remf config :token-prompt-shown)
+  (dolist (key +forced-config-keys+)
+    (remf config key))
   (when (equal (getf config :server-url) +old-default-server-url+)
     (setf (getf config :server-url)
           (getf *default-config* :server-url)))

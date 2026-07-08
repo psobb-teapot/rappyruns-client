@@ -149,9 +149,6 @@
     :group-connection
     ("Connection"
      "接続")
-    :group-completion
-    ("When a run completes"
-     "計測完了時")
     :group-recording
     ("Recording"
      "録画")
@@ -167,27 +164,9 @@
     :save-button
     ("Save & verify"
      "保存して確認")
-    :auto-submit-label
-    ("Submit automatically on quest completion"
-     "クエスト完了時に記録を自動送信する")
-    :submit-aborted-label
-    ("Record abandoned quests too (private, only you can see them)"
-     "中断したクエストも記録する (非公開・自分だけが見られます)")
-    :completion-sound-label
-    ("Play a sound when a run completes"
-     "計測完了時にサウンドを鳴らす")
-    :record-label
-    ("Record quest videos automatically"
-     "クエスト動画を自動で録画する")
     :record-audio-label
     ("Record game audio (only the game is heard, not Discord etc.)"
      "ゲーム音声を録音する (ゲームの音のみ。Discord などの音は入りません)")
-    :video-upload-label
-    ("Upload recordings to the site automatically"
-     "録画をサイトへ自動アップロードする")
-    :delete-after-upload-label
-    ("Delete the local file once the site has it"
-     "アップロード完了後にローカルの動画を削除する")
     :record-storage-note
     ("The recordings folder is capped at ~a GB; the oldest videos are removed past that."
      "録画フォルダは最大 ~a GB までで、超過分は古い動画から自動削除されます。")

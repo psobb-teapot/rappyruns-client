@@ -109,30 +109,8 @@ poll loop re-reads it every iteration.")
                     :font *ui-font*
                     :title-font *ui-font*
                     :accessor api-token-input)
-   (auto-submit-check capi:check-button
-                      :text (tr :auto-submit-label)
-                      :selected (config-value :auto-submit)
-                      :selection-callback 'toggle-auto-submit-callback
-                      :retract-callback 'toggle-auto-submit-callback
-                      :callback-type :interface
-                      :font *ui-font*
-                      :accessor auto-submit-check)
-   (submit-aborted-check capi:check-button
-                         :text (tr :submit-aborted-label)
-                         :selected (config-value :submit-aborted)
-                         :selection-callback 'toggle-submit-aborted-callback
-                         :retract-callback 'toggle-submit-aborted-callback
-                         :callback-type :interface
-                         :font *ui-font*
-                         :accessor submit-aborted-check)
-   (completion-sound-check capi:check-button
-                           :text (tr :completion-sound-label)
-                           :selected (config-value :completion-sound)
-                           :selection-callback 'toggle-completion-sound-callback
-                           :retract-callback 'toggle-completion-sound-callback
-                           :callback-type :interface
-                           :font *ui-font*
-                           :accessor completion-sound-check)
+   ;; Auto-submit, submit-aborted and completion-sound are fixed
+   ;; behaviors now (see +FORCED-CONFIG-KEYS+); no controls for them.
    (trigger-log-check capi:check-button
                       :text (tr :trigger-log-label)
                       :selected (config-value :trigger-log)
@@ -146,14 +124,8 @@ poll loop re-reads it every iteration.")
                          :callback 'register-quest-rule-callback
                          :callback-type :interface
                          :font *ui-font*)
-   (record-check capi:check-button
-                 :text (tr :record-label)
-                 :selected (config-value :record-enabled)
-                 :selection-callback 'toggle-record-callback
-                 :retract-callback 'toggle-record-callback
-                 :callback-type :interface
-                 :font *ui-font*
-                 :accessor record-check)
+   ;; Recording, uploading and delete-after-upload are fixed behaviors
+   ;; now (see +FORCED-CONFIG-KEYS+); only the game-audio toggle remains.
    (record-audio-check capi:check-button
                        :text (tr :record-audio-label)
                        :selected (config-value :record-audio)
@@ -162,32 +134,14 @@ poll loop re-reads it every iteration.")
                        :callback-type :interface
                        :font *ui-font*
                        :accessor record-audio-check)
-   (video-upload-check capi:check-button
-                       :text (tr :video-upload-label)
-                       :selected (config-value :video-upload)
-                       :selection-callback 'toggle-video-upload-callback
-                       :retract-callback 'toggle-video-upload-callback
-                       :callback-type :interface
-                       :font *ui-font*
-                       :accessor video-upload-check)
-   (delete-after-upload-check capi:check-button
-                              :text (tr :delete-after-upload-label)
-                              :selected (config-value :delete-after-upload)
-                              :selection-callback 'toggle-delete-after-upload-callback
-                              :retract-callback 'toggle-delete-after-upload-callback
-                              :callback-type :interface
-                              :font *ui-font*
-                              :accessor delete-after-upload-check)
    ;; The local storage budget in one line - what keeps the recordings
    ;; folder from growing without bound - alongside the hosted note.
    (record-storage-note capi:title-pane
                         :text (tr :record-storage-note
                                   (config-value :record-max-total-gb))
                         :font *ui-font*)
-   ;; The retention policy in one line, sitting under the upload
-   ;; toggle it applies to. Uploading defaults to on, but the first
-   ;; launch lands on this tab (no token yet), so it is seen before
-   ;; anything is uploaded.
+   ;; The retention policy in one line. Uploading is always on, so this
+   ;; is what happens to the hosted videos over time.
    (video-retention-note capi:title-pane
                          :text (tr :video-retention-note)
                          :font *ui-font*)
@@ -284,16 +238,10 @@ poll loop re-reads it every iteration.")
                          '(api-token-input save-button))
                      :title (tr :group-connection) :title-position :frame
                      :title-font *ui-font* :adjust :left)
-   (completion-group capi:column-layout
-                     '(auto-submit-check submit-aborted-check
-                       completion-sound-check)
-                     :title (tr :group-completion) :title-position :frame
-                     :title-font *ui-font* :adjust :left)
    (recording-row capi:row-layout '(record-dir-display record-dir-button)
                   :adjust :center)
    (recording-group capi:column-layout
-                    '(record-check record-audio-check video-upload-check
-                      delete-after-upload-check record-storage-note
+                    '(record-audio-check record-storage-note
                       video-retention-note recording-row)
                     :title (tr :group-recording) :title-position :frame
                     :title-font *ui-font* :adjust :left)
@@ -306,7 +254,7 @@ poll loop re-reads it every iteration.")
                    :title (tr :group-advanced) :title-position :frame
                    :title-font *ui-font* :adjust :left)
    (settings-tab capi:column-layout
-                 '(language-group connection-group completion-group
+                 '(language-group connection-group
                    recording-group updates-group advanced-group)
                  :adjust :left)
    (rooms-tab capi:column-layout '(rooms-hint rooms-list) :adjust :left)
@@ -348,24 +296,6 @@ when toggled."
   (save-config!)
   (check-server interface)
   (check-token interface :notify t))
-
-(defun toggle-auto-submit-callback (interface)
-  "Apply the auto-submit toggle immediately (no Save needed)."
-  (setf (config-value :auto-submit)
-        (capi:button-selected (auto-submit-check interface)))
-  (save-config!))
-
-(defun toggle-submit-aborted-callback (interface)
-  "Apply the submit-aborted toggle immediately (no Save needed)."
-  (setf (config-value :submit-aborted)
-        (capi:button-selected (submit-aborted-check interface)))
-  (save-config!))
-
-(defun toggle-completion-sound-callback (interface)
-  "Apply the completion-sound toggle immediately (no Save needed)."
-  (setf (config-value :completion-sound)
-        (capi:button-selected (completion-sound-check interface)))
-  (save-config!))
 
 (defun language-changed-callback (interface)
   "Switch the UI language. CAPI fixes pane labels, list columns and tab
@@ -1021,37 +951,11 @@ room/enemy as the pre-selected clear condition."
      "eta-client-quest-rule" '()
      (lambda () (run-quest-rule-flow interface (rooms-row-preset row))))))
 
-(defun toggle-record-callback (interface)
-  "Apply the recording toggle immediately (no Save needed). Turning it
-on verifies that ffmpeg can actually be started; otherwise the box
-snaps back off with instructions."
-  (let ((on (capi:button-selected (record-check interface))))
-    (when (and on (not (ffmpeg-available-p)))
-      (setf (capi:button-selected (record-check interface)) nil
-            on nil)
-      (capi:display-message "~a" (tr :ffmpeg-missing)))
-    (setf (config-value :record-enabled) on)
-    (save-config!)))
-
 (defun toggle-record-audio-callback (interface)
   "Apply the audio toggle immediately (no Save needed). Read at
 recording start, so it takes effect from the next quest."
   (setf (config-value :record-audio)
         (capi:button-selected (record-audio-check interface)))
-  (save-config!))
-
-(defun toggle-video-upload-callback (interface)
-  "Applies immediately: the poll loop reads it before each upload, so
-unticking also stops the queue after the in-flight file (if any)."
-  (setf (config-value :video-upload)
-        (capi:button-selected (video-upload-check interface)))
-  (save-config!))
-
-(defun toggle-delete-after-upload-callback (interface)
-  "Applies immediately: the upload worker reads it as each file finishes
-uploading. Only affects files uploaded from now on."
-  (setf (config-value :delete-after-upload)
-        (capi:button-selected (delete-after-upload-check interface)))
   (save-config!))
 
 ;; The cross-thread update helpers use the -IF-ALIVE variant: the
