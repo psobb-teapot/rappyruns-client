@@ -234,12 +234,16 @@ hosted copy, which the player may still replace with an external link."
                  (queued-runs)))
 
 (defun resolve-video-target (candidates preferred)
-  "Which of CANDIDATES a copied video URL should go to: the only one,
-PREFERRED when it is still among them, :choose when it is ambiguous, or
-NIL when there are none."
+  "Which of CANDIDATES a copied video URL should go to. Taken
+automatically only for PREFERRED - the run whose Upload to YouTube
+button the player just pressed (so the copied link is the one they were
+sent to fetch). A copied URL is otherwise never silently pinned to a
+run, not even a lone candidate: a link copied for some other purpose (a
+party member's video, a different run submitted on the site) must not
+land on an unrelated draft, so the player picks explicitly (:choose).
+NIL when there are no candidates."
   (cond
     ((null candidates) nil)
-    ((null (rest candidates)) (first candidates))
     ((and preferred (find preferred candidates :test #'same-run-p)))
     (t :choose)))
 

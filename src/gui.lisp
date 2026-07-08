@@ -470,6 +470,10 @@ auto-uploaded (the just-finished-playing case)."
      (multiple-value-bind (updated error already-submitted)
          (attach-video-url! entry url)
        (declare (ignore updated))
+       ;; The Upload-to-YouTube intent is consumed once its link is on a
+       ;; run: clear the preferred target so the next copied URL, which
+       ;; may be for something else entirely, is not auto-aimed here.
+       (unless error (setf *last-upload-run* nil))
        (refresh-runs-list interface)
        (when (or error already-submitted)
          (capi:execute-with-interface-if-alive

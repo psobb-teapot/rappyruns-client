@@ -1725,8 +1725,12 @@ store functions that persist never touch the real %APPDATA% queue."
         (b (list :quest-slug "b" :time-ms 2 :finished-at 2 :server-id 2)))
     (check "no candidates -> NIL"
            (null (ephinea-ta-client::resolve-video-target '() nil)))
-    (check "a single candidate needs no preference"
-           (eq a (ephinea-ta-client::resolve-video-target (list a) b)))
+    (check "the deliberate upload target is taken even as the sole candidate"
+           (eq a (ephinea-ta-client::resolve-video-target (list a) (copy-list a))))
+    (check "a lone candidate that was not the upload target -> :choose"
+           (eq :choose (ephinea-ta-client::resolve-video-target (list a) nil)))
+    (check "a lone candidate under a mismatched preference -> :choose"
+           (eq :choose (ephinea-ta-client::resolve-video-target (list a) b)))
     (check "the preferred run wins among several"
            (eq b (ephinea-ta-client::resolve-video-target
                   (list a b) (copy-list b))))
