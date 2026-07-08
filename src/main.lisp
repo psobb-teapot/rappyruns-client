@@ -271,6 +271,10 @@ update exactly once."
                         (when (config-value :trigger-log)
                           (ignore-errors
                             (log-trigger-changes previous-snapshot snapshot)))
+                        ;; Track the last kill regardless of the log toggle:
+                        ;; the rule-registration dialog reads it any time.
+                        (ignore-errors
+                          (update-last-kill previous-snapshot snapshot))
                         (setf previous-snapshot snapshot)
                         (when *retry-requested*
                           (setf *retry-requested* nil)

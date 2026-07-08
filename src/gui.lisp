@@ -120,6 +120,11 @@ poll loop re-reads it every iteration.")
                       :callback-type :interface
                       :font *ui-font*
                       :accessor trigger-log-check)
+   (register-rule-button capi:push-button
+                         :text (tr :register-rule-button)
+                         :callback 'register-quest-rule-callback
+                         :callback-type :interface
+                         :font *ui-font*)
    (record-check capi:check-button
                  :text (tr :record-label)
                  :selected (config-value :record-enabled)
@@ -276,7 +281,7 @@ poll loop re-reads it every iteration.")
                     check-updates-button)
                   :title (tr :group-updates) :title-position :frame
                   :title-font *ui-font* :adjust :left)
-   (advanced-group capi:column-layout '(trigger-log-check)
+   (advanced-group capi:column-layout '(trigger-log-check register-rule-button)
                    :title (tr :group-advanced) :title-position :frame
                    :title-font *ui-font* :adjust :left)
    (settings-tab capi:column-layout
@@ -653,6 +658,199 @@ on, start the log file right away so the user can see it is working."
           (capi:display-message
            "~a" (tr :trigger-log-on (namestring path))))
         (close-trigger-log))))
+
+;;; Quest-rule registration (Advanced): the in-client counterpart of the
+;;; site's /mod/quests form. A short dialog sequence builds a rule derived
+;;; from a timeable parent quest and POSTs it (moderator token only). The
+;;; end trigger can be prefilled from the last enemy killed (*LAST-KILL*),
+;;; so "clear when this specific enemy dies" needs no hunting through
+;;; trigger-log.txt and no browser round trip.
+
+(defun timeable-quests (quests)
+  "The fetched /api/quests entries that can parent a rule: those carrying
+start+end detection triggers."
+  (loop :for quest :across quests
+        :when (and (gethash "start" quest) (gethash "end" quest))
+          :collect quest))
+
+(defun quest-parent-label (quest)
+  (format nil "~a  (~a)" (gethash "name" quest) (gethash "slug" quest)))
+
+(defun rule-trigger-label (trigger)
+  "Canonical string for an internal trigger list, for confirm dialogs."
+  (ecase (first trigger)
+    (:warp-in "warp-in")
+    (:register (format nil "register:~d" (second trigger)))
+    (:floor-switch (format nil "floor-switch:~d:~d" (second trigger) (third trigger)))
+    (:monster-dead (format nil "monster:~d" (second trigger)))))
+
+(defun rule-summary (end start)
+  "A localized two-line \"End: X / Start: Y\" summary for the confirm
+dialog. START may be the :INHERIT sentinel."
+  (format nil "~a: ~a~%~a: ~a"
+          (tr :rule-end-label) (rule-trigger-label end)
+          (tr :rule-start-label)
+          (if (eq start :inherit)
+              (tr :rule-start-inherit)
+              (rule-trigger-label start))))
+
+(defun rule-error-message (payload)
+  "A human string from an /api/quests error PAYLOAD - its \"message\" or
+joined \"errors\" - or \"?\" when neither is present."
+  (or (and (hash-table-p payload)
+           (let ((message (gethash "message" payload))
+                 (errors (gethash "errors" payload)))
+             (cond ((and (stringp message) (string/= message "")) message)
+                   ((and errors (plusp (length errors)))
+                    (format nil "~{~a~^; ~}" (coerce errors 'list))))))
+      "?"))
+
+(defun prompt-monster-id ()
+  (multiple-value-bind (id okp)
+      (capi:prompt-for-integer (tr :rule-monster-id-prompt) :min 0 :max 65535)
+    (and okp id (list :monster-dead id))))
+
+(defun prompt-monster-trigger ()
+  "Build a (:monster-dead ID). Offers *LAST-KILL* as the default, falling
+back to manual id entry."
+  (let ((last *last-kill*))
+    (if last
+        (if (capi:confirm-yes-or-no
+             "~a" (tr :rule-use-last-kill
+                      (or (getf last :name) "?") (getf last :id)))
+            (list :monster-dead (getf last :id))
+            (prompt-monster-id))
+        (progn
+          (capi:display-message "~a" (tr :rule-no-last-kill))
+          (prompt-monster-id)))))
+
+(defun prompt-floor-switch-trigger ()
+  (multiple-value-bind (floor okp1)
+      (capi:prompt-for-integer (tr :rule-floor-prompt) :min 0 :max 17)
+    (when (and okp1 floor)
+      (multiple-value-bind (switch okp2)
+          (capi:prompt-for-integer (tr :rule-switch-prompt) :min 0 :max 255)
+        (when (and okp2 switch)
+          (list :floor-switch floor switch))))))
+
+(defun prompt-register-trigger ()
+  (multiple-value-bind (n okp)
+      (capi:prompt-for-integer (tr :rule-register-prompt) :min 0 :max 255)
+    (and okp n (list :register n))))
+
+(defun prompt-end-trigger ()
+  "Ask for the rule's end trigger. Returns an internal trigger list or NIL
+if cancelled at any step."
+  (let ((monster (tr :rule-end-monster))
+        (floor-switch (tr :rule-end-floor-switch))
+        (register (tr :rule-end-register)))
+    (multiple-value-bind (choice okp)
+        (capi:prompt-with-list (list monster floor-switch register)
+                               (tr :rule-choose-end))
+      (when (and okp choice)
+        (cond ((string= choice monster) (prompt-monster-trigger))
+              ((string= choice floor-switch) (prompt-floor-switch-trigger))
+              ((string= choice register) (prompt-register-trigger)))))))
+
+(defun prompt-start-override ()
+  "Ask whether to inherit the parent's start trigger (the usual case) or
+set one. Returns :INHERIT, an internal trigger list, or NIL if cancelled."
+  (let ((inherit (tr :rule-start-inherit))
+        (warp-in (tr :rule-start-warp-in))
+        (floor-switch (tr :rule-start-floor-switch))
+        (register (tr :rule-start-register)))
+    (multiple-value-bind (choice okp)
+        (capi:prompt-with-list (list inherit warp-in floor-switch register)
+                               (tr :rule-choose-start))
+      (when (and okp choice)
+        (cond ((string= choice inherit) :inherit)
+              ((string= choice warp-in) (list :warp-in))
+              ((string= choice floor-switch) (prompt-floor-switch-trigger))
+              ((string= choice register) (prompt-register-trigger)))))))
+
+(defun post-quest-rule-in-background (interface parent-slug name description
+                                      end start)
+  "Fire the create-rule POST off the GUI thread; report the result back on
+it. START is an internal trigger list, or NIL to inherit the parent's."
+  (mp:process-run-function
+   "eta-client-quest-rule-post" '()
+   (lambda ()
+     (handler-case
+         (multiple-value-bind (outcome payload)
+             (create-quest-rule :parent parent-slug :name name
+                                :description description :end end :start start)
+           (capi:execute-with-interface-if-alive
+            interface
+            (lambda ()
+              (case outcome
+                (:created
+                 (capi:display-message
+                  "~a" (tr :rule-created (gethash "slug" payload)))
+                 ;; Pull the new rule into the active detection defs at once.
+                 (check-server interface))
+                (:duplicate
+                 (capi:display-message
+                  "~a" (tr :rule-duplicate (rule-error-message payload))))
+                (:forbidden
+                 (capi:display-message "~a" (tr :rule-forbidden)))
+                (t
+                 (capi:display-message
+                  "~a" (tr :rule-rejected (rule-error-message payload))))))))
+       (api-error (condition)
+         (capi:execute-with-interface-if-alive
+          interface
+          (lambda ()
+            (capi:display-message
+             "~a" (tr :rule-post-failed (api-error-message condition))))))))))
+
+(defun prompt-quest-rule (interface parents)
+  "The GUI-thread dialog sequence. Cancelling any step aborts silently; on
+completion it hands the POST to a worker thread."
+  (multiple-value-bind (parent okp)
+      (capi:prompt-with-list parents (tr :rule-choose-parent)
+                             :print-function 'quest-parent-label)
+    (when (and okp parent)
+      (let ((name (capi:prompt-for-string (tr :rule-name-prompt))))
+        (when (and name (string/= (string-trim " " name) ""))
+          (let ((description (capi:prompt-for-string (tr :rule-desc-prompt))))
+            (when (and description (string/= (string-trim " " description) ""))
+              (let ((end (prompt-end-trigger)))
+                (when end
+                  (let ((start (prompt-start-override)))
+                    (when (and start
+                               (capi:confirm-yes-or-no
+                                "~a" (tr :rule-confirm
+                                         (string-trim " " name)
+                                         (gethash "name" parent)
+                                         (rule-summary end start))))
+                      (post-quest-rule-in-background
+                       interface (gethash "slug" parent)
+                       (string-trim " " name) (string-trim " " description)
+                       end (unless (eq start :inherit) start)))))))))))))
+
+(defun run-quest-rule-flow (interface)
+  "Fetch the quest catalog (off the GUI thread), then run the dialog
+sequence on the GUI thread."
+  (handler-case
+      (let ((parents (timeable-quests (fetch-quests))))
+        (capi:execute-with-interface-if-alive
+         interface
+         (lambda ()
+           (if (null parents)
+               (capi:display-message "~a" (tr :rule-no-parents))
+               (prompt-quest-rule interface parents)))))
+    (api-error (condition)
+      (capi:execute-with-interface-if-alive
+       interface
+       (lambda ()
+         (capi:display-message
+          "~a" (tr :rule-fetch-failed (api-error-message condition))))))))
+
+(defun register-quest-rule-callback (interface)
+  "Advanced > Register quest rule: fetch quests then walk the dialogs."
+  (mp:process-run-function
+   "eta-client-quest-rule" '()
+   (lambda () (run-quest-rule-flow interface))))
 
 (defun toggle-record-callback (interface)
   "Apply the recording toggle immediately (no Save needed). Turning it

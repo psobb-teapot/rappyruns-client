@@ -43,13 +43,14 @@
            #:backend-fullscreen-monitor
            ;; trigger discovery
            #:log-trigger-changes #:start-trigger-log #:close-trigger-log
+           #:newly-killed-monsters #:update-last-kill
            ;; version / self-update (pure parts, used by tests)
            #:client-version #:parse-version #:version< #:update-available-p
            #:parse-release-json #:updater-script-text #:valid-update-zip-p
            #:startup-update-decision
            ;; api
            #:fetch-quests #:fetch-me #:normalize-token #:submit-run
-           #:login-with-password
+           #:login-with-password #:create-quest-rule #:trigger->json
            ;; login.txt credentials (pure parts, used by tests)
            #:parse-credentials #:read-credentials #:credentials-path
            ;; store

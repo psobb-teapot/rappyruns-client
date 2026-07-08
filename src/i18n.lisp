@@ -185,6 +185,93 @@
     ("Log trigger changes (for finding switch IDs of new categories)"
      "トリガーの変化をログに記録する (新カテゴリのスイッチ ID 調査用)")
 
+    ;; Quest-rule registration dialogs (gui.lisp; moderator only)
+    :register-rule-button
+    ("Register quest rule..."
+     "クエストルールを登録...")
+    :rule-no-parents
+    ("No timeable quests are available to base a rule on."
+     "ルールの土台にできる計測対象クエストがありません。")
+    :rule-fetch-failed
+    ("Could not fetch the quest list: ~a"
+     "クエスト一覧の取得に失敗しました: ~a")
+    :rule-choose-parent
+    ("Which quest is the rule for?"
+     "どのクエストのルールですか?")
+    :rule-name-prompt
+    ("Rule name (e.g. \"Boss kill\")"
+     "ルール名 (例: 「ボス撃破」)")
+    :rule-desc-prompt
+    ("Describe what the rule requires"
+     "ルールの条件を説明してください")
+    :rule-choose-end
+    ("End trigger: how does the rule clear?"
+     "終了トリガー: 何でクリアになりますか?")
+    :rule-end-monster
+    ("A specific enemy dies (monster)"
+     "特定の敵を倒す (monster)")
+    :rule-end-floor-switch
+    ("A floor switch fires (floor-switch)"
+     "フロアスイッチが立つ (floor-switch)")
+    :rule-end-register
+    ("A quest register is set (register)"
+     "クエストレジスタがセットされる (register)")
+    :rule-use-last-kill
+    ("Use the last enemy you killed?~%~a (id ~d)"
+     "直前に倒した敵を使いますか?~%~a (id ~d)")
+    :rule-no-last-kill
+    ("No kill recorded yet - enter the monster id manually."
+     "まだキルが記録されていません - モンスター id を手入力してください。")
+    :rule-monster-id-prompt
+    ("Monster id (0-65535)"
+     "モンスター id (0-65535)")
+    :rule-floor-prompt
+    ("Floor (0-17)"
+     "フロア (0-17)")
+    :rule-switch-prompt
+    ("Switch (0-255)"
+     "スイッチ (0-255)")
+    :rule-register-prompt
+    ("Register (0-255)"
+     "レジスタ (0-255)")
+    :rule-choose-start
+    ("Start trigger?"
+     "開始トリガーは?")
+    :rule-start-inherit
+    ("Inherit from the parent quest"
+     "親クエストから継承する")
+    :rule-start-warp-in
+    ("On warp-in"
+     "ワープイン時 (warp-in)")
+    :rule-start-floor-switch
+    ("A floor switch fires (floor-switch)"
+     "フロアスイッチが立つ (floor-switch)")
+    :rule-start-register
+    ("A quest register is set (register)"
+     "クエストレジスタがセットされる (register)")
+    :rule-end-label
+    ("End" "終了")
+    :rule-start-label
+    ("Start" "開始")
+    :rule-confirm
+    ("Register rule \"~a\" under ~a?~%~a"
+     "ルール「~a」を ~a に登録しますか?~%~a")
+    :rule-created
+    ("Quest rule created: ~a"
+     "クエストルールを作成しました: ~a")
+    :rule-duplicate
+    ("A rule with that name already exists: ~a"
+     "その名前のルールは既に存在します: ~a")
+    :rule-forbidden
+    ("Your account is not a moderator; quest rules cannot be created."
+     "モデレーター権限がないため、クエストルールを作成できません。")
+    :rule-rejected
+    ("The rule was rejected: ~a"
+     "ルールが拒否されました: ~a")
+    :rule-post-failed
+    ("Could not create the rule: ~a"
+     "ルールの作成に失敗しました: ~a")
+
     ;; Updates group (self-update; updater.lisp + gui.lisp)
     :group-updates
     ("Updates"

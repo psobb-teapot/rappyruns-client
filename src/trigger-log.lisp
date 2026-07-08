@@ -56,6 +56,49 @@ the log path."
                                              (get-universal-time))
     (format nil "~2,'0d:~2,'0d:~2,'0d" hour minute second)))
 
+(defun newly-killed-monsters (previous snapshot)
+  "Monsters alive (hp>0) in PREVIOUS and at 0 hp in SNAPSHOT - the
+alive->dead transition a \"monster:ID\" end trigger keys off. Returns the
+SNAPSHOT monster plists in :monsters order. Pure (no I/O); shared by the
+trigger log and last-kill tracking."
+  (let ((old (getf previous :monsters))
+        (new (getf snapshot :monsters)))
+    (loop :for monster :in new
+          :for was := (find (getf monster :id) old
+                            :key (lambda (m) (getf m :id)))
+          :when (and was (plusp (getf was :hp 0))
+                     (zerop (getf monster :hp 0)))
+            :collect monster)))
+
+(defvar *last-kill* nil
+  "The most recently killed enemy this quest load, as a plist
+(:id :name :unitxt), or NIL. Set by the poll loop from the alive->dead
+frame diff and read by the GUI's quest-rule registration to prefill a
+\"monster:ID\" end trigger. Cleared when the quest reloads or the player
+leaves it, so a stale id never prefills a different quest's rule. Defined
+here (loads before gui.lisp) so the GUI's reference is a known special.")
+
+(defun update-last-kill (previous snapshot)
+  "Refresh *LAST-KILL* from the PREVIOUS->SNAPSHOT frame diff. Forgets the
+old kill when no quest is loaded, or when the quest pointer changed (a
+reload or lobby return - that frame's diff spans two loads and is
+meaningless). Pure except for the *LAST-KILL* write; safe to call every
+frame regardless of the trigger-log toggle."
+  (cond
+    ((not (and snapshot (getf snapshot :quest-ptr)
+               (plusp (getf snapshot :quest-ptr))))
+     (setf *last-kill* nil))
+    ((and previous (getf previous :quest-ptr)
+          (not (eql (getf previous :quest-ptr) (getf snapshot :quest-ptr))))
+     (setf *last-kill* nil))
+    (t
+     (let ((killed (car (last (newly-killed-monsters previous snapshot)))))
+       (when killed
+         (setf *last-kill*
+               (list :id (getf killed :id)
+                     :name (getf killed :name)
+                     :unitxt (getf killed :unitxt))))))))
+
 (defun log-trigger-changes (previous snapshot)
   "Append register / floor-switch diffs between two consecutive
 snapshots of the same loaded quest."
@@ -97,19 +140,12 @@ snapshots of the same loaded quest."
                               (plusp (logand new-byte mask)))))))))))
       ;; Monster kills: an enemy seen alive last frame now at 0 hp. The
       ;; id printed here is what a "monster:ID" end trigger matches.
-      (let ((old (getf previous :monsters))
-            (new (getf snapshot :monsters)))
-        (when new
-          (dolist (monster new)
-            (let* ((id (getf monster :id))
-                   (was (find id old :key (lambda (m) (getf m :id)))))
-              (when (and was (plusp (getf was :hp 0))
-                         (zerop (getf monster :hp 0)))
-                (incf changes)
-                (format stream "~a ~s monster ~d killed (~a, unitxt ~d)~%"
-                        stamp quest id
-                        (or (getf monster :name) "?")
-                        (getf monster :unitxt 0)))))))
+      (dolist (monster (newly-killed-monsters previous snapshot))
+        (incf changes)
+        (format stream "~a ~s monster ~d killed (~a, unitxt ~d)~%"
+                stamp quest (getf monster :id)
+                (or (getf monster :name) "?")
+                (getf monster :unitxt 0)))
       (when (plusp changes)
         (force-output stream))
       changes))))

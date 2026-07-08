@@ -1048,6 +1048,68 @@ switch 0; room 2 cleared = floor 5 switch 2; full clear = register 254."
     (ignore-errors (delete-file path))))
 
 ;;; ------------------------------------------------------------------
+;;; Quest-rule registration: last-kill tracking and trigger JSON
+;;; ------------------------------------------------------------------
+
+(defun run-quest-rule-tests ()
+  (format t "~&--- quest-rule registration ---~%")
+  ;; newly-killed-monsters: only alive->dead transitions count.
+  (let ((prev (list :quest-ptr 1
+                    :monsters '((:id 7 :hp 200 :name "Booma" :unitxt 44)
+                                (:id 8 :hp 50 :name "Rag" :unitxt 45))))
+        (next (list :quest-ptr 1
+                    :monsters '((:id 7 :hp 0 :name "Booma" :unitxt 44)
+                                (:id 8 :hp 50 :name "Rag" :unitxt 45)))))
+    (let ((killed (newly-killed-monsters prev next)))
+      (check "one enemy transitioned alive->dead" (= 1 (length killed)))
+      (check "the killed enemy is id 7" (eql 7 (getf (first killed) :id)))))
+  ;; An enemy only ever seen at 0 hp was never alive -> not a kill.
+  (check "an enemy only ever at 0 hp is not a kill"
+         (null (newly-killed-monsters
+                (list :quest-ptr 1 :monsters '((:id 9 :hp 0)))
+                (list :quest-ptr 1 :monsters '((:id 9 :hp 0))))))
+  ;; update-last-kill records the kill and its name.
+  (let ((ephinea-ta-client::*last-kill* nil))
+    (update-last-kill
+     (list :quest-ptr 1 :monsters '((:id 7 :hp 200 :name "Booma" :unitxt 44)))
+     (list :quest-ptr 1 :monsters '((:id 7 :hp 0 :name "Booma" :unitxt 44))))
+    (check "last-kill records the id"
+           (eql 7 (getf ephinea-ta-client::*last-kill* :id)))
+    (check "last-kill records the name"
+           (equal "Booma" (getf ephinea-ta-client::*last-kill* :name)))
+    ;; Leaving the quest (quest-ptr 0) forgets the kill.
+    (update-last-kill (list :quest-ptr 1) (list :quest-ptr 0))
+    (check "leaving the quest clears last-kill"
+           (null ephinea-ta-client::*last-kill*)))
+  ;; A quest reload (changed :quest-ptr) also forgets the old kill.
+  (let ((ephinea-ta-client::*last-kill* (list :id 7 :name "Booma")))
+    (update-last-kill
+     (list :quest-ptr 1 :monsters '((:id 7 :hp 100)))
+     (list :quest-ptr 2 :monsters '((:id 7 :hp 0))))
+    (check "a quest reload clears last-kill"
+           (null ephinea-ta-client::*last-kill*)))
+  ;; trigger->json emits the wire shape the server expects.
+  (let ((m (trigger->json '(:monster-dead 1234))))
+    (check "monster trigger type" (equal "monster" (gethash "type" m)))
+    (check "monster trigger id" (eql 1234 (gethash "monster" m))))
+  (let ((f (trigger->json '(:floor-switch 5 2))))
+    (check "floor-switch type" (equal "floor-switch" (gethash "type" f)))
+    (check "floor-switch floor" (eql 5 (gethash "floor" f)))
+    (check "floor-switch switch" (eql 2 (gethash "switch" f))))
+  (let ((r (trigger->json '(:register 254))))
+    (check "register type" (equal "register" (gethash "type" r)))
+    (check "register value" (eql 254 (gethash "register" r))))
+  (check "warp-in trigger type"
+         (equal "warp-in" (gethash "type" (trigger->json '(:warp-in)))))
+  (check "nil trigger -> nil" (null (trigger->json nil)))
+  ;; The trigger object survives a JSON round trip inside a request body.
+  (let ((obj (make-hash-table :test 'equal)))
+    (setf (gethash "end" obj) (trigger->json '(:monster-dead 1234)))
+    (let ((parsed (com.inuoe.jzon:parse (com.inuoe.jzon:stringify obj))))
+      (check "trigger survives json round-trip"
+             (eql 1234 (gethash "monster" (gethash "end" parsed)))))))
+
+;;; ------------------------------------------------------------------
 ;;; Recorder: capture-backend mock and state machine tests
 ;;; ------------------------------------------------------------------
 
@@ -2446,6 +2508,7 @@ store functions that persist never touch the real %APPDATA% queue."
   (run-server-defs-tests)
   (run-gdv-segment-test)
   (run-trigger-log-tests)
+  (run-quest-rule-tests)
   (run-recorder-tests)
   (run-video-flow-tests)
   (run-upload-queue-tests)

@@ -510,6 +510,57 @@ Signals API-ERROR on authentication and transport failures."
                     :message (format nil "POST /api/runs/~d/video -> ~a: ~a"
                                      server-id status body))))))))
 
+(defun trigger->json (trigger)
+  "Internal trigger list -> the JSON object the server expects, or NIL.
+Mirrors the wire shape the server's TRIGGER-JSON emits:
+  (:warp-in)          -> {\"type\":\"warp-in\"}
+  (:register N)       -> {\"type\":\"register\",\"register\":N}
+  (:floor-switch F S) -> {\"type\":\"floor-switch\",\"floor\":F,\"switch\":S}
+  (:monster-dead ID)  -> {\"type\":\"monster\",\"monster\":ID}"
+  (when trigger
+    (let ((object (make-hash-table :test 'equal)))
+      (ecase (first trigger)
+        (:warp-in (setf (gethash "type" object) "warp-in"))
+        (:register (setf (gethash "type" object) "register"
+                         (gethash "register" object) (second trigger)))
+        (:floor-switch (setf (gethash "type" object) "floor-switch"
+                             (gethash "floor" object) (second trigger)
+                             (gethash "switch" object) (third trigger)))
+        (:monster-dead (setf (gethash "type" object) "monster"
+                             (gethash "monster" object) (second trigger))))
+      object)))
+
+(defun create-quest-rule (&key parent name description end start
+                               (server-url (config-value :server-url))
+                               (token (config-value :api-token)))
+  "POST /api/quests: create a quest rule derived from PARENT (a slug),
+named NAME with DESCRIPTION, clearing on the END trigger. START overrides
+the parent's start trigger when given. Triggers are internal lists like
+(:monster-dead ID) or (:floor-switch FLOOR SWITCH). Moderator token only.
+Returns (values outcome payload) where outcome is :created, :duplicate,
+:forbidden or :rejected and PAYLOAD is the parsed JSON response. Signals
+API-ERROR on authentication and transport failures."
+  (let ((request-body
+          (let ((object (make-hash-table :test 'equal)))
+            (setf (gethash "parent" object) parent
+                  (gethash "name" object) name
+                  (gethash "description" object) description)
+            (when end (setf (gethash "end" object) (trigger->json end)))
+            (when start (setf (gethash "start" object) (trigger->json start)))
+            (jzon:stringify object))))
+    (multiple-value-bind (status body)
+        (http-request "POST" (api-url server-url "/api/quests")
+                      :body request-body :token token)
+      (let ((payload (ignore-errors (jzon:parse body))))
+        (case status
+          (201 (values :created payload))
+          (409 (values :duplicate payload))
+          (403 (values :forbidden payload))
+          (400 (values :rejected payload))
+          (401 (error 'api-error :message "Invalid or revoked API token"))
+          (t (error 'api-error
+                    :message (format nil "POST /api/quests -> ~a: ~a" status body))))))))
+
 (defun video-file-path (server-id offset-ms)
   (format nil "/api/runs/~d/video-file~@[?offset_ms=~d~]" server-id offset-ms))
 
