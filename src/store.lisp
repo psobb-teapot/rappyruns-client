@@ -62,16 +62,27 @@ clock above it."
       (format-run-time ms)))
 
 (defun run-standing-note (entry)
-  "The reward hint for a freshly submitted draft: the personal-best
-delta and provisional board rank the server reported (STANDING-UPDATES),
-or NIL when it sent none."
+  "The reward hint for a freshly submitted draft, from the board standing
+the server returned (STANDING-UPDATES). Always leads with the
+personal-best comparison - whether this beat the submitter's own best on
+that board and by how much - since in a tiny community that is the signal
+that carries. The provisional rank rides only when at least one other
+party shares the board; '#1 of 1' is noise, so a solo board shows the PB
+line alone. NIL when the server sent no standing."
   (let ((rank (getf entry :standing-rank))
         (parties (getf entry :standing-parties)))
     (when (and rank parties)
-      (let ((delta (getf entry :standing-delta-ms)))
-        (if (and delta (minusp delta))
-            (tr :standing-pb (format-improvement-ms (- delta)) rank parties)
-            (tr :standing-rank rank parties))))))
+      (let* ((delta (getf entry :standing-delta-ms))
+             (pb-part (cond
+                        ((null delta) (tr :standing-first))
+                        ((minusp delta)
+                         (tr :standing-pb (format-improvement-ms (- delta))))
+                        (t (tr :standing-behind (format-improvement-ms delta)))))
+             (rank-part (when (>= parties 2)
+                          (tr :standing-rank rank parties))))
+        (if rank-part
+            (format nil "~a · ~a" pb-part rank-part)
+            pb-part)))))
 
 (defun run-status-label (entry)
   (if (getf entry :video-attached)

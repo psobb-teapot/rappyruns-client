@@ -505,8 +505,14 @@
     ("aborted - private, recording kept locally"
      "中断 - 非公開・録画はローカル保存のみ")
     :standing-pb
-    ("PB! -~a, prov. #~d of ~d"
-     "自己ベスト! -~a・暫定~d/~d位")
+    ("PB! -~a"
+     "自己ベスト更新! -~a")
+    :standing-behind
+    ("PB +~a"
+     "自己ベスト +~a")
+    :standing-first
+    ("first run on this board"
+     "このボード初記録")
     :standing-rank
     ("prov. #~d of ~d"
      "暫定~d/~d位")

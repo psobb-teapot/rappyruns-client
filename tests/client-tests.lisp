@@ -2075,24 +2075,41 @@ store functions that persist never touch the real %APPDATA% queue."
   ;; server returns with a fresh submission.
   (check "format-improvement-ms shows a sub-minute delta in seconds"
          (string= "3.21s" (ephinea-ta-client::format-improvement-ms 3210)))
-  (check "run-standing-note announces a personal best with its delta"
+  (check "run-standing-note leads with the personal best, then the rank"
          (let ((note (ephinea-ta-client::run-standing-note
                       (list :standing-rank 2 :standing-parties 5
                             :standing-delta-ms -3210))))
-           (and note (search "3.21" note) (search "#2" note))))
-  (check "run-standing-note without a personal best just reports the rank"
+           (and note (search "PB! -3.21s" note) (search "#2" note))))
+  (check "run-standing-note behind the own best shows the gap, still ranked"
          (let ((note (ephinea-ta-client::run-standing-note
                       (list :standing-rank 3 :standing-parties 8
                             :standing-delta-ms 1500))))
-           (and note (search "#3" note) (not (search "PB" note)))))
+           (and note (search "1.50" note) (search "#3" note))))
+  ;; A solo board (one competing party) drops the "#1 of 1" noise and
+  ;; shows only the personal-best line - the GDV-reset case.
+  (check "run-standing-note on a solo board hides the rank on a PB"
+         (let ((note (ephinea-ta-client::run-standing-note
+                      (list :standing-rank 1 :standing-parties 1
+                            :standing-delta-ms -3210))))
+           (and note (search "PB! -3.21s" note) (not (search "#" note)))))
+  (check "run-standing-note on a solo board shows the gap behind the own best"
+         (let ((note (ephinea-ta-client::run-standing-note
+                      (list :standing-rank 1 :standing-parties 1
+                            :standing-delta-ms 16830))))
+           (and note (search "16.83s" note) (not (search "#" note)))))
+  (check "run-standing-note marks a first run when there is no prior time"
+         (let ((note (ephinea-ta-client::run-standing-note
+                      (list :standing-rank 1 :standing-parties 1))))
+           (and note (search "first run" note) (not (search "#" note)))))
   (check "run-standing-note is NIL when the server sent no standing"
          (null (ephinea-ta-client::run-standing-note (list :status :submitted))))
   (check "the submitted status label appends the standing note"
          (with-recording-config (:video-upload t)
            (let ((label (ephinea-ta-client::run-status-label
                          (list :status :submitted
-                               :standing-rank 1 :standing-parties 4))))
-             (and (search "draft" label) (search "#1" label)))))
+                               :standing-rank 2 :standing-parties 4
+                               :standing-delta-ms -1000))))
+             (and (search "draft" label) (search "#2" label)))))
   ;; Trimming: unfinished entries survive, finished ones are capped.
   (let* ((runs (loop :for i :from 0 :below 70
                      :collect (list :status (case (mod i 7)
