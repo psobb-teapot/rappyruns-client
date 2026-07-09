@@ -32,4 +32,6 @@
                              (:file "updater")
                              (:file "store")
                              (:file "gui" :if-feature :lispworks)
+                             (:file "tray-win32" :if-feature :lispworks)
+                             (:file "autostart-win32" :if-feature :lispworks)
                              (:file "main")))))

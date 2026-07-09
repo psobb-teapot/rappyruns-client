@@ -304,8 +304,28 @@ update exactly once."
       (when reader (close-reader reader)))))
 
 #+lispworks
+(defun quit-app ()
+  "Fully quit the app (from the tray menu). Mirrors the updater's clean
+shutdown (updater.lisp): stop the poll loop so the recorder unwinds,
+drop the tray icon, destroy the window and exit the image. Safe to call
+from the tray thread - the destroy is marshalled onto the interface
+process and LW:QUIT ends the whole image regardless of caller."
+  (setf *really-quitting* t
+        *stop-requested* t)
+  (let ((poll *poll-process*))
+    (when poll (ignore-errors (mp:process-join poll :timeout 10))))
+  (ignore-errors (stop-tray!))
+  (let ((interface *interface*))
+    (when interface
+      (capi:execute-with-interface-if-alive
+       interface
+       (lambda () (capi:destroy interface)))))
+  (lw:quit :status 0))
+
+#+lispworks
 (defun main ()
-  (setf *stop-requested* nil)
+  (setf *stop-requested* nil
+        *really-quitting* nil)
   (load-config!)
   (setf *language* (valid-language (config-value :language))
         ;; Seed from the last verified role so a moderator's Rooms tab and
@@ -333,6 +353,16 @@ update exactly once."
                                  (start-file-login-flow interface))))
     (prompt-for-token-setup interface)
     (report-startup-update interface)
+    ;; Resident-app tray icon: keeps running when the window is closed
+    ;; (CLIENT-CONFIRM-DESTROY hides to the tray) and offers Show / Quit.
+    (start-tray!)
+    ;; Launch straight to the tray (autostart --minimized, or the config
+    ;; toggle): the window is realized above, then hidden. A brief flash
+    ;; is possible but keeping one display path is simpler than a
+    ;; never-shown window, and the token setup prompt (first run only)
+    ;; still needs a visible window.
+    (when (startup-minimized-p)
+      (setf (capi:top-level-interface-display-state interface) :hidden))
     (setf *poll-process*
           (mp:process-run-function "eta-client-poll" '() 'poll-loop))
     interface))
