@@ -14,7 +14,7 @@ can eventually be retired; a custom URL is never touched.")
 ;; behavior by changing the default in *DEFAULT-CONFIG*.
 (defparameter +forced-config-keys+
   '(:auto-submit :submit-aborted :completion-sound
-    :record-enabled :video-upload :delete-after-upload))
+    :record-enabled :video-upload))
 
 (defparameter *default-config*
   (list :server-url "https://rappyruns-production.up.railway.app"
@@ -28,8 +28,7 @@ can eventually be retired; a custom URL is never touched.")
         :record-enabled t       ; forced (hidden): always record quest videos
         :record-audio t     ; game-only capture (process loopback; see audio-win32)
         :video-upload t         ; forced (hidden): always upload saved recordings
-        :delete-after-upload t  ; forced (hidden): drop the local file once the site has it
-        :record-max-total-gb 20  ; cap the recordings folder; oldest videos are reaped past this (0/blank = unlimited). See APPLY-RECORDING-RETENTION.
+        :record-max-total-gb 20  ; cap the recordings folder; the SOLE reaper of uploaded videos now (immediate delete-after-upload was dropped - it left corrupt/discarded uploads unrecoverable). Oldest+uploaded-first past this (0/blank = unlimited). See APPLY-RECORDING-RETENTION.
         :ffmpeg-path ""     ; blank = bundled copy next to the exe, or PATH
         :record-dir ""      ; blank = <user home>/Videos/RappyRuns/ (recording.lisp migrates the pre-rename folder)
         :moderator nil      ; cached /api/me role: shows the moderator-only Rooms tab + rule button on the first frame (refreshed and re-verified by CHECK-TOKEN; server enforces the real permission)

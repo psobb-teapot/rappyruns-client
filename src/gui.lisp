@@ -144,8 +144,8 @@ who cannot create rules, never see it."
                          :callback 'register-quest-rule-callback
                          :callback-type :interface
                          :font *ui-font*)
-   ;; Recording, uploading and delete-after-upload are fixed behaviors
-   ;; now (see +FORCED-CONFIG-KEYS+); only the game-audio toggle remains.
+   ;; Recording and uploading are fixed behaviors now (see
+   ;; +FORCED-CONFIG-KEYS+); only the game-audio toggle remains.
    (record-audio-check capi:check-button
                        :text (tr :record-audio-label)
                        :selected (config-value :record-audio)

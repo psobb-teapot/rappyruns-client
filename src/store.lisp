@@ -399,11 +399,13 @@ was already on file, which is just as done. Returns the updated entry."
                             :on-progress on-progress)
         (ecase outcome
           ((:attached :duplicate)
-           ;; The site has it now, so the local copy is optional. Delete
-           ;; it immediately when the player opted in; otherwise it stays
-           ;; until the folder budget reaps it (APPLY-RECORDING-RETENTION).
-           (when (config-value :delete-after-upload)
-             (ignore-errors (uiop:delete-file-if-exists (getf entry :video-path))))
+           ;; The site has it now, but the local copy is NOT deleted here:
+           ;; a freshly hosted file can still be bad (a corrupt upload, a
+           ;; run the owner discards, a server-side reap), and an eager
+           ;; delete once left those unrecoverable. Marking the entry
+           ;; attached moves it into the retention sweep's "uploaded" tier,
+           ;; so APPLY-RECORDING-RETENTION reclaims it - uploaded-first,
+           ;; oldest-first - only once the folder passes its size budget.
            ;; A fresh hosted upload lands 'held' server-side: it is on
            ;; the server but not public until the player publishes it in
            ;; the browser (issue 105), so the label must point them there

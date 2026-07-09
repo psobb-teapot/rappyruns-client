@@ -2371,7 +2371,7 @@ store functions that persist never touch the real %APPDATA% queue."
   ;; value can never override the fixed default.
   (check "forced config keys are scrubbed so the default wins"
          (let ((migrated (ephinea-ta-client::migrate-config
-                          (list :completion-sound t :delete-after-upload nil
+                          (list :completion-sound t :video-upload nil
                                 :auto-submit nil))))
            (every (lambda (key) (null (getf migrated key)))
                   ephinea-ta-client::+forced-config-keys+)))
