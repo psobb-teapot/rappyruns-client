@@ -10,12 +10,13 @@
 ;;; tracker, so a full run also produces the segment records for free.
 
 (defstruct tracker
-  def          ; the quest-def this tracker times
-  start-time   ; internal real time at its start trigger
-  party        ; ((:name ... :class ...) ...) captured at start
-  quest-name   ; quest name captured at start (snapshots may be gone
-  difficulty   ; by the time an abandoned run is emitted)
-  done)        ; T once its run has been emitted
+  def            ; the quest-def this tracker times
+  start-time     ; internal real time at its start trigger
+  party          ; ((:name ... :class ...) ...) captured at start
+  my-section-id  ; the submitter's own character's section id at start
+  quest-name     ; quest name captured at start (snapshots may be gone
+  difficulty     ; by the time an abandoned run is emitted)
+  done)          ; T once its run has been emitted
 
 (defstruct detector
   (state :idle)        ; :idle | :in-quest (any tracker still running)
@@ -142,6 +143,8 @@ with Shifta up - so a run is No PB until a discharge is seen."
   (let ((tracker (make-tracker :def def
                                :start-time (get-internal-real-time)
                                :party (party-of snapshot)
+                               :my-section-id (getf (snapshot-my-player snapshot)
+                                                    :section-id)
                                :quest-name (getf snapshot :quest-name)
                                :difficulty (difficulty-name
                                             (getf snapshot :difficulty)))))
@@ -162,6 +165,7 @@ with Shifta up - so a run is No PB until a discharge is seen."
            :party-size (length (tracker-party tracker))
            :pb (and (detector-pb-flag detector) t)
            :players (tracker-party tracker)
+           :submitter-section-id (tracker-my-section-id tracker)
            :difficulty (tracker-difficulty tracker)
            :death-count (and telemetry (telemetry-death-count telemetry))
            :telemetry (and telemetry (telemetry-run-data telemetry))

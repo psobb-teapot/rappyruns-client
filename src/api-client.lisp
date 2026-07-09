@@ -442,6 +442,12 @@ hold nested location lists that become objects."
       (setf (gethash "death_count" object) (getf run :death-count)))
     (when (getf run :aborted)
       (setf (gethash "aborted" object) t))
+    ;; The submitter's own section id for this run. The players array
+    ;; carries each member's section_id but no marker for which row is
+    ;; the submitter, so send it separately.
+    (when (getf run :submitter-section-id)
+      (setf (gethash "submitter_section_id" object)
+            (getf run :submitter-section-id)))
     (setf (gethash "players" object)
           (coerce (loop :for player :in (getf run :players)
                         :collect (let ((entry (make-hash-table :test 'equal)))

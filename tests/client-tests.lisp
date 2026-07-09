@@ -608,6 +608,7 @@ REGISTER-VALUES an alist of (register-id . value)."
                     :quest-name "Towards the Future"
                     :episode 1 :time-ms 754321 :party-size 1 :pb t
                     :difficulty "Ultimate" :death-count 2
+                    :submitter-section-id "Skyly"
                     :players (list (list :name "Ryu" :class "HUcast"
                                          :level 142 :section-id "Skyly"
                                          :guild-card "42001234"))
@@ -629,6 +630,8 @@ REGISTER-VALUES an alist of (register-id . value)."
     (check "payload difficulty" (equal "Ultimate" (gethash "difficulty" parsed)))
     (check "payload death count" (eql 2 (gethash "death_count" parsed)))
     (check "payload episode" (eql 1 (gethash "episode" parsed)))
+    (check "payload submitter section"
+           (equal "Skyly" (gethash "submitter_section_id" parsed)))
     (let ((player (aref (gethash "players" parsed) 0)))
       (check "payload player level" (eql 142 (gethash "level" player)))
       (check "payload player section" (equal "Skyly" (gethash "section_id" player)))
