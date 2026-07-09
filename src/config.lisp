@@ -33,6 +33,8 @@ can eventually be retired; a custom URL is never touched.")
         :ffmpeg-path ""     ; blank = bundled copy next to the exe, or PATH
         :record-dir ""      ; blank = <user home>/Videos/RappyRuns/ (recording.lisp migrates the pre-rename folder)
         :moderator nil      ; cached /api/me role: shows the moderator-only Rooms tab + rule button on the first frame (refreshed and re-verified by CHECK-TOKEN; server enforces the real permission)
+        :close-to-tray t    ; closing the window (x) hides to the system tray instead of quitting (see CLIENT-CONFIRM-DESTROY); off = x quits
+        :start-minimized nil ; launch straight to the tray with no window (also forced for a single launch by --minimized; see STARTUP-MINIMIZED-P)
         :debug nil))        ; developer knobs in the GUI (see DEBUG-MODE-P)
 
 (defvar *config* nil)
@@ -94,6 +96,17 @@ which normal users must never change). Enabled by :debug t in
 config.sexp or by launching the client with --debug."
   (or (config-value :debug)
       (and (member "--debug"
+                   #+lispworks sys:*line-arguments-list*
+                   #-lispworks (uiop:command-line-arguments)
+                   :test #'string-equal)
+           t)))
+
+(defun startup-minimized-p ()
+  "Launch straight to the tray with no window: either the :start-minimized
+config is on, or --minimized was passed for this launch (the autostart
+registry entry uses that flag; see autostart-win32.lisp)."
+  (or (config-value :start-minimized)
+      (and (member "--minimized"
                    #+lispworks sys:*line-arguments-list*
                    #-lispworks (uiop:command-line-arguments)
                    :test #'string-equal)

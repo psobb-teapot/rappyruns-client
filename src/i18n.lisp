@@ -350,6 +350,28 @@
      "ルールの作成に失敗しました: ~a")
 
     ;; Updates group (self-update; updater.lisp + gui.lisp)
+    ;; System tray / resident-app settings and menu
+    :group-tray
+    ("Tray"
+     "常駐")
+    :close-to-tray-label
+    ("Minimize to the tray on close instead of quitting"
+     "閉じたときに終了せずトレイに最小化する")
+    :autostart-label
+    ("Start with Windows"
+     "Windows 起動時に自動で起動する")
+    :start-minimized-label
+    ("Start minimized to the tray"
+     "起動時にトレイに最小化して起動する")
+    :tray-tooltip
+    ("Rappy Runs Client"
+     "Rappy Runs クライアント")
+    :tray-show
+    ("Show"
+     "表示")
+    :tray-quit
+    ("Quit"
+     "終了")
     :group-updates
     ("Updates"
      "アップデート")

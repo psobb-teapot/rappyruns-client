@@ -184,6 +184,33 @@ who cannot create rules, never see it."
                          :callback 'check-updates-callback
                          :callback-type :interface
                          :font *ui-font*)
+   ;; Resident-app (tray) settings. Autostart is backed by the registry
+   ;; (autostart-win32.lisp), so its checkbox reads AUTOSTART-ENABLED-P
+   ;; rather than config; the other two are plain config toggles.
+   (close-to-tray-check capi:check-button
+                        :text (tr :close-to-tray-label)
+                        :selected (config-value :close-to-tray)
+                        :selection-callback 'toggle-close-to-tray-callback
+                        :retract-callback 'toggle-close-to-tray-callback
+                        :callback-type :interface
+                        :font *ui-font*
+                        :accessor close-to-tray-check)
+   (autostart-check capi:check-button
+                    :text (tr :autostart-label)
+                    :selected (autostart-enabled-p)
+                    :selection-callback 'toggle-autostart-callback
+                    :retract-callback 'toggle-autostart-callback
+                    :callback-type :interface
+                    :font *ui-font*
+                    :accessor autostart-check)
+   (start-minimized-check capi:check-button
+                          :text (tr :start-minimized-label)
+                          :selected (config-value :start-minimized)
+                          :selection-callback 'toggle-start-minimized-callback
+                          :retract-callback 'toggle-start-minimized-callback
+                          :callback-type :interface
+                          :font *ui-font*
+                          :accessor start-minimized-check)
    (record-dir-display capi:title-pane
                        :text (record-dir-label)
                        :font *ui-font*
@@ -270,6 +297,10 @@ who cannot create rules, never see it."
                     check-updates-button)
                   :title (tr :group-updates) :title-position :frame
                   :title-font *ui-font* :adjust :left)
+   (tray-group capi:column-layout
+               '(close-to-tray-check autostart-check start-minimized-check)
+               :title (tr :group-tray) :title-position :frame
+               :title-font *ui-font* :adjust :left)
    ;; The 'register rule' button authors quest rules and is moderator-only
    ;; (the server rejects the POST otherwise), so it drops out of the
    ;; layout for normal users - just like the Rooms tab. The pane always
@@ -282,7 +313,7 @@ who cannot create rules, never see it."
                    :title-font *ui-font* :adjust :left)
    (settings-tab capi:column-layout
                  '(language-group connection-group
-                   recording-group updates-group advanced-group)
+                   recording-group updates-group tray-group advanced-group)
                  :adjust :left)
    (rooms-tab capi:column-layout '(rooms-hint rooms-list) :adjust :left)
    (main-tabs capi:tab-layout ()
@@ -302,7 +333,20 @@ who cannot create rules, never see it."
    :title "Rappy Runs Client"
    :layout 'main-tabs
    :help-callback 'client-help-callback
+   :confirm-destroy-function 'client-confirm-destroy
    :visible-min-width '(:character 100)))
+
+(defun client-confirm-destroy (interface)
+  "Called when the window is about to close (the x button / quit-interface;
+NOT plain CAPI:DESTROY, so the language-toggle rebuild is unaffected).
+Non-NIL lets the close proceed. A real quit (tray Quit sets
+*REALLY-QUITTING*) is allowed through; otherwise, when close-to-tray is
+on, we hide to the tray and veto the destroy so the app keeps running."
+  (cond (*really-quitting* t)
+        ((config-value :close-to-tray)
+         (setf (capi:top-level-interface-display-state interface) :hidden)
+         nil)
+        (t t)))
 
 (defun client-help-callback (interface pane type key)
   "Tooltips for panes whose looks alone do not say what they do (the
@@ -1141,6 +1185,27 @@ the Save settings flow."
   (setf (config-value :auto-update)
         (capi:button-selected (auto-update-check interface)))
   (save-config!))
+
+(defun toggle-close-to-tray-callback (interface)
+  "Apply the close-to-tray toggle immediately (no Save needed)."
+  (setf (config-value :close-to-tray)
+        (capi:button-selected (close-to-tray-check interface)))
+  (save-config!))
+
+(defun toggle-start-minimized-callback (interface)
+  "Apply the start-minimized toggle immediately (no Save needed)."
+  (setf (config-value :start-minimized)
+        (capi:button-selected (start-minimized-check interface)))
+  (save-config!))
+
+(defun toggle-autostart-callback (interface)
+  "Enable or disable the Windows logon autostart (registry-backed). On
+failure, snap the checkbox back to the registry's real state so it never
+lies about what will happen at logon."
+  (let ((want (capi:button-selected (autostart-check interface))))
+    (set-autostart! want)
+    (setf (capi:button-selected (autostart-check interface))
+          (autostart-enabled-p))))
 
 (defun check-updates-callback (interface)
   (check-for-updates interface))

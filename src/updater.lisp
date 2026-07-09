@@ -176,6 +176,10 @@ try {~%~
   "Set to stop the poll loop (main.lisp); the updater sets it before
 quitting so the recorder shuts down cleanly.")
 
+(defvar *really-quitting* nil
+  "Set by QUIT-APP so CLIENT-CONFIRM-DESTROY lets the window close for a
+genuine quit instead of hiding it to the tray (gui.lisp/tray-win32.lisp).")
+
 (defvar *poll-process* nil
   "The poll-loop mp:process, kept so the updater can join it (running
 the recorder shutdown) before quitting.")
