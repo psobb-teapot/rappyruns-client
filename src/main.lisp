@@ -305,25 +305,29 @@ update exactly once."
 
 #+lispworks
 (defun quit-app ()
-  "Fully quit the app (from the tray menu). Mirrors the updater's clean
-shutdown (updater.lisp): stop the poll loop so the recorder unwinds,
-drop the tray icon, destroy the window and exit the image. Safe to call
-from the tray thread - the destroy is marshalled onto the interface
-process and LW:QUIT ends the whole image regardless of caller."
+  "Fully quit the app (tray Quit, or the x button when close-to-tray is
+off). Stop the poll loop first so the recorder unwinds cleanly, drop the
+tray icon so no ghost is left, then terminate unconditionally with
+ExitProcess. We do NOT rely on LW:QUIT here: called from the tray thread
+(inside its message loop) it did not reliably end the image, leaving the
+process alive - so Quit appeared to do nothing. Config and the run queue
+are persisted incrementally, so an abrupt exit loses nothing."
   (setf *really-quitting* t
         *stop-requested* t)
   (let ((poll *poll-process*))
     (when poll (ignore-errors (mp:process-join poll :timeout 10))))
-  (ignore-errors (stop-tray!))
-  (let ((interface *interface*))
-    (when interface
-      (capi:execute-with-interface-if-alive
-       interface
-       (lambda () (capi:destroy interface)))))
-  (lw:quit :status 0))
+  (ignore-errors (tray-remove-icon-now))
+  (exit-process-now))
 
 #+lispworks
 (defun main ()
+  ;; Single-instance guard, before any window or thread exists: a second
+  ;; launch (manual, or the logon autostart entry) would otherwise start
+  ;; yet another resident copy that hides to the tray, piling up unbounded.
+  ;; Instead, raise the running instance's window and exit immediately.
+  (when (already-running-p)
+    (signal-existing-instance)
+    (exit-process-now))
   (setf *stop-requested* nil
         *really-quitting* nil)
   (load-config!)

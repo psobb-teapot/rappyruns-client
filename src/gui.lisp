@@ -339,14 +339,16 @@ who cannot create rules, never see it."
 (defun client-confirm-destroy (interface)
   "Called when the window is about to close (the x button / quit-interface;
 NOT plain CAPI:DESTROY, so the language-toggle rebuild is unaffected).
-Non-NIL lets the close proceed. A real quit (tray Quit sets
-*REALLY-QUITTING*) is allowed through; otherwise, when close-to-tray is
-on, we hide to the tray and veto the destroy so the app keeps running."
+Non-NIL lets the close proceed. When a real quit is already in progress
+(*REALLY-QUITTING*) allow it; when close-to-tray is on, hide to the tray
+and veto the destroy so the app keeps running; otherwise (close-to-tray
+off) this is a genuine quit - QUIT-APP tears down the tray and poll
+threads and terminates, which returning T alone would not do."
   (cond (*really-quitting* t)
         ((config-value :close-to-tray)
          (setf (capi:top-level-interface-display-state interface) :hidden)
          nil)
-        (t t)))
+        (t (quit-app) t)))
 
 (defun client-help-callback (interface pane type key)
   "Tooltips for panes whose looks alone do not say what they do (the

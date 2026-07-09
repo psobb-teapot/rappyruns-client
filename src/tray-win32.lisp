@@ -67,6 +67,38 @@
   :calling-convention :stdcall
   :module :user32)
 
+;; Single-instance guard: a named mutex whose creation reports
+;; ERROR_ALREADY_EXISTS when another instance already holds it, and
+;; FindWindow-by-class so the second instance can raise the first.
+(fli:define-foreign-function (%create-mutex "CreateMutexW")
+    ((attributes :pointer)
+     (initial-owner (:boolean :int))
+     (name (:reference-pass :ef-wc-string)))
+  :result-type :pointer
+  :calling-convention :stdcall
+  :module :kernel32)
+
+(fli:define-foreign-function (%get-last-error "GetLastError")
+    ()
+  :result-type (:unsigned :long)
+  :calling-convention :stdcall
+  :module :kernel32)
+
+(fli:define-foreign-function (%find-window-class "FindWindowW")
+    ((class-name (:reference-pass :ef-wc-string))
+     (window-name :pointer))
+  :result-type :pointer
+  :calling-convention :stdcall
+  :module :user32)
+
+;; The last-resort terminator: guarantees Quit actually quits even if a
+;; clean LW:QUIT would hang on the message-loop or poll thread.
+(fli:define-foreign-function (%exit-process "ExitProcess")
+    ((exit-code (:unsigned :int)))
+  :result-type :void
+  :calling-convention :stdcall
+  :module :kernel32)
+
 ;; The exe's own embedded icon (index 0), used for the tray. NIL exe
 ;; (dev/SBCL) or extraction failure falls back to LoadIconW below.
 (fli:define-foreign-function (%extract-icon "ExtractIconW")
@@ -236,6 +268,12 @@
 (defconstant +tray-callback-message+ (+ +wm-app+ 1))
 (defconstant +tray-icon-id+ 1)
 
+;; Posted by a second instance (single-instance guard) to ask the
+;; running one to un-hide its window instead of starting another copy.
+(defconstant +tray-show-request+ (+ +wm-app+ 2))
+
+(defconstant +error-already-exists+ 183)
+
 (defconstant +nim-add+ 0)
 (defconstant +nim-delete+ 2)
 (defconstant +nif-message+ #x01)
@@ -255,7 +293,13 @@
 
 (defparameter +tray-class-name+ "RappyRunsTrayWindow")
 
+(defparameter +singleton-mutex-name+ "RappyRunsClient-single-instance")
+
 ;;; --- State ----------------------------------------------------------
+
+(defvar *singleton-mutex* nil
+  "Handle of the single-instance mutex, kept for the life of the process
+so the mutex is held (closing it would release the instance lock).")
 
 (defvar *tray-hwnd* nil
   "HWND of the hidden tray-owner window, or NIL when the tray is down.")
@@ -370,6 +414,10 @@ documented way to keep a tray menu from sticking open."
              ((or (= event +wm-rbuttonup+) (= event +wm-contextmenu+))
               (ignore-errors (tray-popup-menu hwnd)))))
      0)
+    ;; A second instance asked us to surface (single-instance guard).
+    ((= msg +tray-show-request+)
+     (ignore-errors (tray-show-main-window))
+     0)
     ;; Explorer restarted: re-add the icon.
     ((and (plusp *taskbar-created-message*)
           (= msg *taskbar-created-message*))
@@ -455,3 +503,33 @@ DefWindowProc -> DestroyWindow -> WM_DESTROY (see the window proc)."
   (let ((hwnd *tray-hwnd*))
     (when hwnd
       (ignore-errors (%post-message hwnd +wm-close+ 0 0)))))
+
+(defun tray-remove-icon-now ()
+  "Synchronously drop our tray icon (called on quit before ExitProcess,
+so no ghost icon lingers in the notification area)."
+  (let ((hwnd *tray-hwnd*))
+    (when hwnd
+      (ignore-errors (tray-remove-icon hwnd)))))
+
+;;; --- Single-instance guard ------------------------------------------
+
+(defun already-running-p ()
+  "Create the process-wide singleton mutex; T when another instance
+already holds it. The handle is kept in *SINGLETON-MUTEX* for the life
+of this process (releasing it would drop the lock)."
+  (let ((h (%create-mutex fli:*null-pointer* nil +singleton-mutex-name+)))
+    ;; GetLastError must be read immediately after CreateMutex, before any
+    ;; other foreign call clobbers it (the SETF below is pure Lisp).
+    (prog1 (= (%get-last-error) +error-already-exists+)
+      (setf *singleton-mutex* h))))
+
+(defun signal-existing-instance ()
+  "Ask the already-running instance to un-hide its window. Best-effort:
+it may still be starting up and not yet own its tray window."
+  (let ((hwnd (%find-window-class +tray-class-name+ fli:*null-pointer*)))
+    (when (and hwnd (not (fli:null-pointer-p hwnd)))
+      (ignore-errors (%post-message hwnd +tray-show-request+ 0 0)))))
+
+(defun exit-process-now ()
+  "Terminate this process unconditionally (ExitProcess)."
+  (%exit-process 0))
