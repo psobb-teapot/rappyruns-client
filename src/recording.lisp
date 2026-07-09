@@ -186,13 +186,50 @@ in it is open) so recordings never split across two folders."
              char))
        string))
 
+(defvar *recording-token-state* nil
+  "Random state seeded lazily at RUNTIME (never at image-dump time, or a
+delivered exe would ship one frozen sequence and every launched instance
+would draw identical tokens - the very collision this guards against) so
+two client instances never generate the same recording filename.")
+
+(defun recording-token ()
+  "A short random hex tag, unique per process, appended to each capture's
+temp filename. With deterministic timestamp names two instances recording
+the same game session (the pre-0.34.1 tray pile-up) produced the SAME
+rec-tmp path and remuxed to the SAME final name, so their ffmpeg
+processes wrote one file at once and corrupted it (good remux head +
+foreign fragmented tail, seen on runs 418-424). The token keeps each
+process's capture on its own path even if instances ever run again."
+  (unless *recording-token-state*
+    (setf *recording-token-state* (make-random-state t)))
+  (format nil "~(~8,'0x~)" (random (expt 2 32) *recording-token-state*)))
+
+(defun deduplicate-path (path)
+  "PATH when it is free, else the same name with an Explorer-style
+' (2)', ' (3)'... counter before the extension. Guards the user-facing
+final recording name against a second run resolving to an existing file
+(two runs of one quest finishing the same minute at the same time).
+Best-effort against concurrent processes - the per-process temp token
+already keeps their captures apart; this only tidies sequential
+collisions - so the single writer that survives a race never silently
+overwrites the earlier recording."
+  (if (not (ignore-errors (probe-file path)))
+      path
+      (let* ((dot (position #\. path :from-end t))
+             (stem (if dot (subseq path 0 dot) path))
+             (ext (if dot (subseq path dot) "")))
+        (loop :for n :from 2
+              :for candidate := (format nil "~a (~d)~a" stem n ext)
+              :unless (ignore-errors (probe-file candidate))
+                :return candidate))))
+
 (defun recording-tmp-path (&optional (universal-time (get-universal-time)))
   (multiple-value-bind (sec min hour day month year)
       (decode-universal-time universal-time)
     (namestring
      (merge-pathnames
-      (format nil "rec-tmp-~4,'0d~2,'0d~2,'0d-~2,'0d~2,'0d~2,'0d.mp4"
-              year month day hour min sec)
+      (format nil "rec-tmp-~4,'0d~2,'0d~2,'0d-~2,'0d~2,'0d~2,'0d-~a.mp4"
+              year month day hour min sec (recording-token))
       (resolve-record-dir)))))
 
 (defun run-video-filename (run)
@@ -439,8 +476,9 @@ best completed run's name, or delete it when nothing completed."
     (setf (recorder-pending-keep-p recorder) (and best t)
           (recorder-pending-run recorder) best
           (recorder-final-path recorder)
-          (and best (namestring (merge-pathnames (run-video-filename best)
-                                                 (resolve-record-dir))))
+          (and best (deduplicate-path
+                     (namestring (merge-pathnames (run-video-filename best)
+                                                  (resolve-record-dir)))))
           (recorder-stop-deadline recorder)
           (+ (get-internal-real-time)
              (* +stop-grace-seconds+ internal-time-units-per-second))
