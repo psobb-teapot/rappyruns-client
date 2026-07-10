@@ -49,7 +49,14 @@ who cannot create rules, never see it."
           32)))
 
 (capi:define-interface client-window ()
-  ()
+  ;; Window size last seen per tab (pane symbol -> (width . height)).
+  ;; Switching tabs lets CAPI grow the window when the new tab needs the
+  ;; room (Settings is taller than Runs) but nothing ever shrinks it
+  ;; back, so each tab restores the size it was last shown at. Per
+  ;; window rather than global: a language / moderator rebuild changes
+  ;; the panes' natural sizes, and stale sizes must not carry over.
+  ((tab-sizes :initform (make-hash-table :test 'eq)
+              :reader tab-sizes))
   (:panes
    (game-status capi:title-pane
                 :text (tr :game-searching)
@@ -321,6 +328,8 @@ who cannot create rules, never see it."
               :font *ui-font*
               :print-function 'first
               :visible-child-function 'second
+              :selection-callback 'tab-selection-callback
+              :callback-type :data-interface
               ;; First launch without a token lands on Settings (step 1
               ;; of the flow); otherwise straight to the Runs tab. The
               ;; Settings index shifts with the optional Rooms tab, so
@@ -332,6 +341,7 @@ who cannot create rules, never see it."
   (:default-initargs
    :title "Rappy Runs Client"
    :layout 'main-tabs
+   :geometry-change-callback 'remember-tab-size
    :help-callback 'client-help-callback
    :confirm-destroy-function 'client-confirm-destroy
    :visible-min-width '(:character 100)))
@@ -358,6 +368,35 @@ but a known tooltip key returns NIL (= no tooltip)."
   (when (eq type :tooltip)
     (case key
       (:clear-list (tr :clear-list-tooltip)))))
+
+(defun remember-tab-size (interface x y width height)
+  "GEOMETRY-CHANGE-CALLBACK: record the window's size against the
+currently selected tab. Fires on every move / resize - the user
+dragging an edge as well as CAPI growing the window on a tab switch
+(the selection has changed by then, so a grown size lands on the tab
+being entered, never the one being left). Only the :NORMAL state
+counts: maximized / iconic / hidden geometry is not a size the user
+chose for the tab."
+  (declare (ignore x y))
+  (when (eq (capi:top-level-interface-display-state interface) :normal)
+    (let ((item (capi:choice-selected-item (slot-value interface 'main-tabs))))
+      (when (consp item)
+        (setf (gethash (second item) (tab-sizes interface))
+              (cons width height))))))
+
+(defun tab-selection-callback (item interface)
+  "Selecting a tab restores the window size that tab was last shown at.
+Without this the window only ever grows: CAPI enlarges it when a tab
+needs more room but never shrinks it back on the way out. A tab not
+seen before keeps the current size (letting CAPI grow it if needed),
+and a maximized window stays maximized."
+  (let ((size (and (consp item)
+                   (eq (capi:top-level-interface-display-state interface)
+                       :normal)
+                   (gethash (second item) (tab-sizes interface)))))
+    (when size
+      (capi:set-top-level-interface-geometry
+       interface :width (car size) :height (cdr size)))))
 
 (defun save-settings-callback (interface)
   "Save the Connection fields and verify both against the server.
