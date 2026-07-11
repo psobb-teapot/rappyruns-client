@@ -172,6 +172,17 @@ who cannot create rules, never see it."
    (video-retention-note capi:title-pane
                          :text (tr :video-retention-note)
                          :font *ui-font*)
+   ;; Auto-publish is a SERVER-side per-user flag (the /my/runs toggle
+   ;; flips the same one); the checkbox shows the cached copy and
+   ;; CHECK-TOKEN re-syncs it from /api/me.
+   (auto-publish-check capi:check-button
+                       :text (tr :auto-publish-label)
+                       :selected (config-value :auto-publish)
+                       :selection-callback 'toggle-auto-publish-callback
+                       :retract-callback 'toggle-auto-publish-callback
+                       :callback-type :interface
+                       :font *ui-font*
+                       :accessor auto-publish-check)
    ;; ffmpeg itself is not a setting: the release bundles it next to the
    ;; exe (an override still exists as :ffmpeg-path in config.sexp).
    (update-status-pane capi:title-pane
@@ -296,7 +307,7 @@ who cannot create rules, never see it."
                   :adjust :center)
    (recording-group capi:column-layout
                     '(record-audio-check record-storage-note
-                      video-retention-note recording-row)
+                      video-retention-note auto-publish-check recording-row)
                     :title (tr :group-recording) :title-position :frame
                     :title-font *ui-font* :adjust :left)
    (updates-group capi:column-layout
@@ -1152,6 +1163,46 @@ cross-check the builtin trigger slugs against the server."
 admin); mirrors the server's MODELS:MODERATOR-P."
   (and (member role '("moderator" "admin") :test #'equal) t))
 
+(defun apply-auto-publish (interface user)
+  "Mirror the server's auto_publish flag (/api/me, 0/1) into the cached
+config and the settings checkbox. The server is the truth - the
+/my/runs toggle can flip it behind the client's back."
+  (let ((now (eql 1 (and user (gethash "auto_publish" user)))))
+    (unless (eq now (and (config-value :auto-publish) t))
+      (setf (config-value :auto-publish) now)
+      (save-config!)
+      (capi:execute-with-interface-if-alive
+       interface
+       (lambda ()
+         (setf (capi:button-selected (auto-publish-check interface)) now))))))
+
+(defun toggle-auto-publish-callback (interface)
+  "The auto-publish checkbox is a server-side setting, so flipping it is
+a network call: confirm on the way ON (recordings will go public
+unwatched), POST in the background, and roll the checkbox back to the
+last known server state if the update failed."
+  (let ((enabled (capi:button-selected (auto-publish-check interface))))
+    (when (and enabled
+               (not (capi:confirm-yes-or-no "~a" (tr :auto-publish-confirm))))
+      (setf (capi:button-selected (auto-publish-check interface)) nil)
+      (return-from toggle-auto-publish-callback))
+    (mp:process-run-function
+     "eta-client-auto-publish" '()
+     (lambda ()
+       (handler-case
+           (progn
+             (update-auto-publish enabled)
+             (setf (config-value :auto-publish) enabled)
+             (save-config!))
+         (error (condition)
+           (capi:execute-with-interface-if-alive
+            interface
+            (lambda ()
+              (setf (capi:button-selected (auto-publish-check interface))
+                    (and (config-value :auto-publish) t))
+              (capi:display-message
+               "~a" (tr :auto-publish-failed condition))))))))))
+
 (defun apply-moderator-role (interface user)
   "Sync the moderator-only UI to the /api/me USER hash. When the role
 crosses the moderator boundary, cache it and rebuild the window so the
@@ -1188,6 +1239,7 @@ the Save settings flow."
                         (set-pane-text interface #'token-status-pane
                                        (tr :token-ok name))
                         (apply-moderator-role interface user)
+                        (apply-auto-publish interface user)
                         (when notify
                           (capi:execute-with-interface-if-alive
                            interface

@@ -292,6 +292,27 @@ transport failures and unexpected statuses."
       (401 (values :unauthorized nil))
       (t (error 'api-error :message (format nil "GET /api/me -> ~a" status))))))
 
+(defun update-auto-publish (enabled &key (server-url (config-value :server-url))
+                                         (token (config-value :api-token)))
+  "POST /api/me/auto-publish: flip the server-side auto-publish flag -
+the same per-user setting as the /my/runs toggle. enabled travels as
+0/1 (integers dodge the false-vs-null ambiguity of the JSON layer).
+Returns T on success; signals API-ERROR on failures, so the caller can
+roll its checkbox back."
+  (multiple-value-bind (status body)
+      (http-request "POST" (api-url server-url "/api/me/auto-publish")
+                    :body (let ((object (make-hash-table :test 'equal)))
+                            (setf (gethash "enabled" object)
+                                  (if enabled 1 0))
+                            (jzon:stringify object))
+                    :token token)
+    (case status
+      (200 t)
+      (401 (error 'api-error :message "Invalid or revoked API token"))
+      (t (error 'api-error
+                :message (format nil "POST /api/me/auto-publish -> ~a: ~a"
+                                 status body))))))
+
 (defun alist-json (alist &key (key #'string-downcase))
   "Alist -> JSON object hash table, dropping zero counts."
   (let ((object (make-hash-table :test 'equal)))

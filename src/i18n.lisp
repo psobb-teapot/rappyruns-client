@@ -173,6 +173,15 @@
     :video-retention-note
     ("Top-10 videos are kept; others are deleted after 90 days (see the site's Client page)."
      "上位10位の動画は保持され、それ以外は90日で削除されます (詳細はサイトの Client ページ)。")
+    :auto-publish-label
+    ("Publish uploads automatically (skip the manual check on the site)"
+     "アップロードを自動で公開する (サイトでの手動確認をスキップ)")
+    :auto-publish-confirm
+    ("Publish every upload automatically?~%~%New recordings will appear on the public leaderboard the moment they finish uploading, without you watching them first. Anything the recording caught goes public with it."
+     "アップロードを自動で公開しますか?~%~%今後の録画はアップロード完了と同時に、内容を確認しないまま公開リーダーボードに掲載されます。録画に映り込んだものもそのまま公開されます。")
+    :auto-publish-failed
+    ("Could not update the auto-publish setting on the server: ~a"
+     "自動公開設定をサーバーに反映できませんでした: ~a")
     :record-dir-label
     ("Recordings folder: ~a"
      "録画フォルダ: ~a")
