@@ -63,8 +63,9 @@ pid, so the once-per-second search loop does not re-hash the exe."
 (defun augment-snapshot (reader snapshot)
   "Attach :monsters (every poll: kill attribution and frame-1 detection
 need psostats' full sample rate; READ-MONSTERS is one block read per
-monster) and :inventory (about once per second: it is many small
-process reads) to SNAPSHOT while a quest is loaded."
+monster plus one batched HP read) and :inventory (about once per
+second: one block read per world item) to SNAPSHOT while a quest is
+loaded."
   (when (and snapshot
              (getf snapshot :quest-ptr)
              (plusp (getf snapshot :quest-ptr)))
@@ -116,11 +117,15 @@ Aborted runs are silent - quitting a quest is not an event."
 #+lispworks
 (defun maybe-start-upload (recorder)
   "Kick off the oldest pending recording upload in a worker thread.
-Skipped while recording - the encoder gets the disk and the uplink to
-itself - and while a previous upload is still running; failures back
-off inside UPLOAD-ENTRY-VIDEO! and a later call picks up the retry."
+Skipped while a quest is in flight (*POLL-BUSY-P*: a multi-hundred-MB
+upload contends for the uplink and disk with an online game, lagging it
+even when recording is off), while the recorder is doing anything at
+all - capture, stop drain or remux all want the disk - and while a
+previous upload is still running; failures back off inside
+UPLOAD-ENTRY-VIDEO! and a later call picks up the retry."
   (when (and (config-value :video-upload)
-             (not (eq (recorder-state recorder) :recording))
+             (not *poll-busy-p*)
+             (eq (recorder-state recorder) :idle)
              (or (null *upload-process*)
                  (not (mp:process-alive-p *upload-process*))))
     (let ((entry (upload-candidate)))

@@ -445,6 +445,18 @@ REGISTER-VALUES an alist of (register-id . value)."
                                     (not (getf zu :frozen))))
     (check "Zu height adds the extra field"
            (< (abs (- 5.0 (getf zu :y))) 0.01)))
+  ;; The batched HP-table read behind READ-MONSTERS.
+  (let ((reader (make-monster-reader)))
+    (check "hp block covers the live id span in one read"
+           (multiple-value-bind (bytes low)
+               (ephinea-ta-client::monster-hp-block reader +hp-table-base+
+                                                    '(7 8))
+             (and bytes (= 7 low) (= 64 (length bytes)))))
+    (check "hp block refuses a garbage id span"
+           (null (ephinea-ta-client::monster-hp-block reader +hp-table-base+
+                                                      '(0 60000))))
+    (check "hp block absent without a table"
+           (null (ephinea-ta-client::monster-hp-block reader 0 '(7 8)))))
   ;; Fast burst: pointer chain to a zero u16 means fast burst is on.
   (flet ((fast-burst-reader (flag)
            (let ((base (make-array 4 :element-type '(unsigned-byte 8)
@@ -1594,6 +1606,12 @@ over the defaults. Restores the global config afterwards (it is bound)."
     (check "ffmpeg args encode at crf 29"
            (let ((crf (position "-crf" args :test #'equal)))
              (and crf (equal "29" (nth (1+ crf) args)))))
+    (check "ffmpeg args cap the encoder threads (game shares the CPU)"
+           (let ((threads (position "-threads" args :test #'equal)))
+             (and threads
+                  (equal (princ-to-string
+                          (ephinea-ta-client::encoder-thread-count))
+                         (nth (1+ threads) args)))))
     (check "ffmpeg args disable B-frames (zero-based video timestamps)"
            (let ((bf (position "-bf" args :test #'equal)))
              (and bf (equal "0" (nth (1+ bf) args)))))
@@ -1606,6 +1624,14 @@ over the defaults. Restores the global config afterwards (it is bound)."
            (equal "out.mp4" (first (last args))))
     (check "video-only args carry no audio input"
            (not (member "s16le" args :test #'equal))))
+  ;; The x264 thread cap: half the logical processors, floor 2, cap 8.
+  (check "encoder threads: half the cores"
+         (= 4 (ephinea-ta-client::encoder-thread-count 8)))
+  (check "encoder threads floor at 2 on small machines"
+         (= 2 (ephinea-ta-client::encoder-thread-count 2)))
+  (check "encoder threads cap at +record-max-threads+"
+         (= ephinea-ta-client::+record-max-threads+
+            (ephinea-ta-client::encoder-thread-count 64)))
   (let ((args (build-remux-args "in.mp4" "out.mp4")))
     (check "remux args stream-copy the video with faststart"
            (and (member "copy" args :test #'equal)

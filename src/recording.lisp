@@ -93,6 +93,26 @@ triple, for the local storage budget (APPLY-RECORDING-RETENTION)."))
 (defparameter +record-framerate+ 30)
 (defparameter +record-preset+ "veryfast")
 (defparameter +record-crf+ 29)
+(defparameter +record-max-threads+ 8
+  "Upper bound on the x264 thread cap; beyond this more threads only
+add contention, veryfast 1080p30 never needs them.")
+
+(defun logical-processor-count ()
+  "Logical processors per Windows, or 4 when undetectable."
+  (or (ignore-errors
+        (parse-integer (uiop:getenv "NUMBER_OF_PROCESSORS")))
+      4))
+
+(defun encoder-thread-count (&optional (cores (logical-processor-count)))
+  "libx264 -threads for the live capture: half the logical processors,
+at least 2 and at most +RECORD-MAX-THREADS+. x264's default is
+1.5 x cores, which floods every core with encoder threads and - even
+at below-normal process priority - costs the game cache and scheduling
+churn. Half the cores keeps veryfast 1080p30 comfortably real time
+(field numbers put one core near 60 fps) while leaving the other half
+to PSOBB; the floor of 2 protects the encode on small machines because
+recording smoothness outranks everything else here."
+  (max 2 (min +record-max-threads+ (floor cores 2))))
 (defparameter +record-max-height+ 1080
   "Downscale cap. Windows larger than this record at 1080p; smaller
 ones are left alone (min(), never an upscale). Height is forced even
@@ -320,6 +340,7 @@ the game."
            "-i" audio-pipe))
    (list "-c:v" "libx264"
          "-preset" +record-preset+
+         "-threads" (princ-to-string (encoder-thread-count))
          "-crf" (princ-to-string +record-crf+)
          ;; No B-frames: see the encoder-settings note. The fragmented
          ;; muxer would bake their reorder delay in as a video start

@@ -83,6 +83,7 @@ audio tail before \"q\" stops it reading.")
 
 (defconstant +startf-usestdhandles+ #x100)
 (defconstant +create-no-window+ #x08000000)
+(defconstant +below-normal-priority-class+ #x4000)
 (defconstant +handle-flag-inherit+ 1)
 
 ;;; Windows command lines are one string; arguments must be quoted per
@@ -156,7 +157,12 @@ Returns (values read-end write-end)."
 (defun spawn-process (program args)
   "CreateProcessW PROGRAM with ARGS, stdin wired to a pipe we keep.
 Returns an FFMPEG-CAPTURE; signals an error on failure. A bare PROGRAM
-name (e.g. \"ffmpeg.exe\") is searched on PATH by the API."
+name (e.g. \"ffmpeg.exe\") is searched on PATH by the API.
+The child runs at below-normal priority: every process spawned here is
+an ffmpeg (capture, remux, -version probe) sharing the machine with a
+live game, and x264 at normal priority visibly stole frame time from
+PSOBB. Windows still gives ffmpeg the leftover cores, so a capture
+keeps up whenever the machine has headroom at all."
   (multiple-value-bind (stdin-read stdin-write) (create-stdin-pipe)
     (handler-case
         (fli:with-dynamic-foreign-objects
@@ -171,7 +177,8 @@ name (e.g. \"ffmpeg.exe\") is searched on PATH by the API."
                       (declare (ignore element-count byte-count))
                       (%create-process fli:*null-pointer* command
                                        fli:*null-pointer* fli:*null-pointer*
-                                       t +create-no-window+
+                                       t (logior +create-no-window+
+                                                 +below-normal-priority-class+)
                                        fli:*null-pointer* fli:*null-pointer*
                                        startup process-info))))
             (unless ok

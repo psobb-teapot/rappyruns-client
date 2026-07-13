@@ -278,9 +278,12 @@ an exact match - the FindWindowW candidate name is not good enough."
                               address buffer size 0)
       (when (and ok (= bytes-read size))
         (let ((result (make-array size :element-type '(unsigned-byte 8))))
-          (dotimes (i size result)
-            (setf (aref result i)
-                  (fli:dereference buffer :index i))))))))
+          ;; Bulk copy. The poll loop moves tens of KB through here 30x
+          ;; a second (player blocks, monster blocks, quest registers);
+          ;; a per-byte FLI:DEREFERENCE loop made that a measurable,
+          ;; constant CPU tax next to a live game.
+          (fli:replace-foreign-array result buffer :end2 size)
+          result)))))
 
 ;;; Authenticode verification (wintrust/crypt32). PROCESS-IMAGE-PATH
 ;;; finds the exe behind a process handle and AUTHENTICODE-VERIFY

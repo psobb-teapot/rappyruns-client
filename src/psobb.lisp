@@ -236,14 +236,21 @@ Jellen/Zalure)."
                 :confuse-traps (u8 +player-confuse-traps-offset+)))))))
 
 (defun read-players (reader)
-  "Players in the current game with their party slot order preserved."
-  (loop :for i :from 0 :below 12
-        :for pointer := (read-u32 reader (+ +base-player-array+ (* 4 i)))
-        :when (and pointer (plusp pointer))
-          :collect (let ((player (read-player reader pointer)))
-                     (when player (list* :index i player)))
-            :into players
-        :finally (return (remove nil players))))
+  "Players in the current game with their party slot order preserved.
+The 12 slot pointers are consecutive, so they arrive in one block read
+(11 fewer ReadProcessMemory calls per poll frame); the per-slot reads
+remain as a fallback for a reader that cannot serve the whole block."
+  (let ((pointers (read-block reader +base-player-array+ (* 4 12))))
+    (loop :for i :from 0 :below 12
+          :for pointer := (if pointers
+                              (bytes-u32 pointers (* 4 i))
+                              (read-u32 reader
+                                        (+ +base-player-array+ (* 4 i))))
+          :when (and pointer (plusp pointer))
+            :collect (let ((player (read-player reader pointer)))
+                       (when player (list* :index i player)))
+              :into players
+          :finally (return (remove nil players)))))
 
 (defun fast-burst-enabled-p (reader)
   "T when Ephinea's fast burst is active (psostats ephineaFastBurstEnabled)."
@@ -477,37 +484,47 @@ so the detection state machine stays pure and testable."
             (weapon nil)
             (consumables '()))
         (when pointers
+          ;; The filter fields (owner, type/group/index, tool count,
+          ;; equipped flag) all sit inside one 173-byte stretch of the
+          ;; item struct, so each item costs a single block read here
+          ;; instead of five ReadProcessMemory calls - the array covers
+          ;; the whole game world, so in multiplayer this loop visits
+          ;; hundreds of items every second.
           (loop :for i :from 0 :below count
                 :for item-addr := (bytes-u32 pointers (* 4 i))
                 :when (plusp item-addr)
-                  :do (let ((type (read-u8 reader (+ item-addr +item-type-offset+)))
-                            (group (read-u8 reader (+ item-addr +item-group-offset+)))
-                            (index (read-u8 reader (+ item-addr +item-index-offset+)))
-                            (owner (read-u8 reader (+ item-addr +item-owner-offset+)))
-                            (equipped (read-u8 reader (+ item-addr
-                                                         +item-equipped-offset+))))
-                        (cond
-                          ((and owner equipped
-                                (= owner my-index) (oddp equipped))
-                           (let ((item (read-equipped-item reader item-addr)))
-                             (when item
-                               (push item equipment)
-                               (when (eq (getf item :type) :weapon)
-                                 (setf weapon item)))))
-                          ;; Consumables also need the owner filter or
-                          ;; teammates' stacks would clobber ours.
-                          ((and (eql type 3) owner (= owner my-index))
-                           (let ((key (consumable-key group index))
-                                 (raw (read-u8 reader (+ item-addr
-                                                         +item-tool-count-offset+))))
-                             (when (and key raw)
-                               ;; The count byte is XOR-obfuscated with the
-                               ;; low byte of its own address.
-                               (setf (getf consumables key)
-                                     (logxor raw
-                                             (logand (+ item-addr
-                                                        +item-tool-count-offset+)
-                                                     #xFF)))))))))
+                  :do (let ((fields (read-block
+                                     reader (+ item-addr +item-owner-offset+)
+                                     (- (1+ +item-equipped-offset+)
+                                        +item-owner-offset+))))
+                        (flet ((u8 (offset)
+                                 (aref fields (- offset +item-owner-offset+))))
+                          (when fields
+                            (let ((type (u8 +item-type-offset+))
+                                  (group (u8 +item-group-offset+))
+                                  (index (u8 +item-index-offset+))
+                                  (owner (u8 +item-owner-offset+))
+                                  (equipped (u8 +item-equipped-offset+)))
+                              (cond
+                                ((and (= owner my-index) (oddp equipped))
+                                 (let ((item (read-equipped-item reader item-addr)))
+                                   (when item
+                                     (push item equipment)
+                                     (when (eq (getf item :type) :weapon)
+                                       (setf weapon item)))))
+                                ;; Consumables also need the owner filter or
+                                ;; teammates' stacks would clobber ours.
+                                ((and (eql type 3) (= owner my-index))
+                                 (let ((key (consumable-key group index))
+                                       (raw (u8 +item-tool-count-offset+)))
+                                   (when key
+                                     ;; The count byte is XOR-obfuscated
+                                     ;; with the low byte of its own address.
+                                     (setf (getf consumables key)
+                                           (logxor raw
+                                                   (logand (+ item-addr
+                                                              +item-tool-count-offset+)
+                                                           #xFF))))))))))))
           (list :equipment (nreverse equipment)
                 :weapon weapon
                 :consumables consumables))))))
@@ -515,8 +532,9 @@ so the detection state machine stays pure and testable."
 ;;; Monsters. Ported from psostats GetMonsterList: per-monster identity
 ;;; (id, unitxt id, name), HP (Ephinea's server-side table, with the De
 ;;; Rol Le / Barba Ray special forms), position, status ailments and
-;;; the last attacker's player index. Each monster costs one block read
-;;; plus the HP word, so the poll loop can afford it every frame.
+;;; the last attacker's player index. Each monster costs one block
+;;; read, and the whole frame's HP comes in one batched table read
+;;; (MONSTER-HP-BLOCK), so the poll loop can afford it every frame.
 
 (defvar *monster-name-cache* (make-hash-table :test 'eql)
   "unitxt monster id -> name; unitxt data is static for a game session.")
@@ -543,51 +561,83 @@ included, matching psostats' Monster.Index."
     (73 (if (zerop index) +monster-barba-ray-hp+ +monster-barba-ray-shell-hp+))
     (t nil)))
 
-(defun read-monster (reader monster-addr index hp-table)
-  "Monster plist at MONSTER-ADDR, or NIL when it is not a live monster
-entity. INDEX is the absolute entity-array slot (players included)."
-  (let ((block (read-block reader (+ monster-addr +monster-block-start+)
-                           (- +monster-block-end+ +monster-block-start+))))
-    (when block
-      (flet ((u16 (offset) (bytes-u16 block (- offset +monster-block-start+)))
-             (u32 (offset) (bytes-u32 block (- offset +monster-block-start+)))
-             (f32 (offset) (u32-float
-                            (bytes-u32 block (- offset +monster-block-start+)))))
-        (let ((unitxt (u32 +monster-unitxt-offset+))
-              (id (u16 +monster-id-offset+)))
-          (when (plusp unitxt)
-            (let* ((boss-offset (boss-hp-offset unitxt index))
-                   (hp (cond (boss-offset
-                              (read-u16 reader (+ monster-addr boss-offset)))
-                             ((and hp-table (plusp hp-table))
-                              (read-u16 reader (+ hp-table 4 (* 32 id))))
-                             (t (u16 +monster-hp-offset+))))
-                   (status (u16 +monster-status-offset+))
-                   (y (f32 +monster-y-offset+)))
-              ;; HP underflows below zero on kill.
-              (when (and hp (> hp #x8000))
-                (setf hp 0))
-              ;; Zu and Pazuzu keep their height in a separate field.
-              (when (member unitxt '(94 95))
-                (let ((extra (read-f32 reader (+ monster-addr
-                                                 +monster-zu-y-offset+))))
-                  (when extra (incf y extra))))
-              (list :id id
-                    :unitxt unitxt
-                    :index index
-                    :name (read-monster-name reader unitxt)
-                    :hp (or hp 0)
-                    :last-attacker (u16 +monster-attacker-offset+)
-                    :x (f32 +monster-x-offset+)
-                    :y y
-                    :z (f32 +monster-z-offset+)
-                    :facing (u16 +monster-facing-offset+)
-                    :frozen (eql status #x02)
-                    :confused (eql status #x12)
-                    :paralyzed (eql (u16 +monster-paralyzed-offset+) #x10)))))))))
+(defparameter +hp-block-max-ids+ 2048
+  "Widest monster-id span (64 KB at stride 32) MONSTER-HP-BLOCK will
+fetch in one read; a garbage id would otherwise ask for megabytes.
+Past the cap READ-MONSTER falls back to its per-monster HP read.")
+
+(defun monster-hp-block (reader hp-table ids)
+  "One block read covering the Ephinea HP-table entries for all of IDS,
+as (values bytes lowest-id), or NIL when the table is absent, the id
+span exceeds +HP-BLOCK-MAX-IDS+ or the memory is unreadable. Batching
+matters: HP is re-read every poll frame, and one read here replaces one
+ReadProcessMemory per monster (about half the poll loop's syscalls in a
+crowded quest)."
+  (when (and hp-table (plusp hp-table) ids)
+    (let* ((low (reduce #'min ids))
+           (span (1+ (- (reduce #'max ids) low))))
+      (when (<= span +hp-block-max-ids+)
+        (let ((bytes (read-block reader (+ hp-table (* 32 low))
+                                 (* 32 span))))
+          (when bytes (values bytes low)))))))
+
+(defun read-monster (reader monster-addr index hp-table block
+                     &optional hp-block hp-base)
+  "Monster plist decoded from BLOCK (the entity's pre-read
+[+MONSTER-BLOCK-START+, +MONSTER-BLOCK-END+) bytes), or NIL when it is
+not a live monster entity. INDEX is the absolute entity-array slot
+(players included). HP comes from HP-BLOCK/HP-BASE (see
+MONSTER-HP-BLOCK) when it covers the monster's id, sparing the
+per-monster read."
+  (when block
+    (flet ((u16 (offset) (bytes-u16 block (- offset +monster-block-start+)))
+           (u32 (offset) (bytes-u32 block (- offset +monster-block-start+)))
+           (f32 (offset) (u32-float
+                          (bytes-u32 block (- offset +monster-block-start+)))))
+      (let ((unitxt (u32 +monster-unitxt-offset+))
+            (id (u16 +monster-id-offset+)))
+        (when (plusp unitxt)
+          (let* ((boss-offset (boss-hp-offset unitxt index))
+                 (hp-offset (and hp-base (+ (* 32 (- id hp-base)) 4)))
+                 (hp (cond (boss-offset
+                            (read-u16 reader (+ monster-addr boss-offset)))
+                           ((and hp-block hp-offset
+                                 (<= 0 hp-offset)
+                                 (<= (+ hp-offset 2) (length hp-block)))
+                            (bytes-u16 hp-block hp-offset))
+                           ((and hp-table (plusp hp-table))
+                            (read-u16 reader (+ hp-table 4 (* 32 id))))
+                           (t (u16 +monster-hp-offset+))))
+                 (status (u16 +monster-status-offset+))
+                 (y (f32 +monster-y-offset+)))
+            ;; HP underflows below zero on kill.
+            (when (and hp (> hp #x8000))
+              (setf hp 0))
+            ;; Zu and Pazuzu keep their height in a separate field.
+            (when (member unitxt '(94 95))
+              (let ((extra (read-f32 reader (+ monster-addr
+                                               +monster-zu-y-offset+))))
+                (when extra (incf y extra))))
+            (list :id id
+                  :unitxt unitxt
+                  :index index
+                  :name (read-monster-name reader unitxt)
+                  :hp (or hp 0)
+                  :last-attacker (u16 +monster-attacker-offset+)
+                  :x (f32 +monster-x-offset+)
+                  :y y
+                  :z (f32 +monster-z-offset+)
+                  :facing (u16 +monster-facing-offset+)
+                  :frozen (eql status #x02)
+                  :confused (eql status #x12)
+                  :paralyzed (eql (u16 +monster-paralyzed-offset+) #x10))))))))
 
 (defun read-monsters (reader)
-  "List of monster plists (see READ-MONSTER), or NIL when unreadable."
+  "List of monster plists (see READ-MONSTER), or NIL when unreadable.
+Two passes: the entity blocks are read first, then every live
+monster's HP arrives in one batched table read (MONSTER-HP-BLOCK)
+instead of a ReadProcessMemory each - this runs 30x a second next to a
+live game, so the syscall count is the budget that matters."
   (let ((array (read-u32 reader +npc-array-pointer+))
         (npc-count (read-u32 reader +npc-count-address+))
         (player-count (read-u32 reader +player-count-address+))
@@ -597,13 +647,35 @@ entity. INDEX is the absolute entity-array slot (players included)."
       (let ((pointers (read-block reader (+ array (* 4 player-count))
                                   (* 4 npc-count))))
         (when pointers
-          (loop :for i :from 0 :below npc-count
-                :for monster-addr := (bytes-u32 pointers (* 4 i))
-                :for monster := (and (plusp monster-addr)
-                                     (read-monster reader monster-addr
-                                                   (+ player-count i) hp-table))
-                :when monster
-                  :collect monster))))))
+          (let ((entities
+                  (loop :for i :from 0 :below npc-count
+                        :for monster-addr := (bytes-u32 pointers (* 4 i))
+                        :for block := (and (plusp monster-addr)
+                                           (read-block
+                                            reader
+                                            (+ monster-addr
+                                               +monster-block-start+)
+                                            (- +monster-block-end+
+                                               +monster-block-start+)))
+                        :when block
+                          :collect (list monster-addr (+ player-count i)
+                                         block))))
+            (multiple-value-bind (hp-block hp-base)
+                (monster-hp-block
+                 reader hp-table
+                 (loop :for (nil nil block) :in entities
+                       :when (plusp (bytes-u32
+                                     block (- +monster-unitxt-offset+
+                                              +monster-block-start+)))
+                         :collect (bytes-u16
+                                   block (- +monster-id-offset+
+                                            +monster-block-start+))))
+              (loop :for (monster-addr index block) :in entities
+                    :for monster := (read-monster reader monster-addr index
+                                                  hp-table block
+                                                  hp-block hp-base)
+                    :when monster
+                      :collect monster))))))))
 
 ;;; Client authenticity. Ephinea's PSOBB.exe carries an Authenticode
 ;;; signature by Sodaboy (Terry Chatman); the Win32 verification lives
