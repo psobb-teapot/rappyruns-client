@@ -1624,6 +1624,52 @@ over the defaults. Restores the global config afterwards (it is bound)."
            (equal "out.mp4" (first (last args))))
     (check "video-only args carry no audio input"
            (not (member "s16le" args :test #'equal))))
+  ;; Hardware-encoder argv: the GPU encoder replaces libx264, keeps
+  ;; -bf 0 (the run-92 A/V sync lesson) and feeds it nv12 frames.
+  (let ((args (build-ffmpeg-args :window-title "T" :output-path "out.mp4"
+                                 :video-encoder "h264_amf")))
+    (check "hw args use the requested encoder, not libx264"
+           (and (member "h264_amf" args :test #'equal)
+                (not (member "libx264" args :test #'equal))
+                (not (member "-crf" args :test #'equal))))
+    (check "hw args set the VBR bitrate target"
+           (let ((rate (position "-b:v" args :test #'equal)))
+             (and rate (equal ephinea-ta-client::+hw-record-bitrate+
+                              (nth (1+ rate) args)))))
+    (check "hw args still disable B-frames"
+           (let ((bf (position "-bf" args :test #'equal)))
+             (and bf (equal "0" (nth (1+ bf) args)))))
+    (check "hw args convert to nv12 after the scale"
+           (let ((vf (position "-vf" args :test #'equal)))
+             (and vf
+                  (let ((filter (nth (1+ vf) args)))
+                    (and (search "scale" filter)
+                         (search "format=nv12" filter)
+                         (< (search "scale" filter)
+                            (search "format=nv12" filter)))))))
+    (check "hw fullscreen args keep the nv12 tail after hwdownload"
+           (let* ((fs (build-ffmpeg-args :window-title "T"
+                                         :output-path "out.mp4"
+                                         :fullscreen-monitor 0
+                                         :video-encoder "h264_nvenc"))
+                  (vf (position "-vf" fs :test #'equal))
+                  (filter (and vf (nth (1+ vf) fs))))
+             (and filter
+                  (search "hwdownload" filter)
+                  (search "format=nv12" filter)
+                  (< (search "hwdownload" filter)
+                     (search "format=nv12" filter))))))
+  (check "no video-encoder keeps the libx264 argv unchanged"
+         (let ((args (build-ffmpeg-args :window-title "T"
+                                        :output-path "out.mp4"
+                                        :video-encoder nil)))
+           (and (member "libx264" args :test #'equal)
+                (not (member "-b:v" args :test #'equal)))))
+  (check "probe args test the encoder against the null muxer"
+         (let ((args (ephinea-ta-client::hw-encoder-probe-args "h264_qsv")))
+           (and (member "h264_qsv" args :test #'equal)
+                (member "null" args :test #'equal)
+                (equal "-" (first (last args))))))
   ;; The x264 thread cap: half the logical processors, floor 2, cap 8.
   (check "encoder threads: half the cores"
          (= 4 (ephinea-ta-client::encoder-thread-count 8)))

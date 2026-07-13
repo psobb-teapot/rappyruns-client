@@ -365,6 +365,10 @@ are persisted incrementally, so an abrupt exit loses nothing."
     ;; Resident-app tray icon: keeps running when the window is closed
     ;; (CLIENT-CONFIRM-DESTROY hides to the tray) and offers Show / Quit.
     (start-tray!)
+    ;; Pick the GPU H.264 encoder off-thread; the first capture may
+    ;; still race it and use libx264 once, which only costs CPU.
+    (when (config-value :hw-encode)
+      (start-hw-encoder-probe))
     ;; Launch straight to the tray (autostart --minimized, or the config
     ;; toggle): the window is realized above, then hidden. A brief flash
     ;; is possible but keeping one display path is simpler than a

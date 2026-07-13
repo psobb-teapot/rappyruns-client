@@ -30,6 +30,7 @@ can eventually be retired; a custom URL is never touched.")
         :video-upload t         ; forced (hidden): always upload saved recordings
         :record-max-total-gb 20  ; cap the recordings folder; the SOLE reaper of uploaded videos now (immediate delete-after-upload was dropped - it left corrupt/discarded uploads unrecoverable). Oldest+uploaded-first past this (0/blank = unlimited). See APPLY-RECORDING-RETENTION.
         :auto-publish nil   ; cached copy of the server-side users.auto_publish flag (the server is the truth: /my/runs can flip it too; CHECK-TOKEN re-syncs from /api/me)
+        :hw-encode t        ; use a GPU H.264 encoder (NVENC/AMF/QSV) when the startup probe finds one; nil forces libx264 (see PROBE-HW-ENCODER)
         :ffmpeg-path ""     ; blank = bundled copy next to the exe, or PATH
         :record-dir ""      ; blank = <user home>/Videos/RappyRuns/ (recording.lisp migrates the pre-rename folder)
         :moderator nil      ; cached /api/me role: shows the moderator-only Rooms tab + rule button on the first frame (refreshed and re-verified by CHECK-TOKEN; server enforces the real permission)

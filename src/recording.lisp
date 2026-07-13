@@ -118,6 +118,41 @@ recording smoothness outranks everything else here."
 ones are left alone (min(), never an upscale). Height is forced even
 for yuv420p, and -2 keeps the aspect ratio with an even width.")
 
+;;; Hardware encoding. libx264 at veryfast still costs several cores
+;;; of CPU next to a live game - the field report that Xbox Game Bar
+;;; records the same game without lag comes down to its GPU encoder.
+;;; A startup probe (PROBE-HW-ENCODER, ffmpeg-win32) finds the first
+;;; vendor encoder this machine's ffmpeg can actually open, and
+;;; BUILD-FFMPEG-ARGS swaps it in: same capture, same fragmented MP4,
+;;; only the encode moves off the CPU (bench: 10 s of 1080p30 desktop
+;;; fell from 7.2 s to 3.1 s of CPU time on an AMD iGPU, and the
+;;; remaining cost is the shared download+scale, not the encoder).
+
+(defparameter +hw-encoder-candidates+ '("h264_nvenc" "h264_amf" "h264_qsv")
+  "Vendor H.264 encoders in probe order. h264_mf is deliberately
+absent: MediaFoundation silently falls back to a SOFTWARE MFT on
+machines without a hardware one, which would burn CPU like x264 but at
+bitrate-mode quality.")
+
+(defvar *hw-video-encoder* nil
+  "Encoder name chosen by the startup probe (ffmpeg-win32's
+START-HW-ENCODER-PROBE), or NIL for libx264. Read at capture start, so
+a capture that begins before the probe finishes just uses x264 once.")
+
+(defparameter +hw-record-bitrate+ "3500k"
+  "Hardware encoders have no CRF; this VBR target keeps sizes near the
+x264 CRF-29 field figure (~21 MB/min) at 1080p30.")
+(defparameter +hw-record-maxrate+ "7M")
+(defparameter +hw-record-bufsize+ "14M")
+
+(defun hw-encoder-probe-args (encoder)
+  "ffmpeg argv testing whether ENCODER can open on this machine: a few
+black frames into the null muxer. Exit 0 means usable - vendor
+encoders fail to open (fast) without the matching GPU/driver."
+  (list "-hide_banner" "-loglevel" "error"
+        "-f" "lavfi" "-i" "color=black:size=256x256:rate=30"
+        "-frames:v" "8" "-c:v" encoder "-f" "null" "-"))
+
 (defun record-scale-filter ()
   ;; fast_bilinear, NOT lanczos: the grab -> scale -> encode loop is
   ;; serial per frame, and under live game load the window BitBlt
@@ -303,7 +338,7 @@ SOMETHING recoverable, unlike gdigrab's black frames)."
           (1- n))))))
 
 (defun build-ffmpeg-args (&key window-title output-path audio-pipe
-                               fullscreen-monitor
+                               fullscreen-monitor video-encoder
                                (framerate +record-framerate+))
   "ffmpeg argv (without the program itself). Fragmented MP4 keeps the
 file playable even when ffmpeg is killed instead of quitting on \"q\".
@@ -313,7 +348,11 @@ FULLSCREEN-MONITOR (a DXGI output index), the video comes from ddagrab
 (Desktop Duplication) instead of gdigrab: GDI cannot see an
 exclusive-fullscreen Direct3D surface and records black frames. The
 fullscreen window covers that whole monitor, so the monitor capture IS
-the game."
+the game. With VIDEO-ENCODER (a +HW-ENCODER-CANDIDATES+ name), that
+GPU encoder replaces libx264 at a VBR target; -bf 0 stays - the
+B-frame reorder delay skewed A/V sync per player (run 92) regardless
+of who encodes - and the encoder gets nv12 frames via the filter
+chain, every vendor's native input."
   (append
    (list "-y" "-loglevel" "error"
          ;; Minimal probing: ffmpeg opens the audio pipe right after
@@ -338,20 +377,29 @@ the game."
      (list "-f" "s16le" "-ar" "48000" "-ac" "2"
            "-thread_queue_size" "1024"
            "-i" audio-pipe))
-   (list "-c:v" "libx264"
-         "-preset" +record-preset+
-         "-threads" (princ-to-string (encoder-thread-count))
-         "-crf" (princ-to-string +record-crf+)
-         ;; No B-frames: see the encoder-settings note. The fragmented
-         ;; muxer would bake their reorder delay in as a video start
-         ;; offset that browsers and local players interpret
-         ;; differently, skewing A/V sync by 2 frames on the site.
-         "-bf" "0"
-         "-pix_fmt" "yuv420p"
-         "-vf" (if fullscreen-monitor
-                   (format nil "hwdownload,format=bgra,~a"
-                           (record-scale-filter))
-                   (record-scale-filter)))
+   (if video-encoder
+       (list "-c:v" video-encoder
+             "-b:v" +hw-record-bitrate+
+             "-maxrate" +hw-record-maxrate+
+             "-bufsize" +hw-record-bufsize+
+             "-bf" "0")
+       (list "-c:v" "libx264"
+             "-preset" +record-preset+
+             "-threads" (princ-to-string (encoder-thread-count))
+             "-crf" (princ-to-string +record-crf+)
+             ;; No B-frames: see the encoder-settings note. The fragmented
+             ;; muxer would bake their reorder delay in as a video start
+             ;; offset that browsers and local players interpret
+             ;; differently, skewing A/V sync by 2 frames on the site.
+             "-bf" "0"
+             "-pix_fmt" "yuv420p"))
+   (list "-vf" (let ((base (if fullscreen-monitor
+                               (format nil "hwdownload,format=bgra,~a"
+                                       (record-scale-filter))
+                               (record-scale-filter))))
+                 (if video-encoder
+                     (concatenate 'string base ",format=nv12")
+                     base)))
    (when audio-pipe
      ;; NO -af here, and in particular no loudnorm: its multi-second
      ;; lookahead makes the audio output lag the video permanently,
@@ -455,7 +503,10 @@ known once the audio session is activated)."
                                   :audio-pipe audio-pipe
                                   :fullscreen-monitor
                                   (backend-fullscreen-monitor
-                                   (recorder-backend recorder)))))
+                                   (recorder-backend recorder))
+                                  :video-encoder
+                                  (and (config-value :hw-encode)
+                                       *hw-video-encoder*))))
     (multiple-value-bind (capture error)
         (backend-start-capture (recorder-backend recorder) ffmpeg args output
                                :audio-pipe audio-pipe :audio-pid audio-pid)

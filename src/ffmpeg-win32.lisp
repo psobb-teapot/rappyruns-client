@@ -215,6 +215,49 @@ the GUI to validate the recording checkbox; -version exits on its own."
         t)
     (error () nil)))
 
+;;; Hardware-encoder probe. Runs once, in the background, at startup;
+;;; the winner lands in *HW-VIDEO-ENCODER* (recording.lisp) and every
+;;; later capture uses it. Probing at capture start instead would
+;;; delay the recording past the run's start trigger.
+
+(defparameter +hw-probe-timeout-seconds+ 15
+  "Per-encoder cap on the probe encode. A usable encoder finishes the
+8 black frames in well under a second; an unusable one fails to open
+even faster - the margin only covers a cold ffmpeg start under load.")
+
+(defun probe-hw-encoder ()
+  "First +HW-ENCODER-CANDIDATES+ entry this machine's ffmpeg can
+actually encode with, or NIL when only libx264 remains."
+  (let ((ffmpeg (resolve-ffmpeg-path))
+        (backend (make-instance 'win32-ffmpeg-backend)))
+    (dolist (encoder +hw-encoder-candidates+)
+      (handler-case
+          (let ((capture (spawn-process ffmpeg
+                                        (hw-encoder-probe-args encoder))))
+            (unwind-protect
+                 (progn
+                   (wait-for-capture backend capture
+                                     +hw-probe-timeout-seconds+)
+                   (when (backend-capture-succeeded-p backend capture)
+                     (return encoder)))
+              (backend-close-capture backend capture)))
+        (error (condition)
+          (recording-log "hw encoder probe ~a failed to spawn: ~a"
+                         encoder condition)
+          nil)))))
+
+(defun start-hw-encoder-probe ()
+  "Probe in a worker thread and publish the result. Called once from
+MAIN; until it lands, captures fall back to libx264 (see
+*HW-VIDEO-ENCODER*)."
+  (mp:process-run-function
+   "eta-hw-encoder-probe" '()
+   (lambda ()
+     (let ((encoder (ignore-errors (probe-hw-encoder))))
+       (setf *hw-video-encoder* encoder)
+       (recording-log "hw encoder probe: using ~a"
+                      (or encoder "libx264 (no hardware encoder)"))))))
+
 ;;; Fullscreen detection. An exclusive-fullscreen PSOBB renders past
 ;;; GDI, so the gdigrab capture records black frames (field-observed on
 ;;; a Boot Camp machine, 2026-07-07); BACKEND-FULLSCREEN-MONITOR makes
