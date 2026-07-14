@@ -246,17 +246,41 @@ actually encode with, or NIL when only libx264 remains."
                          encoder condition)
           nil)))))
 
+(defun probe-hw-gpu-chain ()
+  "T when the zero-copy fullscreen capture chain works on this machine
+\(see HW-GPU-CHAIN-PROBE-ARGS). Only worth asking once the encoder
+probe picked h264_qsv; the probe grabs a few frames of the primary
+desktop, which every interactive session allows."
+  (let ((backend (make-instance 'win32-ffmpeg-backend)))
+    (handler-case
+        (let ((capture (spawn-process (resolve-ffmpeg-path)
+                                      (hw-gpu-chain-probe-args))))
+          (unwind-protect
+               (progn
+                 (wait-for-capture backend capture
+                                   +hw-probe-timeout-seconds+)
+                 (backend-capture-succeeded-p backend capture))
+            (backend-close-capture backend capture)))
+      (error (condition)
+        (recording-log "gpu chain probe failed to spawn: ~a" condition)
+        nil))))
+
 (defun start-hw-encoder-probe ()
   "Probe in a worker thread and publish the result. Called once from
 MAIN; until it lands, captures fall back to libx264 (see
-*HW-VIDEO-ENCODER*)."
+*HW-VIDEO-ENCODER*). A QSV winner is probed further for the zero-copy
+fullscreen chain (*HW-FULLSCREEN-GPU-CHAIN*)."
   (mp:process-run-function
    "eta-hw-encoder-probe" '()
    (lambda ()
      (let ((encoder (ignore-errors (probe-hw-encoder))))
        (setf *hw-video-encoder* encoder)
        (recording-log "hw encoder probe: using ~a"
-                      (or encoder "libx264 (no hardware encoder)"))))))
+                      (or encoder "libx264 (no hardware encoder)"))
+       (when (equal encoder "h264_qsv")
+         (setf *hw-fullscreen-gpu-chain* (probe-hw-gpu-chain))
+         (recording-log "gpu chain probe: fullscreen captures ~:[keep the hwdownload fallback~;stay on the GPU (hwmap -> scale_qsv)~]"
+                        *hw-fullscreen-gpu-chain*))))))
 
 ;;; Fullscreen detection. An exclusive-fullscreen PSOBB renders past
 ;;; GDI, so the gdigrab capture records black frames (field-observed on
@@ -321,8 +345,10 @@ MAIN; until it lands, captures fall back to libx264 (see
             :do (write-char (code-char code) out)))))
 
 (defun psobb-fullscreen-monitor ()
-  "Output index of the monitor the PSOBB window covers entirely, or
-NIL when the window is absent or windowed."
+  "Plist (:output-idx :width :height) of the monitor the PSOBB window
+covers entirely, or NIL when the window is absent or windowed. The
+dimensions are the monitor rect's - the fullscreen window spans it
+exactly, so they are also the capture size (sizes the GPU-side scale)."
   (let ((hwnd (find-psobb-window)))
     (when hwnd
       (fli:with-dynamic-foreign-objects ((rect win-rect)
@@ -333,12 +359,17 @@ NIL when the window is absent or windowed."
                                              +monitor-defaulttonearest+)))
           (when (and (not (fli:null-pointer-p monitor))
                      (%get-window-rect hwnd rect)
-                     (%get-monitor-info monitor info)
-                     (rect-covers-p
-                      (rect-list rect)
-                      (rect-list (fli:foreign-slot-pointer info
-                                                           'rc-monitor))))
-            (display-device-output-index (monitor-device-name info))))))))
+                     (%get-monitor-info monitor info))
+            (let ((monitor-rect (rect-list (fli:foreign-slot-pointer
+                                            info 'rc-monitor))))
+              (when (rect-covers-p (rect-list rect) monitor-rect)
+                (let ((index (display-device-output-index
+                              (monitor-device-name info))))
+                  (when index
+                    (destructuring-bind (left top right bottom) monitor-rect
+                      (list :output-idx index
+                            :width (- right left)
+                            :height (- bottom top)))))))))))))
 
 ;;; The live backend
 
@@ -366,8 +397,9 @@ fact. Never signals."
 (defmethod backend-fullscreen-monitor ((backend win32-ffmpeg-backend))
   (let ((monitor (ignore-errors (psobb-fullscreen-monitor))))
     (when monitor
-      (recording-log "fullscreen window: capturing via ddagrab output_idx=~d"
-                     monitor))
+      (recording-log "fullscreen window: capturing via ddagrab output_idx=~d (~dx~d)"
+                     (getf monitor :output-idx)
+                     (getf monitor :width) (getf monitor :height)))
     monitor))
 
 (defmethod backend-start-capture ((backend win32-ffmpeg-backend)

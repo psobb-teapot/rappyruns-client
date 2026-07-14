@@ -1650,7 +1650,9 @@ over the defaults. Restores the global config afterwards (it is bound)."
     (check "hw fullscreen args keep the nv12 tail after hwdownload"
            (let* ((fs (build-ffmpeg-args :window-title "T"
                                          :output-path "out.mp4"
-                                         :fullscreen-monitor 0
+                                         :fullscreen-monitor
+                                         (list :output-idx 0
+                                               :width 1920 :height 1080)
                                          :video-encoder "h264_nvenc"))
                   (vf (position "-vf" fs :test #'equal))
                   (filter (and vf (nth (1+ vf) fs))))
@@ -1749,7 +1751,9 @@ over the defaults. Restores the global config afterwards (it is bound)."
                      "\\\\.\\DISPLAY"))
               (null (ephinea-ta-client::display-device-output-index ""))))
   (let ((args (build-ffmpeg-args :window-title "T" :output-path "out.mp4"
-                                 :fullscreen-monitor 1)))
+                                 :fullscreen-monitor
+                                 (list :output-idx 1
+                                       :width 1920 :height 1080))))
     (check "fullscreen args capture via ddagrab, not gdigrab"
            (and (not (member "gdigrab" args :test #'equal))
                 (member "lavfi" args :test #'equal)
@@ -1776,12 +1780,73 @@ over the defaults. Restores the global config afterwards (it is bound)."
                      (build-ffmpeg-args :window-title "T"
                                         :output-path "out.mp4"
                                         :audio-pipe pipe
-                                        :fullscreen-monitor 1)
+                                        :fullscreen-monitor
+                                        (list :output-idx 1
+                                              :width 1920 :height 1080))
                      pipe)))))
+  ;; The zero-copy Intel chain: with the probe-verified GPU chain the
+  ;; frames never touch system memory - hwmap hands ddagrab's D3D11
+  ;; frames to scale_qsv, sized from the monitor rect (2560x1600 Retina
+  ;; -> 1728x1080), and no hwdownload appears.
+  (let* ((monitor (list :output-idx 0 :width 2560 :height 1600))
+         (args (build-ffmpeg-args :window-title "T" :output-path "out.mp4"
+                                  :fullscreen-monitor monitor
+                                  :video-encoder "h264_qsv"
+                                  :gpu-chain t))
+         (vf (position "-vf" args :test #'equal))
+         (filter (and vf (nth (1+ vf) args))))
+    (check "qsv chain keeps every frame on the GPU"
+           (and filter
+                (search "hwmap=derive_device=qsv" filter)
+                (not (search "hwdownload" filter))))
+    (check "qsv chain scales on the GPU to literal capped dimensions"
+           (and filter
+                (search "scale_qsv=w=1728:h=1080:format=nv12" filter)))
+    (check "qsv chain still encodes with h264_qsv at the VBR target"
+           (and (member "h264_qsv" args :test #'equal)
+                (member "-b:v" args :test #'equal)))
+    (check "qsv chain still disables B-frames"
+           (let ((bf (position "-bf" args :test #'equal)))
+             (and bf (equal "0" (nth (1+ bf) args)))))
+    (check "an unverified chain keeps the hwdownload fallback"
+           (let* ((fallback (build-ffmpeg-args :window-title "T"
+                                               :output-path "out.mp4"
+                                               :fullscreen-monitor monitor
+                                               :video-encoder "h264_qsv"))
+                  (vf (position "-vf" fallback :test #'equal))
+                  (filter (nth (1+ vf) fallback)))
+             (and (search "hwdownload" filter)
+                  (not (search "hwmap" filter))))))
+  (check "the chain flag never rewires a windowed capture"
+         (equal (build-ffmpeg-args :window-title "T" :output-path "out.mp4"
+                                   :video-encoder "h264_qsv" :gpu-chain t)
+                (build-ffmpeg-args :window-title "T" :output-path "out.mp4"
+                                   :video-encoder "h264_qsv")))
+  ;; The GPU scale's literal dimensions: 1080-capped, aspect kept, even.
+  (check "scale dimensions cap at 1080 keeping aspect"
+         (multiple-value-bind (w h)
+             (ephinea-ta-client::record-scale-dimensions 3200 1800)
+           (and (= w 1920) (= h 1080))))
+  (check "scale dimensions leave small sources alone"
+         (multiple-value-bind (w h)
+             (ephinea-ta-client::record-scale-dimensions 1440 900)
+           (and (= w 1440) (= h 900))))
+  (check "scale dimensions stay even"
+         (multiple-value-bind (w h)
+             (ephinea-ta-client::record-scale-dimensions 1367 899)
+           (and (= w 1366) (= h 898))))
+  (check "gpu chain probe args exercise ddagrab through h264_qsv"
+         (let ((args (ephinea-ta-client::hw-gpu-chain-probe-args)))
+           (and (find-if (lambda (arg) (search "ddagrab" arg)) args)
+                (find-if (lambda (arg) (search "hwmap" arg)) args)
+                (member "h264_qsv" args :test #'equal)
+                (member "null" args :test #'equal)
+                (equal "-" (first (last args))))))
   ;; The recorder asks the backend about fullscreen at capture start.
   (with-recording-config (:record-enabled t)
     (multiple-value-bind (rec backend) (make-test-recorder)
-      (setf (mock-fullscreen-monitor backend) 0)
+      (setf (mock-fullscreen-monitor backend)
+            (list :output-idx 0 :width 1920 :height 1080))
       (recorder-step rec :in-quest '() "Ephinea PSOBB")
       (let ((args (third (first (events-of backend :start)))))
         (check "recorder records a fullscreen game via ddagrab"

@@ -59,11 +59,14 @@ BACKEND-CLOSE-CAPTURE, or (values nil error-string)."))
 
 (defgeneric backend-fullscreen-monitor (backend)
   (:documentation
-   "DXGI output index (0-based) of the monitor the game window covers
-entirely, or NIL when it is an ordinary window. Queried once per
-capture start: a fullscreen window's Direct3D output is invisible to
-GDI, so gdigrab would record black frames (field-observed on a Boot
-Camp machine); BUILD-FFMPEG-ARGS switches to ddagrab for it.")
+   "Plist (:output-idx N :width W :height H) describing the monitor
+the game window covers entirely - the 0-based DXGI output index and
+the monitor rect's pixel size - or NIL when it is an ordinary window.
+Queried once per capture start: a fullscreen window's Direct3D output
+is invisible to GDI, so gdigrab would record black frames
+(field-observed on a Boot Camp machine); BUILD-FFMPEG-ARGS switches to
+ddagrab for it, and the dimensions size the GPU-side scale when the
+zero-copy chain is in play.")
   (:method (backend) nil))
 
 (defgeneric backend-list-stale-files (backend dir)
@@ -127,6 +130,15 @@ for yuv420p, and -2 keeps the aspect ratio with an even width.")
 ;;; only the encode moves off the CPU (bench: 10 s of 1080p30 desktop
 ;;; fell from 7.2 s to 3.1 s of CPU time on an AMD iGPU, and the
 ;;; remaining cost is the shared download+scale, not the encoder).
+;;; On Intel that remaining cost goes too: a second probe verifies the
+;;; zero-copy fullscreen chain (ddagrab -> hwmap -> scale_qsv ->
+;;; h264_qsv) and captures then skip hwdownload + the CPU scale
+;;; entirely (*HW-FULLSCREEN-GPU-CHAIN*). The field machine this
+;;; targets - a 2-core Boot Camp MacBook Air recording a Retina
+;;; fullscreen - paid ~500 MB/s of GPU->CPU copy plus a CPU scale as a
+;;; fixed tax, and reported the game slowing late in each quest and
+;;; worsening across laps: exactly the shape of thermal throttling
+;;; under a sustained load that Game Bar's all-GPU pipeline avoids.
 
 (defparameter +hw-encoder-candidates+ '("h264_nvenc" "h264_amf" "h264_qsv")
   "Vendor H.264 encoders in probe order. h264_mf is deliberately
@@ -138,6 +150,15 @@ bitrate-mode quality.")
   "Encoder name chosen by the startup probe (ffmpeg-win32's
 START-HW-ENCODER-PROBE), or NIL for libx264. Read at capture start, so
 a capture that begins before the probe finishes just uses x264 once.")
+
+(defvar *hw-fullscreen-gpu-chain* nil
+  "T when the startup probe verified the zero-copy fullscreen chain
+\(ddagrab -> hwmap -> scale_qsv -> h264_qsv) works on this machine.
+The hwdownload fallback costs a full GPU->CPU frame copy plus a CPU
+scale every frame - a fixed tax a weak machine (the 2-core MacBook Air
+field report) pays on top of the game - so when the whole pipeline can
+stay on the GPU it should. Intel only: the AMD equivalents (scale_d3d11,
+vpp_amf) are broken in the bundled ffmpeg build (tried for PR 141).")
 
 (defparameter +hw-record-bitrate+ "3500k"
   "Hardware encoders have no CRF; this VBR target keeps sizes near the
@@ -152,6 +173,31 @@ encoders fail to open (fast) without the matching GPU/driver."
   (list "-hide_banner" "-loglevel" "error"
         "-f" "lavfi" "-i" "color=black:size=256x256:rate=30"
         "-frames:v" "8" "-c:v" encoder "-f" "null" "-"))
+
+(defun hw-gpu-chain-probe-args ()
+  "ffmpeg argv testing the zero-copy fullscreen chain: a few desktop
+frames through ddagrab -> hwmap -> scale_qsv -> h264_qsv into the null
+muxer. Exit 0 means the whole D3D11->QSV handoff works on this
+machine's driver stack; anything broken along it (hwmap derive, the
+VPP session, the encoder sharing the device) fails here at startup
+instead of failing a capture mid-quest."
+  (list "-hide_banner" "-loglevel" "error"
+        "-f" "lavfi" "-i" "ddagrab=output_idx=0:framerate=30:draw_mouse=0"
+        "-frames:v" "8"
+        "-vf" "hwmap=derive_device=qsv,scale_qsv=w=1280:h=720:format=nv12"
+        "-c:v" "h264_qsv"
+        "-f" "null" "-"))
+
+(defun record-scale-dimensions (width height &optional (cap +record-max-height+))
+  "Even target WxH for a capture of a WIDTHxHEIGHT source: HEIGHT
+capped at CAP (never upscaled), aspect kept. The GPU scale chain
+\(scale_qsv) gets literal dimensions - the monitor rect is known at
+capture start - where the CPU path lets ffmpeg evaluate its
+scale=-2:trunc(min(...)/2)*2 expression itself. Pure."
+  (if (<= height cap)
+      (values (* 2 (floor width 2)) (* 2 (floor height 2)))
+      (values (* 2 (round (* width cap) (* 2 height)))
+              (* 2 (floor cap 2)))))
 
 (defun record-scale-filter ()
   ;; fast_bilinear, NOT lanczos: the grab -> scale -> encode loop is
@@ -338,21 +384,26 @@ SOMETHING recoverable, unlike gdigrab's black frames)."
           (1- n))))))
 
 (defun build-ffmpeg-args (&key window-title output-path audio-pipe
-                               fullscreen-monitor video-encoder
+                               fullscreen-monitor video-encoder gpu-chain
                                (framerate +record-framerate+))
   "ffmpeg argv (without the program itself). Fragmented MP4 keeps the
 file playable even when ffmpeg is killed instead of quitting on \"q\".
 With AUDIO-PIPE, raw 16-bit 48 kHz stereo game audio arrives on that
 named pipe as a second input and is encoded as AAC. With
-FULLSCREEN-MONITOR (a DXGI output index), the video comes from ddagrab
-(Desktop Duplication) instead of gdigrab: GDI cannot see an
+FULLSCREEN-MONITOR (a plist :output-idx :width :height, see
+BACKEND-FULLSCREEN-MONITOR), the video comes from ddagrab (Desktop
+Duplication) instead of gdigrab: GDI cannot see an
 exclusive-fullscreen Direct3D surface and records black frames. The
 fullscreen window covers that whole monitor, so the monitor capture IS
 the game. With VIDEO-ENCODER (a +HW-ENCODER-CANDIDATES+ name), that
 GPU encoder replaces libx264 at a VBR target; -bf 0 stays - the
 B-frame reorder delay skewed A/V sync per player (run 92) regardless
 of who encodes - and the encoder gets nv12 frames via the filter
-chain, every vendor's native input."
+chain, every vendor's native input. With GPU-CHAIN (fullscreen + QSV,
+probe-verified: *HW-FULLSCREEN-GPU-CHAIN*), the frames never leave the
+GPU - hwmap hands ddagrab's D3D11 frames to a scale_qsv sized from the
+monitor rect - dropping the per-frame GPU->CPU copy and CPU scale that
+taxed weak machines."
   (append
    (list "-y" "-loglevel" "error"
          ;; Minimal probing: ffmpeg opens the audio pipe right after
@@ -364,11 +415,11 @@ chain, every vendor's native input."
    (if fullscreen-monitor
        ;; ddagrab is a lavfi source filter; it creates its own D3D11
        ;; device and outputs GPU frames at a constant FRAMERATE
-       ;; (duplicating frames on static screens), which hwdownload in
-       ;; the -vf chain brings back to system memory for libx264.
+       ;; (duplicating frames on static screens), which the -vf chain
+       ;; either downloads for the CPU scale or maps straight to QSV.
        (list "-f" "lavfi"
              "-i" (format nil "ddagrab=output_idx=~d:framerate=~d:draw_mouse=0"
-                          fullscreen-monitor framerate))
+                          (getf fullscreen-monitor :output-idx) framerate))
        (list "-f" "gdigrab"
              "-framerate" (princ-to-string framerate)
              "-draw_mouse" "0"
@@ -393,13 +444,20 @@ chain, every vendor's native input."
              ;; differently, skewing A/V sync by 2 frames on the site.
              "-bf" "0"
              "-pix_fmt" "yuv420p"))
-   (list "-vf" (let ((base (if fullscreen-monitor
-                               (format nil "hwdownload,format=bgra,~a"
-                                       (record-scale-filter))
-                               (record-scale-filter))))
-                 (if video-encoder
-                     (concatenate 'string base ",format=nv12")
-                     base)))
+   (list "-vf"
+         (if (and fullscreen-monitor video-encoder gpu-chain)
+             (multiple-value-bind (width height)
+                 (record-scale-dimensions (getf fullscreen-monitor :width)
+                                          (getf fullscreen-monitor :height))
+               (format nil "hwmap=derive_device=qsv,scale_qsv=w=~d:h=~d:format=nv12"
+                       width height))
+             (let ((base (if fullscreen-monitor
+                             (format nil "hwdownload,format=bgra,~a"
+                                     (record-scale-filter))
+                             (record-scale-filter))))
+               (if video-encoder
+                   (concatenate 'string base ",format=nv12")
+                   base))))
    (when audio-pipe
      ;; NO -af here, and in particular no loudnorm: its multi-second
      ;; lookahead makes the audio output lag the video permanently,
@@ -498,15 +556,17 @@ known once the audio session is activated)."
          (output (recording-tmp-path))
          (audio-pid (and (config-value :record-audio) *audio-target-pid*))
          (audio-pipe (and audio-pid (audio-pipe-name)))
+         (encoder (and (config-value :hw-encode) *hw-video-encoder*))
          (args (build-ffmpeg-args :window-title window-title
                                   :output-path output
                                   :audio-pipe audio-pipe
                                   :fullscreen-monitor
                                   (backend-fullscreen-monitor
                                    (recorder-backend recorder))
-                                  :video-encoder
-                                  (and (config-value :hw-encode)
-                                       *hw-video-encoder*))))
+                                  :video-encoder encoder
+                                  :gpu-chain
+                                  (and (equal encoder "h264_qsv")
+                                       *hw-fullscreen-gpu-chain*))))
     (multiple-value-bind (capture error)
         (backend-start-capture (recorder-backend recorder) ffmpeg args output
                                :audio-pipe audio-pipe :audio-pid audio-pid)
