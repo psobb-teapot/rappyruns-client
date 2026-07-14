@@ -1842,6 +1842,32 @@ over the defaults. Restores the global config afterwards (it is bound)."
                 (member "h264_qsv" args :test #'equal)
                 (member "null" args :test #'equal)
                 (equal "-" (first (last args))))))
+  ;; The low-memory profile: an 8 GB machine records at a lower rate so
+  ;; the capture tmp + remux + upload churn less of its file cache.
+  (check "8 GB machines are low-memory, 16 GB and unknown are not"
+         (and (ephinea-ta-client::low-memory-machine-p (* 8 (expt 2 30)))
+              (not (ephinea-ta-client::low-memory-machine-p (* 16 (expt 2 30))))
+              (not (ephinea-ta-client::low-memory-machine-p nil))))
+  (check "low-memory hw args use the reduced VBR profile"
+         (let ((args (build-ffmpeg-args :window-title "T" :output-path "o.mp4"
+                                        :video-encoder "h264_qsv"
+                                        :low-memory t)))
+           (let ((rate (position "-b:v" args :test #'equal)))
+             (and rate (equal ephinea-ta-client::+hw-record-bitrate-low+
+                              (nth (1+ rate) args))
+                  (member ephinea-ta-client::+hw-record-maxrate-low+
+                          args :test #'equal)))))
+  (check "low-memory x264 args raise the CRF"
+         (let ((args (build-ffmpeg-args :window-title "T" :output-path "o.mp4"
+                                        :low-memory t)))
+           (let ((crf (position "-crf" args :test #'equal)))
+             (and crf (equal (princ-to-string
+                              ephinea-ta-client::+record-crf-low+)
+                             (nth (1+ crf) args))))))
+  (check "roomy machines keep the standard rates"
+         (let ((args (build-ffmpeg-args :window-title "T" :output-path "o.mp4"
+                                        :video-encoder "h264_qsv")))
+           (member ephinea-ta-client::+hw-record-bitrate+ args :test #'equal)))
   ;; The recorder asks the backend about fullscreen at capture start.
   (with-recording-config (:record-enabled t)
     (multiple-value-bind (rec backend) (make-test-recorder)
@@ -2039,6 +2065,21 @@ store functions that persist never touch the real %APPDATA% queue."
              (null (getf (first saved) :telemetry)))
       (check "persisted queued entry keeps its telemetry"
              (getf (second saved) :telemetry))))
+  ;; The in-memory copy sheds a finished submission's telemetry too:
+  ;; megabytes of frames per long run, times ~50 kept entries, once
+  ;; grew the heap a lap's worth every lap (the 8 GB machine felt it).
+  (with-test-store ((list :status :queued :telemetry '(:frames (1))))
+    (let* ((entry (first (queued-runs)))
+           (submitted (ephinea-ta-client::update-run!
+                       entry :status :submitted :server-id 9)))
+      (check "a submitted entry releases its telemetry in memory"
+             (and (null (getf submitted :telemetry))
+                  (null (getf (first (queued-runs)) :telemetry))))))
+  (with-test-store ((list :status :queued :telemetry '(:frames (1))))
+    (let ((failed (ephinea-ta-client::update-run!
+                   (first (queued-runs)) :status :failed :reason "net")))
+      (check "a failed entry keeps its telemetry for the retry"
+             (getf failed :telemetry))))
   ;; Clearing the list keeps only unsent runs - the one thing that
   ;; exists nowhere else. Drafts with a pending video go too (their
   ;; recording and server draft survive elsewhere), so recordings the

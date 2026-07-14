@@ -74,6 +74,34 @@
   :calling-convention :stdcall
   :module :kernel32)
 
+;; Total physical RAM, for the recorder's low-memory profile
+;; (LOW-MEMORY-MACHINE-P): on an 8 GB machine the capture bitrate is
+;; lowered to shrink the file-cache churn of recording + remux + upload.
+(fli:define-c-struct memorystatusex
+  (length (:unsigned :long))
+  (memory-load (:unsigned :long))
+  (total-phys (:unsigned :long-long))
+  (avail-phys (:unsigned :long-long))
+  (total-page-file (:unsigned :long-long))
+  (avail-page-file (:unsigned :long-long))
+  (total-virtual (:unsigned :long-long))
+  (avail-virtual (:unsigned :long-long))
+  (avail-extended-virtual (:unsigned :long-long)))
+
+(fli:define-foreign-function (%global-memory-status-ex "GlobalMemoryStatusEx")
+    ((buffer (:pointer (:struct memorystatusex))))
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :kernel32)
+
+(defun %physical-memory-bytes ()
+  "Total physical RAM in bytes, or NIL when the call fails."
+  (fli:with-dynamic-foreign-objects ((status (:struct memorystatusex)))
+    (setf (fli:foreign-slot-value status 'length)
+          (fli:size-of '(:struct memorystatusex)))
+    (when (%global-memory-status-ex status)
+      (fli:foreign-slot-value status 'total-phys))))
+
 (fli:define-foreign-function (%get-exit-code-process "GetExitCodeProcess")
     ((process :pointer)
      (exit-code (:reference-return (:unsigned :long))))

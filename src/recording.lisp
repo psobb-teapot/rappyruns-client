@@ -166,6 +166,37 @@ x264 CRF-29 field figure (~21 MB/min) at 1080p30.")
 (defparameter +hw-record-maxrate+ "7M")
 (defparameter +hw-record-bufsize+ "14M")
 
+;;; Low-memory profile. Recording churns the Windows file cache with
+;;; every byte it produces - the growing capture tmp, the remux that
+;;; re-reads it and writes the final file, the upload that reads that -
+;;; which an 8 GB machine (the Boot Camp MacBook Air, ~4 GB free beside
+;;; Windows) feels as mounting memory pressure over a quest and across
+;;; laps. A lower bitrate shrinks all of it proportionally; quality is
+;;; the priority this project spends last (smoothness > hosting size >
+;;; quality), and 2.5 Mbps 1080p30 keeps the HUD legible.
+
+(defparameter +low-memory-threshold-gb+ 12
+  "Machines with less physical RAM than this get the low-memory
+recording profile. Catches 8 GB machines (reported totals run slightly
+under the nominal size) without touching 16 GB ones.")
+(defparameter +hw-record-bitrate-low+ "2500k")
+(defparameter +hw-record-maxrate-low+ "5M")
+(defparameter +hw-record-bufsize-low+ "10M")
+(defparameter +record-crf-low+ 31
+  "The x264 fallback's low-memory CRF: two steps over +RECORD-CRF+,
+roughly a 25-30% smaller file.")
+
+(defun physical-memory-bytes ()
+  "Total physical RAM in bytes, or NIL when unknown (non-LispWorks)."
+  #+lispworks (ignore-errors (%physical-memory-bytes))
+  #-lispworks nil)
+
+(defun low-memory-machine-p (&optional (bytes (physical-memory-bytes)))
+  "T when this machine's RAM is under +LOW-MEMORY-THRESHOLD-GB+.
+Unknown (NIL) means not low: never degrade quality on a machine that
+was merely unreadable."
+  (and bytes (< bytes (* +low-memory-threshold-gb+ (expt 2 30)))))
+
 (defun hw-encoder-probe-args (encoder)
   "ffmpeg argv testing whether ENCODER can open on this machine: a few
 black frames into the null muxer. Exit 0 means usable - vendor
@@ -385,6 +416,7 @@ SOMETHING recoverable, unlike gdigrab's black frames)."
 
 (defun build-ffmpeg-args (&key window-title output-path audio-pipe
                                fullscreen-monitor video-encoder gpu-chain
+                               low-memory
                                (framerate +record-framerate+))
   "ffmpeg argv (without the program itself). Fragmented MP4 keeps the
 file playable even when ffmpeg is killed instead of quitting on \"q\".
@@ -403,7 +435,9 @@ chain, every vendor's native input. With GPU-CHAIN (fullscreen + QSV,
 probe-verified: *HW-FULLSCREEN-GPU-CHAIN*), the frames never leave the
 GPU - hwmap hands ddagrab's D3D11 frames to a scale_qsv sized from the
 monitor rect - dropping the per-frame GPU->CPU copy and CPU scale that
-taxed weak machines."
+taxed weak machines. With LOW-MEMORY (LOW-MEMORY-MACHINE-P), the
+bitrate/CRF drops to the low-memory profile so recording churns less
+of a small machine's file cache."
   (append
    (list "-y" "-loglevel" "error"
          ;; Minimal probing: ffmpeg opens the audio pipe right after
@@ -430,14 +464,14 @@ taxed weak machines."
            "-i" audio-pipe))
    (if video-encoder
        (list "-c:v" video-encoder
-             "-b:v" +hw-record-bitrate+
-             "-maxrate" +hw-record-maxrate+
-             "-bufsize" +hw-record-bufsize+
+             "-b:v" (if low-memory +hw-record-bitrate-low+ +hw-record-bitrate+)
+             "-maxrate" (if low-memory +hw-record-maxrate-low+ +hw-record-maxrate+)
+             "-bufsize" (if low-memory +hw-record-bufsize-low+ +hw-record-bufsize+)
              "-bf" "0")
        (list "-c:v" "libx264"
              "-preset" +record-preset+
              "-threads" (princ-to-string (encoder-thread-count))
-             "-crf" (princ-to-string +record-crf+)
+             "-crf" (princ-to-string (if low-memory +record-crf-low+ +record-crf+))
              ;; No B-frames: see the encoder-settings note. The fragmented
              ;; muxer would bake their reorder delay in as a video start
              ;; offset that browsers and local players interpret
@@ -566,7 +600,8 @@ known once the audio session is activated)."
                                   :video-encoder encoder
                                   :gpu-chain
                                   (and (equal encoder "h264_qsv")
-                                       *hw-fullscreen-gpu-chain*))))
+                                       *hw-fullscreen-gpu-chain*)
+                                  :low-memory (low-memory-machine-p))))
     (multiple-value-bind (capture error)
         (backend-start-capture (recorder-backend recorder) ffmpeg args output
                                :audio-pipe audio-pipe :audio-pid audio-pid)

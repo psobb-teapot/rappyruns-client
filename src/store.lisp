@@ -191,6 +191,14 @@ are not already present.)"
   (let ((new (copy-list entry)))
     (loop :for (key value) :on updates :by #'cddr
           :do (setf (getf new key) value))
+    ;; A finished submission's telemetry lives on the server now, so
+    ;; drop it from the in-memory entry too, not just the disk copy
+    ;; (PERSISTABLE-ENTRY): a long run's telemetry is megabytes of
+    ;; per-second frames, and the ~50 kept entries otherwise grow the
+    ;; heap by one lap's worth every lap - felt on an 8 GB machine.
+    ;; :queued/:failed entries keep theirs for the (re)submission.
+    (when (member (getf new :status) '(:submitted :duplicate :rejected))
+      (remf new :telemetry))
     (with-runs-lock
       (setf *runs* (trim-finished-runs
                     (substitute new entry *runs* :test #'eq)

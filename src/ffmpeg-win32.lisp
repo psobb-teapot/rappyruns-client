@@ -433,9 +433,15 @@ fact. Never signals."
           (handler-case
               (let ((capture (spawn-process ffmpeg-path args)))
                 (setf (ffmpeg-capture-audio capture) audio)
-                (recording-log "capture started: audio=~a ffmpeg=~a"
+                ;; The rate tokens say which profile ran (the low-memory
+                ;; machines this diagnoses can only be read after the fact).
+                (recording-log "capture started: audio=~a ffmpeg=~a~@[ b:v=~a~]~@[ crf=~a~]"
                                (and audio (audio-session-scope audio))
-                               ffmpeg-path)
+                               ffmpeg-path
+                               (let ((p (position "-b:v" args :test #'equal)))
+                                 (and p (nth (1+ p) args)))
+                               (let ((p (position "-crf" args :test #'equal)))
+                                 (and p (nth (1+ p) args))))
                 capture)
             (error (condition)
               (when audio (stop-audio-session audio))
