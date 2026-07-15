@@ -36,15 +36,12 @@ if ($build.ExitCode -ne 0) { throw "LispWorks build failed (exit $($build.ExitCo
 
 & (Join-Path $PSScriptRoot "package.ps1")
 
-# Both zips: the legacy asset name keeps pre-rename clients
-# (<= v0.15.0) self-updating - see package.ps1 and issue #15.
 $zip = Join-Path $PSScriptRoot "dist\RappyRunsClient.zip"
-$legacyZip = Join-Path $PSScriptRoot "dist\EphineaTAClient.zip"
 
 if ($Clobber) {
-    gh release upload $Version $zip $legacyZip --clobber --repo $repo
+    gh release upload $Version $zip --clobber --repo $repo
 } else {
-    $ghArgs = @("release", "create", $Version, $zip, $legacyZip,
+    $ghArgs = @("release", "create", $Version, $zip,
                 "--repo", $repo,
                 "--title", "Rappy Runs Client $Version")
     if ($NotesFile) { $ghArgs += @("--notes-file", $NotesFile) }

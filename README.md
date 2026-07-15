@@ -159,11 +159,7 @@ Bundles the exe and `data/quest-triggers.sexp` (from `client/data/`, the
 source of truth) into `client/dist/RappyRunsClient.zip`, plus
 `ffmpeg/ffmpeg.exe` when `client/vendor/ffmpeg/` is populated (see
 below); without it the zip is built with a warning and recording needs a
-user-installed ffmpeg. A second, legacy `client/dist/EphineaTAClient.zip`
-(same build, exe named `EphineaTAClient.exe` inside) is produced for
-pre-rename clients (<= v0.15.0), whose updater looks for that asset name
-and exe name; drop it once the pre-rename install base is gone
-(issue #15).
+user-installed ffmpeg.
 
 ### Bundling ffmpeg
 
@@ -198,10 +194,8 @@ the client to exit, unpacks to a staging folder, verifies the new exe,
 moves the old exe to `<name>.exe.old` (restored automatically if
 anything fails), copies the new exe + `data\` (+ `ffmpeg\`, best
 effort) and restarts. The new exe is always installed as
-`RappyRunsClient.exe`, so an install still running the pre-rename
-`EphineaTAClient.exe` is renamed by its next update. The `.old` file
-and temp leftovers (both the pre- and post-rename names) are swept on
-the next startup.
+`RappyRunsClient.exe`, whatever the running exe is called. The `.old`
+file and temp leftovers are swept on the next startup.
 
 Notes:
 
@@ -217,9 +211,8 @@ Notes:
 - Config keys: `:auto-update` (the Settings checkbox); `:update-repo`
   in `config.sexp` overrides the releases repo (`owner/name`) for
   testing the flow against a scratch repo.
-- The helper's transcript lands in `%TEMP%\rappyruns-update.log`
-  (`%TEMP%\ephinea-ta-update.log` for updates applied by a pre-rename
-  client) - first place to look when an update did not stick.
+- The helper's transcript lands in `%TEMP%\rappyruns-update.log` -
+  first place to look when an update did not stick.
 
 ## Releasing
 
@@ -256,9 +249,7 @@ in a file (passing quotes on the `gh` command line is unreliable).
 The main asset must be named `RappyRunsClient.zip` - the site's
 download button points at
 `https://github.com/psobb-teapot/rappyruns-client-releases/releases/latest/download/RappyRunsClient.zip`
-(override with `ETA_CLIENT_DOWNLOAD_URL` on the server) - and every
-release must also carry the legacy `EphineaTAClient.zip` until the
-pre-rename install base is gone (release.ps1 uploads both).
+(override with `ETA_CLIENT_DOWNLOAD_URL` on the server).
 Pre-releases are excluded from `latest`, so they are safe for test
 builds.
 

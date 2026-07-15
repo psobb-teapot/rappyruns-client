@@ -2,12 +2,6 @@
 
 ;;; Config lives in %APPDATA%/ephinea-ta-client/config.sexp as a plist.
 
-(defparameter +old-default-server-url+
-  "https://ephinea-ta-production.up.railway.app"
-  "The pre-rename production URL. Configs that still carry it are
-rewritten to the new default on load (LOAD-CONFIG!), so the old domain
-can eventually be retired; a custom URL is never touched.")
-
 ;; The six +forced-config-keys+ below are no longer user-adjustable:
 ;; their GUI controls were removed and MIGRATE-CONFIG scrubs any saved
 ;; value so CONFIG-VALUE always resolves to the default here. Edit the
@@ -71,16 +65,12 @@ can eventually be retired; a custom URL is never touched.")
 (defun migrate-config (config)
   "Bring an older config file up to date (pure, so the tests can pin it).
 Scrubs the dropped :token-prompt-shown key (the token nudge now repeats
-until a token is set), drops any saved value for the +FORCED-CONFIG-KEYS+
-so those behaviors always fall back to the fixed default, and retargets
-the old default server URL to the new domain (both serve the same app
-while both exist); a custom URL is never touched."
+until a token is set) and drops any saved value for the
++FORCED-CONFIG-KEYS+ so those behaviors always fall back to the fixed
+default."
   (remf config :token-prompt-shown)
   (dolist (key +forced-config-keys+)
     (remf config key))
-  (when (equal (getf config :server-url) +old-default-server-url+)
-    (setf (getf config :server-url)
-          (getf *default-config* :server-url)))
   config)
 
 (defun load-config! ()

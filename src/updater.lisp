@@ -14,18 +14,14 @@
 (defparameter *update-repo* "psobb-teapot/rappyruns-client-releases"
   "owner/name of the public repository whose releases carry the client.
 Renamed from ephinea-ta-client-releases (2026-07-06); GitHub redirects
-the old name, so pre-rename clients keep updating.")
+the old name.")
 
 (defparameter +update-asset-name+ "RappyRunsClient.zip"
-  "The release asset the site's download button also points at.
-Releases also carry a legacy EphineaTAClient.zip (same build, old exe
-name inside) so pre-rename clients (<= v0.15.0) can still self-update;
-see client/package.ps1 and issue #15.")
+  "The release asset the site's download button also points at.")
 
 (defparameter +client-exe-name+ "RappyRunsClient.exe"
   "The canonical exe name. The helper script always installs the update
-under this name, so an install still running the pre-rename
-EphineaTAClient.exe is renamed by its next update.")
+under this name, whatever the running exe is called.")
 
 (defun resolve-update-repo ()
   "A :update-repo config override (a power-user/testing key, like
@@ -150,7 +146,7 @@ try {~%~
 } catch {~%~
     Write-Output \"update failed: $_\"~%~
     if ((Test-Path $old) -and -not (Test-Path $exe)) {~%~
-        # On a rename migration, drop the half-installed new-name exe too.~%~
+        # When the old exe carried a different name, drop the half-installed new-name exe too.~%~
         if ($target -ne $exe) { Remove-Item -Force $target -ErrorAction SilentlyContinue }~%~
         Move-Item $old $exe~%~
     }~%~
@@ -269,25 +265,18 @@ fails."
   "Sweep the leftovers of a previous self-update (the .old exe the
 helper cannot delete itself, plus anything a failed run left in %TEMP%).
 Safe to call on every startup."
-  ;; Both .old names: the rename migration parks the pre-rename exe as
-  ;; EphineaTAClient.exe.old, and the pre-rename temp names linger after
-  ;; the first post-rename start (the migrating helper was written by
-  ;; the OLD client).
-  (dolist (name '("RappyRunsClient.exe.old" "EphineaTAClient.exe.old"))
-    (ignore-errors
-      (let ((old (merge-pathnames name (install-dir))))
-        (when (probe-file old) (delete-file old)))))
+  (ignore-errors
+    (let ((old (merge-pathnames "RappyRunsClient.exe.old" (install-dir))))
+      (when (probe-file old) (delete-file old))))
   (let ((temp (windows-temp-dir)))
-    (dolist (name '("rappyruns-update.ps1" "RappyRunsClient-update.zip"
-                    "ephinea-ta-update.ps1" "EphineaTAClient-update.zip"))
+    (dolist (name '("rappyruns-update.ps1" "RappyRunsClient-update.zip"))
       (ignore-errors
         (let ((path (merge-pathnames name temp)))
           (when (probe-file path) (delete-file path)))))
-    (dolist (dir '("rappyruns-update-stage/" "ephinea-ta-update-stage/"))
-      (ignore-errors
-        (uiop:delete-directory-tree
-         (merge-pathnames dir temp)
-         :validate t :if-does-not-exist :ignore)))))
+    (ignore-errors
+      (uiop:delete-directory-tree
+       (merge-pathnames "rappyruns-update-stage/" temp)
+       :validate t :if-does-not-exist :ignore))))
 
 #+lispworks
 (defun launch-updater-and-quit (interface zip-path)

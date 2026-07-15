@@ -2379,9 +2379,9 @@ store functions that persist never touch the real %APPDATA% queue."
       {\"name\": \"notes.txt\",
        \"size\": 12,
        \"browser_download_url\": \"https://example.com/notes.txt\"},
-      {\"name\": \"EphineaTAClient.zip\",
+      {\"name\": \"OtherTool.zip\",
        \"size\": 12345678,
-       \"browser_download_url\": \"https://github.com/x/y/releases/download/v0.6.0/EphineaTAClient.zip\"},
+       \"browser_download_url\": \"https://github.com/x/y/releases/download/v0.6.0/OtherTool.zip\"},
       {\"name\": \"RappyRunsClient.zip\",
        \"size\": 12345678,
        \"browser_download_url\": \"https://github.com/x/y/releases/download/v0.6.0/RappyRunsClient.zip\"}]}")
@@ -2474,14 +2474,14 @@ store functions that persist never touch the real %APPDATA% queue."
                                 (uiop:temporary-directory))
                nil)))
   ;; The helper script: staging, verification, rollback, quoting. The
-  ;; exe paths mimic a pre-rename install so the rename-migration side
-  ;; (running EphineaTAClient.exe, installing RappyRunsClient.exe) is
-  ;; pinned too.
+  ;; running exe carries a different name than the canonical one so the
+  ;; name-agnostic side (the update always installs under
+  ;; +CLIENT-EXE-NAME+) is pinned too.
   (let ((script (updater-script-text
                  :pid 4242
-                 :exe-path "C:\\Program Files\\Ephinea TA\\EphineaTAClient.exe"
-                 :target-exe-path "C:\\Program Files\\Ephinea TA\\RappyRunsClient.exe"
-                 :install-dir "C:\\Program Files\\Ephinea TA\\"
+                 :exe-path "C:\\Program Files\\Rappy Runs\\OldName.exe"
+                 :target-exe-path "C:\\Program Files\\Rappy Runs\\RappyRunsClient.exe"
+                 :install-dir "C:\\Program Files\\Rappy Runs\\"
                  :zip-path "C:\\Temp\\RappyRunsClient-update.zip"
                  :stage-dir "C:\\Temp\\rappyruns-update-stage\\"
                  :log-path "C:\\Temp\\it's a log.txt")))
@@ -2495,12 +2495,12 @@ store functions that persist never touch the real %APPDATA% queue."
     (check "script verifies the staged exe"
            (search "no RappyRunsClient.exe in the update zip" script))
     (check "script installs under the canonical exe name"
-           (and (search "$target = 'C:\\Program Files\\Ephinea TA\\RappyRunsClient.exe'"
+           (and (search "$target = 'C:\\Program Files\\Rappy Runs\\RappyRunsClient.exe'"
                         script)
                 (search "Copy-Item $newExe $target -Force" script)))
     (check "script rolls the .old exe back on failure"
            (search "Move-Item $old $exe" script))
-    (check "a failed rename migration drops the half-installed new exe"
+    (check "a failed differing-name update drops the half-installed new exe"
            (let ((remove (search "Remove-Item -Force $target" script))
                  (rollback (search "Move-Item $old $exe" script)))
              (and remove rollback (< remove rollback))))
@@ -2513,7 +2513,7 @@ store functions that persist never touch the real %APPDATA% queue."
     (check "script treats ffmpeg as best effort"
            (search "ffmpeg update skipped" script))
     (check "paths with spaces are single-quoted"
-           (search "'C:\\Program Files\\Ephinea TA\\EphineaTAClient.exe'"
+           (search "'C:\\Program Files\\Rappy Runs\\OldName.exe'"
                    script))
     (check "embedded quotes in paths are doubled"
            (search "'C:\\Temp\\it''s a log.txt'" script))
@@ -2521,25 +2521,18 @@ store functions that persist never touch the real %APPDATA% queue."
            (not (search "Remove-Item -Force $exe" script)))))
 
 ;;; ------------------------------------------------------------------
-;;; Config migration (the RappyRuns rename retargets the old default
-;;; server URL; custom URLs and everything else pass through)
+;;; Config migration (dropped keys are scrubbed; everything else
+;;; passes through)
 ;;; ------------------------------------------------------------------
 
 (defun run-config-migration-tests ()
   (format t "~&--- config migration ---~%")
-  (let ((migrated (ephinea-ta-client::migrate-config
-                   (list :server-url ephinea-ta-client::+old-default-server-url+
-                         :api-token "eta_x"))))
-    (check "old default server URL is retargeted"
-           (equal (getf ephinea-ta-client::*default-config* :server-url)
-                  (getf migrated :server-url)))
-    (check "other keys survive the migration"
-           (equal "eta_x" (getf migrated :api-token))))
-  (check "a custom server URL is never touched"
-         (equal "http://localhost:8080"
-                (getf (ephinea-ta-client::migrate-config
-                       (list :server-url "http://localhost:8080"))
-                      :server-url)))
+  (check "other keys survive the migration"
+         (let ((migrated (ephinea-ta-client::migrate-config
+                          (list :server-url "http://localhost:8080"
+                                :api-token "eta_x"))))
+           (and (equal "http://localhost:8080" (getf migrated :server-url))
+                (equal "eta_x" (getf migrated :api-token)))))
   (check "the dropped token-prompt-shown key is scrubbed"
          (let ((migrated (ephinea-ta-client::migrate-config
                           (list :token-prompt-shown t :record-audio t))))
