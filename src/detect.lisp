@@ -146,8 +146,9 @@ with Shifta up - so a run is No PB until a discharge is seen."
                                :my-section-id (getf (snapshot-my-player snapshot)
                                                     :section-id)
                                :quest-name (getf snapshot :quest-name)
-                               :difficulty (difficulty-name
-                                            (getf snapshot :difficulty)))))
+                               :difficulty (difficulty-label
+                                            (getf snapshot :difficulty)
+                                            (getf snapshot :anguish)))))
     (setf (detector-trackers detector)
           (append (detector-trackers detector) (list tracker)))
     tracker))

@@ -70,6 +70,22 @@ Infinities and NaNs are clamped; precision suffices for comparisons."
   (let ((bits (read-u32 reader address)))
     (and bits (u32-float bits))))
 
+(defun u64-double (bits)
+  "Decode an IEEE 754 double float from its bit pattern.
+Infinities and NaNs are clamped, like U32-FLOAT."
+  (let ((sign (if (logbitp 63 bits) -1 1))
+        (expo (ldb (byte 11 52) bits))
+        (mant (ldb (byte 52 0) bits)))
+    (cond ((= expo 2047) (* sign 1.7d308))
+          ((zerop expo) (float (* sign mant (expt 2d0 -1074)) 1d0))
+          (t (float (* sign (1+ (/ mant (expt 2 52))) (expt 2d0 (- expo 1023)))
+                    1d0)))))
+
+(defun read-f64 (reader address)
+  (let ((bytes (read-block reader address 8)))
+    (and bytes (u64-double (logior (bytes-u32 bytes 0)
+                                   (ash (bytes-u32 bytes 4) 32))))))
+
 (defun decode-utf16-z (bytes)
   "Decode a NUL-terminated UTF-16LE string from BYTES (BMP only)."
   (with-output-to-string (out)

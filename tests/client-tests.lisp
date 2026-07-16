@@ -46,6 +46,15 @@
                       (mant (round (* (1- (/ float (expt 2 expo))) (expt 2 23)))))
                  (logior (ash (+ expo 127) 23) mant)))))
 
+(defun put-f64 (bytes offset value)
+  "Encode a positive normal double (enough for the Ephinea HP scale)."
+  (multiple-value-bind (mant expo sign)
+      (integer-decode-float (float value 1d0))
+    (declare (ignore sign))
+    (let ((bits (logior (ash (+ expo 52 1023) 52) (ldb (byte 52 0) mant))))
+      (loop :for i :below 8
+            :do (setf (aref bytes (+ offset i)) (ldb (byte 8 (* 8 i)) bits))))))
+
 (defconstant +player0-base+ #x00500000)
 (defconstant +player1-base+ #x00510000)
 (defconstant +quest-base+ #x00700000)
@@ -78,9 +87,10 @@
     bytes))
 
 (defun make-game-regions (&key (episode-raw 0) players quest-name quest-number
-                               register-values (difficulty 0) (map 0))
+                               register-values (difficulty 0) (map 0) hp-scale)
   "Full mock memory image. PLAYERS is a list of player block byte vectors;
-REGISTER-VALUES an alist of (register-id . value)."
+REGISTER-VALUES an alist of (register-id . value). HP-SCALE, when given,
+publishes the Ephinea HP table pointer + scale double."
   (let ((globals (make-array 4 :element-type '(unsigned-byte 8) :initial-element 0))
         (episode (make-array 2 :element-type '(unsigned-byte 8) :initial-element 0))
         (player-array (make-array 48 :element-type '(unsigned-byte 8) :initial-element 0))
@@ -114,6 +124,12 @@ REGISTER-VALUES an alist of (register-id . value)."
       (put-u16 map-bytes 0 map)
       (push (cons #x00A9CD68 difficulty-bytes) regions)
       (push (cons #x00AAFC9C map-bytes) regions))
+    (when hp-scale
+      (let ((ephinea (make-array 12 :element-type '(unsigned-byte 8)
+                                    :initial-element 0)))
+        (put-u32 ephinea 0 #x00CAFE00)  ; non-zero table pointer
+        (put-f64 ephinea 4 hp-scale)
+        (push (cons #x00B5F800 ephinea) regions)))
     (push (cons #x00A9C4F4 globals) regions)          ; my player index = 0
     (push (cons #x00A9B1C8 episode) regions)
     (push (cons #x00A94254 player-array) regions)
@@ -694,11 +710,13 @@ REGISTER-VALUES an alist of (register-id . value)."
 ;;; Detection state machine (driven through mock memory images)
 ;;; ------------------------------------------------------------------
 
-(defun ttf-reader (&key (start 0) (end 0) (seg 0) (pb 0.0))
+(defun ttf-reader (&key (start 0) (end 0) (seg 0) (pb 0.0)
+                        (difficulty 0) hp-scale)
   (make-game-regions
    :players (list (make-player-block :name "Ryu" :class-id 2 :floor 1 :pb pb)
                   (make-player-block :name "Elly" :class-id 8 :floor 1))
    :quest-name "Towards the Future" :quest-number 118
+   :difficulty difficulty :hp-scale hp-scale
    :register-values (list (cons 12 start) (cons 254 end) (cons 100 seg))))
 
 (defun lobby-reader ()
@@ -896,6 +914,45 @@ monster-kill detector tests: a warp-in start and a :monsters list."
 (defun mon-lobby ()
   (list :players (list (list :index 0 :name "Ryu" :class "HUcast" :floor 0))
         :quest-ptr 0))
+
+(defun run-anguish-tests ()
+  (format t "~&--- anguish ---~%")
+  ;; f64 decoding round-trips through the mock image encoder.
+  (let ((bytes (make-array 8 :element-type '(unsigned-byte 8)
+                             :initial-element 0)))
+    (put-f64 bytes 0 1.82d0)
+    (check "read-f64 decodes 1.82"
+           (< (abs (- 1.82d0 (read-f64 (make-mock-reader (cons 100 bytes)) 100)))
+              1d-9)))
+  (check "scale 1.0 -> no anguish" (null (anguish-level 1.0d0)))
+  (check "scale NIL -> no anguish" (null (anguish-level nil)))
+  (check "scale 1.30 -> Anguish 1" (eql 1 (anguish-level 1.30d0)))
+  (check "scale 1.82 -> Anguish 2" (eql 2 (anguish-level 1.82d0)))
+  (check "scale 2.50 -> Anguish 3" (eql 3 (anguish-level 2.50d0)))
+  (check "odd scale matches nearest level" (eql 2 (anguish-level 2.0d0)))
+  (check "label Ultimate + level 2" (equal "Anguish 2" (difficulty-label 3 2)))
+  (check "label Ultimate alone" (equal "Ultimate" (difficulty-label 3 nil)))
+  (check "label non-Ultimate ignores anguish"
+         (equal "Normal" (difficulty-label 0 2)))
+  ;; The snapshot carries the level while a quest is loaded.
+  (let ((snapshot (read-snapshot (ttf-reader :difficulty 3 :hp-scale 2.50d0))))
+    (check "snapshot anguish level" (eql 3 (getf snapshot :anguish))))
+  (let ((snapshot (read-snapshot (ttf-reader :difficulty 3))))
+    (check "snapshot without hp table -> no anguish"
+           (null (getf snapshot :anguish))))
+  (let ((snapshot (read-snapshot (ttf-reader :difficulty 3 :hp-scale 1.0d0))))
+    (check "snapshot at scale 1.0 -> no anguish"
+           (null (getf snapshot :anguish))))
+  ;; Full detector flow: the emitted run lands in the Anguish category.
+  (let ((detector (make-detector)))
+    (step-with detector (lobby-reader))
+    (step-with detector (ttf-reader :difficulty 3 :hp-scale 1.30d0 :start 1))
+    (sleep 0.02)
+    (let ((run (first (step-with detector (ttf-reader :difficulty 3
+                                                      :hp-scale 1.30d0
+                                                      :start 1 :end 1)))))
+      (check "anguish run difficulty label"
+             (equal "Anguish 1" (getf run :difficulty))))))
 
 (defun run-monster-clear-tests ()
   (format t "~&--- monster-kill clear trigger ---~%")
@@ -2864,6 +2921,7 @@ store functions that persist never touch the real %APPDATA% queue."
   (run-psostats-telemetry-tests)
   (run-payload-tests)
   (run-detect-tests)
+  (run-anguish-tests)
   (run-monster-clear-tests)
   (run-detect-telemetry-tests)
   (run-server-defs-tests)

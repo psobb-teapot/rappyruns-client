@@ -8,11 +8,13 @@
            #:load-config! #:save-config! #:config-value
            ;; memory protocol (used by tests)
            #:read-block #:mock-reader #:make-mock-reader
-           #:read-u8 #:read-u16 #:read-u32 #:read-f32 #:read-utf16-string
+           #:read-u8 #:read-u16 #:read-u32 #:read-f32 #:read-f64
+           #:read-utf16-string
            ;; psobb
            #:read-snapshot #:snapshot-register-set-p #:snapshot-floor-switch-set-p
            #:read-player #:read-inventory #:read-monsters
-           #:snapshot-my-player #:difficulty-name #:tech-name #:shifta-level
+           #:snapshot-my-player #:difficulty-name #:difficulty-label
+           #:anguish-level #:tech-name #:shifta-level
            #:psobb-signature-trusted-p
            ;; telemetry
            #:make-telemetry #:telemetry-step #:telemetry-run-data

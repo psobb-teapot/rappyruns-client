@@ -48,6 +48,11 @@
 (defconstant +npc-count-address+ #x00AAE164)  ; u32
 (defconstant +player-count-address+ #x00AAE168) ; u32
 (defconstant +ephinea-monster-hp-table+ #x00B5F800) ; u32 -> hp table, stride 32
+;; Ephinea's global monster HP multiplier sits right after the table
+;; pointer (Solybum Monster Reader _ephineaMonsterHPScale). It is 1.0
+;; except in Anguish games, where each level's fixed HP boost
+;; (wiki.pioneer2.net/w/Anguish: +30% / +82% / +150%) identifies the level.
+(defconstant +ephinea-hp-scale+ #x00B5F804)   ; f64
 (defconstant +monster-id-offset+ #x1C)        ; u16
 (defconstant +monster-unitxt-offset+ #x378)   ; u32, 0 = not a monster
 (defconstant +monster-hp-offset+ #x334)       ; u16 (fallback, non-Ephinea)
@@ -151,6 +156,36 @@ StartNewQuest), or the best caster's own ceiling if that is higher."
 (defun difficulty-name (id)
   (when (and (integerp id) (< -1 id (length +difficulty-names+)))
     (aref +difficulty-names+ id)))
+
+(defparameter +anguish-hp-scales+
+  '((1 . 1.30d0) (2 . 1.82d0) (3 . 2.50d0)))
+
+(defun anguish-level (hp-scale)
+  "Anguish level (1-3) whose HP boost is nearest HP-SCALE; NIL when the
+scale is absent or reads as the unscaled 1.0. Nearest-match keeps a
+small server-side tweak to a multiplier from silently dropping a run
+onto the plain Ultimate board."
+  (when (and (realp hp-scale) (> hp-scale 1.15))
+    (car (reduce (lambda (a b)
+                   (if (< (abs (- (cdr a) hp-scale))
+                          (abs (- (cdr b) hp-scale)))
+                       a b))
+                 +anguish-hp-scales+))))
+
+(defun read-anguish-level (reader)
+  "Anguish level of the current game, or NIL. Only meaningful while the
+Ephinea HP table pointer is live, i.e. inside a game."
+  (let ((table (read-u32 reader +ephinea-monster-hp-table+)))
+    (when (and table (plusp table))
+      (anguish-level (read-f64 reader +ephinea-hp-scale+)))))
+
+(defun difficulty-label (id anguish)
+  "Run category label: \"Anguish N\" replaces \"Ultimate\" when the game
+was created with an Anguish level (Anguish exists only on Ultimate)."
+  (let ((name (difficulty-name id)))
+    (if (and anguish (equal name "Ultimate"))
+        (format nil "Anguish ~d" anguish)
+        name)))
 
 (defparameter +tech-names+
   '((#x0000 . "Foie") (#x0001 . "Gifoie") (#x0002 . "Rafoie")
@@ -297,6 +332,7 @@ so the detection state machine stays pure and testable."
                           (list :quest-name (and quest-name
                                                  (string-trim " " quest-name))
                                 :quest-number quest-number
+                                :anguish (read-anguish-level reader)
                                 :registers (and register-ptr (plusp register-ptr)
                                                 (read-block reader register-ptr
                                                             (* 4 +register-count+)))
