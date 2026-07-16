@@ -1305,7 +1305,7 @@ block."
    (stale :initform '() :accessor mock-stale)
    (recordings :initform '() :accessor mock-recordings
                :documentation "(namestring size write-date) triples.")
-   (fullscreen-monitor :initform nil :accessor mock-fullscreen-monitor)))
+   (capture-monitor :initform nil :accessor mock-capture-monitor)))
 
 (defun record-event (backend &rest event)
   (setf (mock-events backend)
@@ -1363,8 +1363,8 @@ block."
   (declare (ignore dir))
   (mock-recordings backend))
 
-(defmethod backend-fullscreen-monitor ((backend mock-backend))
-  (mock-fullscreen-monitor backend))
+(defmethod backend-capture-monitor ((backend mock-backend))
+  (mock-capture-monitor backend))
 
 (defmacro with-recording-config ((&rest overrides) &body body)
   "Run BODY with an in-memory config; OVERRIDES are plist entries laid
@@ -1707,7 +1707,7 @@ over the defaults. Restores the global config afterwards (it is bound)."
     (check "hw fullscreen args keep the nv12 tail after hwdownload"
            (let* ((fs (build-ffmpeg-args :window-title "T"
                                          :output-path "out.mp4"
-                                         :fullscreen-monitor
+                                         :capture-monitor
                                          (list :output-idx 0
                                                :width 1920 :height 1080)
                                          :video-encoder "h264_nvenc"))
@@ -1808,7 +1808,7 @@ over the defaults. Restores the global config afterwards (it is bound)."
                      "\\\\.\\DISPLAY"))
               (null (ephinea-ta-client::display-device-output-index ""))))
   (let ((args (build-ffmpeg-args :window-title "T" :output-path "out.mp4"
-                                 :fullscreen-monitor
+                                 :capture-monitor
                                  (list :output-idx 1
                                        :width 1920 :height 1080))))
     (check "fullscreen args capture via ddagrab, not gdigrab"
@@ -1837,7 +1837,7 @@ over the defaults. Restores the global config afterwards (it is bound)."
                      (build-ffmpeg-args :window-title "T"
                                         :output-path "out.mp4"
                                         :audio-pipe pipe
-                                        :fullscreen-monitor
+                                        :capture-monitor
                                         (list :output-idx 1
                                               :width 1920 :height 1080))
                      pipe)))))
@@ -1847,7 +1847,7 @@ over the defaults. Restores the global config afterwards (it is bound)."
   ;; -> 1728x1080), and no hwdownload appears.
   (let* ((monitor (list :output-idx 0 :width 2560 :height 1600))
          (args (build-ffmpeg-args :window-title "T" :output-path "out.mp4"
-                                  :fullscreen-monitor monitor
+                                  :capture-monitor monitor
                                   :video-encoder "h264_qsv"
                                   :gpu-chain t))
          (vf (position "-vf" args :test #'equal))
@@ -1868,17 +1868,69 @@ over the defaults. Restores the global config afterwards (it is bound)."
     (check "an unverified chain keeps the hwdownload fallback"
            (let* ((fallback (build-ffmpeg-args :window-title "T"
                                                :output-path "out.mp4"
-                                               :fullscreen-monitor monitor
+                                               :capture-monitor monitor
                                                :video-encoder "h264_qsv"))
                   (vf (position "-vf" fallback :test #'equal))
                   (filter (nth (1+ vf) fallback)))
              (and (search "hwdownload" filter)
                   (not (search "hwmap" filter))))))
-  (check "the chain flag never rewires a windowed capture"
+  (check "the chain flag never rewires a monitor-less capture"
          (equal (build-ffmpeg-args :window-title "T" :output-path "out.mp4"
                                    :video-encoder "h264_qsv" :gpu-chain t)
                 (build-ffmpeg-args :window-title "T" :output-path "out.mp4"
                                    :video-encoder "h264_qsv")))
+  ;; Windowed captures: the monitor frame cropped to the client area
+  ;; (GDI cannot read a flip-model-composited window - run 949's
+  ;; all-black recordings - so ddagrab covers windowed games too).
+  (check "crop rect: a window inside its monitor maps to monitor coords"
+         (multiple-value-bind (x y w h)
+             (ephinea-ta-client::capture-crop-rect
+              '(160 90 1760 990) '(0 0 1920 1080))
+           (and (= x 160) (= y 90) (= w 1600) (= h 900))))
+  (check "crop rect: secondary-monitor origins subtract away"
+         (multiple-value-bind (x y w h)
+             (ephinea-ta-client::capture-crop-rect
+              '(2080 90 3680 990) '(1920 0 3840 1080))
+           (and (= x 160) (= y 90) (= w 1600) (= h 900))))
+  (check "crop rect clamps a half-dragged-off window to the monitor"
+         (multiple-value-bind (x y w h)
+             (ephinea-ta-client::capture-crop-rect
+              '(-100 -50 924 718) '(0 0 1920 1080))
+           (and (= x 0) (= y 0) (= w 924) (= h 718))))
+  (check "crop rect floors odd sizes to even"
+         (multiple-value-bind (x y w h)
+             (ephinea-ta-client::capture-crop-rect
+              '(100 100 1123 867) '(0 0 1920 1080))
+           (and (= x 100) (= y 100) (= w 1022) (= h 766))))
+  (check "crop rect rejects a sliver (minimized/degenerate window)"
+         (null (ephinea-ta-client::capture-crop-rect
+                '(0 0 32 32) '(0 0 1920 1080))))
+  (let* ((monitor (list :output-idx 1 :width 1920 :height 1080
+                        :crop (list 160 90 1600 900)))
+         (args (build-ffmpeg-args :window-title "T" :output-path "out.mp4"
+                                  :capture-monitor monitor))
+         (vf (position "-vf" args :test #'equal))
+         (filter (and vf (nth (1+ vf) args))))
+    (check "windowed capture rides ddagrab with a crop before the scale"
+           (and (not (member "gdigrab" args :test #'equal))
+                (find-if (lambda (arg) (search "ddagrab=output_idx=1" arg))
+                         args)
+                filter
+                (search "crop=1600:900:160:90" filter)
+                (< (search "hwdownload" filter) (search "crop=" filter))
+                (< (search "crop=" filter) (search "scale" filter))))
+    (check "a crop suppresses the zero-copy chain (no crop_qsv here)"
+           (let* ((qsv (build-ffmpeg-args :window-title "T"
+                                          :output-path "o.mp4"
+                                          :capture-monitor monitor
+                                          :video-encoder "h264_qsv"
+                                          :gpu-chain t))
+                  (vf (position "-vf" qsv :test #'equal))
+                  (filter (nth (1+ vf) qsv)))
+             (and (search "hwdownload" filter)
+                  (search "crop=1600:900:160:90" filter)
+                  (not (search "hwmap" filter))
+                  (search "format=nv12" filter)))))
   ;; The GPU scale's literal dimensions: 1080-capped, aspect kept, even.
   (check "scale dimensions cap at 1080 keeping aspect"
          (multiple-value-bind (w h)
@@ -1925,10 +1977,10 @@ over the defaults. Restores the global config afterwards (it is bound)."
          (let ((args (build-ffmpeg-args :window-title "T" :output-path "o.mp4"
                                         :video-encoder "h264_qsv")))
            (member ephinea-ta-client::+hw-record-bitrate+ args :test #'equal)))
-  ;; The recorder asks the backend about fullscreen at capture start.
+  ;; The recorder asks the backend for the capture monitor at start.
   (with-recording-config (:record-enabled t)
     (multiple-value-bind (rec backend) (make-test-recorder)
-      (setf (mock-fullscreen-monitor backend)
+      (setf (mock-capture-monitor backend)
             (list :output-idx 0 :width 1920 :height 1080))
       (recorder-step rec :in-quest '() "Ephinea PSOBB")
       (let ((args (third (first (events-of backend :start)))))
@@ -1936,9 +1988,22 @@ over the defaults. Restores the global config afterwards (it is bound)."
                (find-if (lambda (arg) (search "ddagrab=output_idx=0" arg))
                         args))))
     (multiple-value-bind (rec backend) (make-test-recorder)
+      (setf (mock-capture-monitor backend)
+            (list :output-idx 1 :width 1920 :height 1080
+                  :crop (list 152 90 1600 900)))
       (recorder-step rec :in-quest '() "Ephinea PSOBB")
       (let ((args (third (first (events-of backend :start)))))
-        (check "recorder keeps gdigrab for a windowed game"
+        (check "recorder records a windowed game via ddagrab + crop"
+               (and (find-if (lambda (arg)
+                               (search "ddagrab=output_idx=1" arg))
+                             args)
+                    (find-if (lambda (arg)
+                               (search "crop=1600:900:152:90" arg))
+                             args)))))
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (let ((args (third (first (events-of backend :start)))))
+        (check "recorder falls back to gdigrab without a capture monitor"
                (member "gdigrab" args :test #'equal)))))
   ;; The recorder passes the audio pipe and target pid to the backend.
   (with-recording-config (:record-enabled t :record-audio t)

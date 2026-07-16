@@ -42,7 +42,7 @@
            #:backend-delete-file #:backend-list-stale-files
            #:backend-list-recordings
            #:backend-start-remux #:backend-capture-succeeded-p
-           #:backend-fullscreen-monitor
+           #:backend-capture-monitor
            ;; trigger discovery
            #:log-trigger-changes #:start-trigger-log #:close-trigger-log
            #:newly-killed-monsters #:update-last-kill

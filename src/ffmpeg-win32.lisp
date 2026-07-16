@@ -317,12 +317,17 @@ fullscreen chain (*HW-FULLSCREEN-GPU-CHAIN*)."
          (recording-log "gpu chain probe: fullscreen captures ~:[keep the hwdownload fallback~;stay on the GPU (hwmap -> scale_qsv)~]"
                         *hw-fullscreen-gpu-chain*))))))
 
-;;; Fullscreen detection. An exclusive-fullscreen PSOBB renders past
-;;; GDI, so the gdigrab capture records black frames (field-observed on
-;;; a Boot Camp machine, 2026-07-07); BACKEND-FULLSCREEN-MONITOR makes
-;;; BUILD-FFMPEG-ARGS switch to ddagrab. "Fullscreen" here is simply
-;;; "the window covers its whole monitor" (RECT-COVERS-P): a borderless
-;;; window matches too, and ddagrab records it just as well.
+;;; Capture-monitor resolution. An exclusive-fullscreen PSOBB renders
+;;; past GDI, so a gdigrab capture records black frames (field-observed
+;;; on a Boot Camp machine, 2026-07-07) - and so does a windowed PSOBB
+;;; whose presentation Windows composites via the flip model (run 949's
+;;; all-black recordings on Windows 11, 2026-07-16). ddagrab (Desktop
+;;; Duplication) reads the composited monitor and sees both, so
+;;; BACKEND-CAPTURE-MONITOR routes every capture through it: whole
+;;; monitor when the window covers it (RECT-COVERS-P - borderless
+;;; matches too), cropped to the client area otherwise. gdigrab remains
+;;; only as the fallback when the monitor's DXGI output index or the
+;;; window's client rect cannot be resolved.
 
 (fli:define-c-struct win-rect
   (left :long)
@@ -343,6 +348,24 @@ fullscreen chain (*HW-FULLSCREEN-GPU-CHAIN*)."
 (fli:define-foreign-function (%get-window-rect "GetWindowRect")
     ((hwnd :pointer)
      (rect (:pointer (:struct win-rect))))
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :user32)
+
+(fli:define-c-struct win-point
+  (x :long)
+  (y :long))
+
+(fli:define-foreign-function (%get-client-rect "GetClientRect")
+    ((hwnd :pointer)
+     (rect (:pointer (:struct win-rect))))
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :user32)
+
+(fli:define-foreign-function (%client-to-screen "ClientToScreen")
+    ((hwnd :pointer)
+     (point (:pointer (:struct win-point))))
   :result-type (:boolean :int)
   :calling-convention :stdcall
   :module :user32)
@@ -379,17 +402,35 @@ fullscreen chain (*HW-FULLSCREEN-GPU-CHAIN*)."
             :until (zerop code)
             :do (write-char (code-char code) out)))))
 
-(defun psobb-fullscreen-monitor ()
-  "Plist (:output-idx :width :height) of the monitor the PSOBB window
-covers entirely, or NIL when the window is absent or windowed. The
-dimensions are the monitor rect's - the fullscreen window spans it
-exactly, so they are also the capture size (sizes the GPU-side scale).
+(defun window-client-screen-rect (hwnd)
+  "(left top right bottom) of HWND's client area in screen coordinates
+\(what gdigrab title= would capture: no borders, no caption), or NIL
+when the queries fail."
+  (fli:with-dynamic-foreign-objects ((rect win-rect)
+                                     (point win-point))
+    (when (%get-client-rect hwnd rect)
+      (let ((width (fli:foreign-slot-value rect 'right))
+            (height (fli:foreign-slot-value rect 'bottom)))
+        (setf (fli:foreign-slot-value point 'x) 0
+              (fli:foreign-slot-value point 'y) 0)
+        (when (%client-to-screen hwnd point)
+          (let ((left (fli:foreign-slot-value point 'x))
+                (top (fli:foreign-slot-value point 'y)))
+            (list left top (+ left width) (+ top height))))))))
+
+(defun psobb-capture-monitor ()
+  "Plist (:output-idx :width :height [:crop (x y w h)]) of the monitor
+the PSOBB window sits on, or NIL when the window is absent or the
+monitor/crop cannot be resolved (BUILD-FFMPEG-ARGS then falls back to
+gdigrab). A window covering the monitor gets the bare monitor plist (a
+fullscreen capture, and the dimensions size the GPU-side scale); a
+smaller window gets its client area as a monitor-relative :CROP.
 Every outcome logs its inputs: a wrong verdict here is exactly how a
-capture silently records black (gdigrab on a surface GDI cannot see),
-and the log is all a remote diagnosis has to go on."
+capture silently records black (gdigrab on a surface GDI cannot see -
+run 949), and the log is all a remote diagnosis has to go on."
   (let ((hwnd (find-psobb-window)))
     (if (null hwnd)
-        (recording-log "fullscreen check: no PSOBB window")
+        (recording-log "capture check: no PSOBB window")
         (fli:with-dynamic-foreign-objects ((rect win-rect)
                                            (info monitorinfoex))
           (setf (fli:foreign-slot-value info 'cb-size)
@@ -399,24 +440,42 @@ and the log is all a remote diagnosis has to go on."
             (if (not (and (not (fli:null-pointer-p monitor))
                           (%get-window-rect hwnd rect)
                           (%get-monitor-info monitor info)))
-                (recording-log "fullscreen check: window/monitor query failed")
-                (let ((window-rect (rect-list rect))
-                      (monitor-rect (rect-list (fli:foreign-slot-pointer
-                                                info 'rc-monitor)))
-                      (device (monitor-device-name info)))
-                  (recording-log "fullscreen check: window=~a monitor=~a (~a) covers=~a"
-                                 window-rect monitor-rect device
-                                 (rect-covers-p window-rect monitor-rect))
-                  (when (rect-covers-p window-rect monitor-rect)
-                    (let ((index (display-device-output-index device)))
-                      (if (null index)
-                          (recording-log "fullscreen check: no output index from ~s, staying on gdigrab"
-                                         device)
-                          (destructuring-bind (left top right bottom)
-                              monitor-rect
-                            (list :output-idx index
-                                  :width (- right left)
-                                  :height (- bottom top)))))))))))))
+                (recording-log "capture check: window/monitor query failed")
+                (let* ((window-rect (rect-list rect))
+                       (monitor-rect (rect-list (fli:foreign-slot-pointer
+                                                 info 'rc-monitor)))
+                       (device (monitor-device-name info))
+                       (covers (rect-covers-p window-rect monitor-rect))
+                       (index (display-device-output-index device)))
+                  (recording-log "capture check: window=~a monitor=~a (~a) covers=~a"
+                                 window-rect monitor-rect device covers)
+                  (destructuring-bind (left top right bottom) monitor-rect
+                    (cond
+                      ((null index)
+                       (recording-log "capture check: no output index from ~s, staying on gdigrab"
+                                      device)
+                       nil)
+                      (covers
+                       (list :output-idx index
+                             :width (- right left)
+                             :height (- bottom top)))
+                      (t
+                       ;; Windowed: monitor capture cropped to the
+                       ;; client area, because GDI cannot read a
+                       ;; flip-model-composited window (run 949).
+                       (let ((client (window-client-screen-rect hwnd)))
+                         (multiple-value-bind (x y width height)
+                             (and client
+                                  (capture-crop-rect client monitor-rect))
+                           (if (null x)
+                               (progn
+                                 (recording-log "capture check: unusable client rect ~a, staying on gdigrab"
+                                                client)
+                                 nil)
+                               (list :output-idx index
+                                     :width (- right left)
+                                     :height (- bottom top)
+                                     :crop (list x y width height)))))))))))))))
 
 ;;; The live backend
 
@@ -472,12 +531,13 @@ client build and hardware class it came from."
                  (logical-processor-count)
                  (ignore-errors (resolve-ffmpeg-path))))
 
-(defmethod backend-fullscreen-monitor ((backend win32-ffmpeg-backend))
-  (let ((monitor (ignore-errors (psobb-fullscreen-monitor))))
+(defmethod backend-capture-monitor ((backend win32-ffmpeg-backend))
+  (let ((monitor (ignore-errors (psobb-capture-monitor))))
     (when monitor
-      (recording-log "fullscreen window: capturing via ddagrab output_idx=~d (~dx~d)"
+      (recording-log "capturing via ddagrab output_idx=~d (~dx~d)~@[ crop=~a~]"
                      (getf monitor :output-idx)
-                     (getf monitor :width) (getf monitor :height)))
+                     (getf monitor :width) (getf monitor :height)
+                     (getf monitor :crop)))
     monitor))
 
 (defmethod backend-start-capture ((backend win32-ffmpeg-backend)

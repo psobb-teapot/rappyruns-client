@@ -57,16 +57,21 @@ BACKEND-CLOSE-CAPTURE, or (values nil error-string)."))
 
 (defgeneric backend-delete-file (backend path))
 
-(defgeneric backend-fullscreen-monitor (backend)
+(defgeneric backend-capture-monitor (backend)
   (:documentation
-   "Plist (:output-idx N :width W :height H) describing the monitor
-the game window covers entirely - the 0-based DXGI output index and
-the monitor rect's pixel size - or NIL when it is an ordinary window.
-Queried once per capture start: a fullscreen window's Direct3D output
-is invisible to GDI, so gdigrab would record black frames
-(field-observed on a Boot Camp machine); BUILD-FFMPEG-ARGS switches to
-ddagrab for it, and the dimensions size the GPU-side scale when the
-zero-copy chain is in play.")
+   "Plist (:output-idx N :width W :height H [:crop (x y w h)])
+describing the monitor the game window sits on - the 0-based DXGI
+output index and the monitor rect's pixel size - or NIL when the
+window is absent or the monitor cannot be resolved (BUILD-FFMPEG-ARGS
+then falls back to gdigrab). Queried once per capture start. :CROP,
+present for a window smaller than its monitor, is the client area in
+monitor-relative pixels. Monitor capture (ddagrab) is the primary path
+for windowed games too, not just fullscreen: GDI cannot see an
+exclusive-fullscreen Direct3D surface (black frames, the Boot Camp
+machine 2026-07-07) NOR a flip-model-composited window (black frames
+again, run 949 on a Windows 11 machine, 2026-07-16) - and a window
+that gdigrab happens to read fine is captured by ddagrab just as
+well.")
   (:method (backend) nil))
 
 (defgeneric backend-list-stale-files (backend dir)
@@ -462,11 +467,34 @@ e.g. a finished gdv-reset segment inside an abandoned GDV."
   "T when the WINDOW rect contains the whole MONITOR rect. Rects are
 (left top right bottom) lists; pure so the tests can pin it. This is
 the fullscreen test: an exclusive-fullscreen (or borderless) game
-window spans its monitor exactly, while a maximized captioned window
-stops at the work area and stays on the gdigrab path."
+window spans its monitor exactly and the monitor capture needs no
+crop; a smaller window gets a :CROP instead (CAPTURE-CROP-RECT)."
   (destructuring-bind (wl wt wr wb) window
     (destructuring-bind (ml mt mr mb) monitor
       (and (<= wl ml) (<= wt mt) (>= wr mr) (>= wb mb)))))
+
+(defparameter +capture-crop-min-pixels+ 64
+  "Smallest crop side worth recording. Below this the \"window\" is a
+minimized or degenerate rect, and gdigrab of the real window - however
+imperfect - beats a sliver of desktop.")
+
+(defun capture-crop-rect (client-rect monitor-rect)
+  "Where the game window's CLIENT-RECT sits on MONITOR-RECT, as crop
+(values x y width height) in monitor-relative pixels for ffmpeg's crop
+filter. Rects are (left top right bottom) screen-coordinate lists;
+pure so the tests can pin it. The crop is clamped to the monitor (a
+half-dragged-off window records its visible part) and the size floored
+to even numbers (yuv420p subsampling). NIL when the visible part is
+smaller than +CAPTURE-CROP-MIN-PIXELS+ a side."
+  (destructuring-bind (cl ct cr cb) client-rect
+    (destructuring-bind (ml mt mr mb) monitor-rect
+      (let* ((left (max cl ml))
+             (top (max ct mt))
+             (width (* 2 (floor (- (min cr mr) left) 2)))
+             (height (* 2 (floor (- (min cb mb) top) 2))))
+        (when (and (>= width +capture-crop-min-pixels+)
+                   (>= height +capture-crop-min-pixels+))
+          (values (- left ml) (- top mt) width height))))))
 
 (defun display-device-output-index (device-name)
   "0-based output index from a GDI device name: \"\\\\.\\DISPLAY3\" -> 2.
@@ -483,29 +511,34 @@ SOMETHING recoverable, unlike gdigrab's black frames)."
           (1- n))))))
 
 (defun build-ffmpeg-args (&key window-title output-path audio-pipe
-                               fullscreen-monitor video-encoder gpu-chain
+                               capture-monitor video-encoder gpu-chain
                                low-memory
                                (framerate +record-framerate+))
   "ffmpeg argv (without the program itself). Fragmented MP4 keeps the
 file playable even when ffmpeg is killed instead of quitting on \"q\".
 With AUDIO-PIPE, raw 16-bit 48 kHz stereo game audio arrives on that
 named pipe as a second input and is encoded as AAC. With
-FULLSCREEN-MONITOR (a plist :output-idx :width :height, see
-BACKEND-FULLSCREEN-MONITOR), the video comes from ddagrab (Desktop
-Duplication) instead of gdigrab: GDI cannot see an
-exclusive-fullscreen Direct3D surface and records black frames. The
-fullscreen window covers that whole monitor, so the monitor capture IS
-the game. With VIDEO-ENCODER (a +HW-ENCODER-CANDIDATES+ name), that
+CAPTURE-MONITOR (a plist :output-idx :width :height [:crop], see
+BACKEND-CAPTURE-MONITOR), the video comes from ddagrab (Desktop
+Duplication): GDI cannot see an exclusive-fullscreen Direct3D surface,
+nor a flip-model-composited window (run 949's all-black recordings on
+Windows 11), so gdigrab - which remains only as the fallback when the
+monitor cannot be resolved - records black there. A fullscreen window
+covers its whole monitor, so the monitor capture IS the game; a
+smaller window rides a :CROP (monitor-relative client area) cut before
+the scale. With VIDEO-ENCODER (a +HW-ENCODER-CANDIDATES+ name), that
 GPU encoder replaces libx264 at a VBR target; -bf 0 stays - the
 B-frame reorder delay skewed A/V sync per player (run 92) regardless
 of who encodes - and the encoder gets nv12 frames via the filter
-chain, every vendor's native input. With GPU-CHAIN (fullscreen + QSV,
-probe-verified: *HW-FULLSCREEN-GPU-CHAIN*), the frames never leave the
-GPU - hwmap hands ddagrab's D3D11 frames to a scale_qsv sized from the
-monitor rect - dropping the per-frame GPU->CPU copy and CPU scale that
-taxed weak machines. With LOW-MEMORY (LOW-MEMORY-MACHINE-P), the
-bitrate/CRF drops to the low-memory profile so recording churns less
-of a small machine's file cache."
+chain, every vendor's native input. With GPU-CHAIN (QSV,
+probe-verified: *HW-FULLSCREEN-GPU-CHAIN*) on a cropless (fullscreen)
+capture, the frames never leave the GPU - hwmap hands ddagrab's D3D11
+frames to a scale_qsv sized from the monitor rect - dropping the
+per-frame GPU->CPU copy and CPU scale that taxed weak machines; a
+cropped capture keeps the hwdownload path (no crop_qsv in the bundled
+build). With LOW-MEMORY (LOW-MEMORY-MACHINE-P), the bitrate/CRF drops
+to the low-memory profile so recording churns less of a small
+machine's file cache."
   (append
    (list "-y" "-loglevel" "error"
          ;; Minimal probing: ffmpeg opens the audio pipe right after
@@ -514,14 +547,14 @@ of a small machine's file cache."
          ;; Probing one frame instead of probesize-worth keeps video
          ;; time 0 and audio time 0 within a frame of each other.
          "-probesize" "32" "-analyzeduration" "0")
-   (if fullscreen-monitor
+   (if capture-monitor
        ;; ddagrab is a lavfi source filter; it creates its own D3D11
        ;; device and outputs GPU frames at a constant FRAMERATE
        ;; (duplicating frames on static screens), which the -vf chain
        ;; either downloads for the CPU scale or maps straight to QSV.
        (list "-f" "lavfi"
              "-i" (format nil "ddagrab=output_idx=~d:framerate=~d:draw_mouse=0"
-                          (getf fullscreen-monitor :output-idx) framerate))
+                          (getf capture-monitor :output-idx) framerate))
        (list "-f" "gdigrab"
              "-framerate" (princ-to-string framerate)
              "-draw_mouse" "0"
@@ -547,19 +580,28 @@ of a small machine's file cache."
              "-bf" "0"
              "-pix_fmt" "yuv420p"))
    (list "-vf"
-         (if (and fullscreen-monitor video-encoder gpu-chain)
-             (multiple-value-bind (width height)
-                 (record-scale-dimensions (getf fullscreen-monitor :width)
-                                          (getf fullscreen-monitor :height))
-               (format nil "hwmap=derive_device=qsv,scale_qsv=w=~d:h=~d:format=nv12"
-                       width height))
-             (let ((base (if fullscreen-monitor
-                             (format nil "hwdownload,format=bgra,~a"
-                                     (record-scale-filter))
-                             (record-scale-filter))))
-               (if video-encoder
-                   (concatenate 'string base ",format=nv12")
-                   base))))
+         (let ((crop (and capture-monitor (getf capture-monitor :crop))))
+           (if (and capture-monitor (not crop) video-encoder gpu-chain)
+               (multiple-value-bind (width height)
+                   (record-scale-dimensions (getf capture-monitor :width)
+                                            (getf capture-monitor :height))
+                 (format nil "hwmap=derive_device=qsv,scale_qsv=w=~d:h=~d:format=nv12"
+                         width height))
+               (let ((base (cond
+                             (crop
+                              ;; The window's client area, cut out of the
+                              ;; monitor frame before the scale sees it.
+                              (destructuring-bind (x y width height) crop
+                                (format nil "hwdownload,format=bgra,crop=~d:~d:~d:~d,~a"
+                                        width height x y
+                                        (record-scale-filter))))
+                             (capture-monitor
+                              (format nil "hwdownload,format=bgra,~a"
+                                      (record-scale-filter)))
+                             (t (record-scale-filter)))))
+                 (if video-encoder
+                     (concatenate 'string base ",format=nv12")
+                     base)))))
    (when audio-pipe
      ;; NO -af here, and in particular no loudnorm: its multi-second
      ;; lookahead makes the audio output lag the video permanently,
@@ -662,8 +704,8 @@ known once the audio session is activated)."
          (args (build-ffmpeg-args :window-title window-title
                                   :output-path output
                                   :audio-pipe audio-pipe
-                                  :fullscreen-monitor
-                                  (backend-fullscreen-monitor
+                                  :capture-monitor
+                                  (backend-capture-monitor
                                    (recorder-backend recorder))
                                   :video-encoder encoder
                                   :gpu-chain
