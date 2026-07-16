@@ -269,8 +269,16 @@ machine under load.")
 ;;; even see - can be investigated from the run page.
 
 (defun recording-log-path ()
-  "The capture diagnostics log, shared with RECORDING-LOG's writer."
-  (merge-pathnames "ephinea-ta-recording.log" (uiop:temporary-directory)))
+  "The capture diagnostics log, shared with RECORDING-LOG's writer.
+NOT uiop:temporary-directory on LispWorks: UIOP caches that directory
+in a variable when it loads, so a delivered exe ships the BUILD
+machine's path baked in - on every other machine that directory does
+not exist and the log was silently never written (the first field
+diagnostics all read \"(no recording log)\"; v0.41.0, 2026-07-16).
+hcl:get-temp-directory asks Windows at call time instead."
+  (merge-pathnames "ephinea-ta-recording.log"
+                   #+lispworks (hcl:get-temp-directory)
+                   #-lispworks (uiop:temporary-directory)))
 
 (defparameter +diagnostics-tail-chars+ 65536
   "How much of the recording log's tail rides in a diagnostics report.
@@ -301,18 +309,25 @@ rather than seeking, which would land mid-character."
   "The capture diagnostics to attach to an uploaded run: a machine
 summary (the values BUILD-FFMPEG-ARGS decides by) plus the recording
 log tail. Never signals; every field degrades to NIL text."
-  (format nil "client ~a~%os ~a ~a~%ram-gb ~a cores ~a~%~
-               hw-encoder ~a gpu-chain ~a low-memory ~a~%~
-               --- recording log tail ---~%~a"
-          (client-version)
-          (ignore-errors (software-type)) (ignore-errors (software-version))
-          (let ((bytes (physical-memory-bytes)))
-            (and bytes (round bytes (expt 2 30))))
-          (logical-processor-count)
-          *hw-video-encoder* *hw-fullscreen-gpu-chain*
-          (low-memory-machine-p)
-          (or (file-tail (recording-log-path) +diagnostics-tail-chars+)
-              "(no recording log)")))
+  (let ((path (ignore-errors (recording-log-path))))
+    (format nil "client ~a~%os ~a ~a~%ram-gb ~a cores ~a~%~
+                 hw-encoder ~a gpu-chain ~a low-memory ~a~%~
+                 --- recording log tail (~a, exists ~a) ---~%~a"
+            (client-version)
+            (ignore-errors (software-type)) (ignore-errors (software-version))
+            (let ((bytes (physical-memory-bytes)))
+              (and bytes (round bytes (expt 2 30))))
+            (logical-processor-count)
+            *hw-video-encoder* *hw-fullscreen-gpu-chain*
+            (low-memory-machine-p)
+            ;; The path and its existence ride along so an empty tail is
+            ;; diagnosable from the server: "the log is where we thought
+            ;; and empty" reads very differently from "the path resolved
+            ;; somewhere that does not exist" (exactly how the baked
+            ;; build-machine path above was caught).
+            path (and path (ignore-errors (and (probe-file path) t)))
+            (or (and path (file-tail path +diagnostics-tail-chars+))
+                "(no recording log)"))))
 
 ;;; Paths and filenames
 
