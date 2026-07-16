@@ -1799,14 +1799,6 @@ over the defaults. Restores the global config afterwards (it is bound)."
   (check "an ordinary window is not fullscreen"
          (not (ephinea-ta-client::rect-covers-p '(100 100 1124 868)
                                                 '(0 0 1920 1080))))
-  (check "GDI display names map to 0-based output indices"
-         (and (eql 0 (ephinea-ta-client::display-device-output-index
-                      "\\\\.\\DISPLAY1"))
-              (eql 11 (ephinea-ta-client::display-device-output-index
-                       "\\\\.\\DISPLAY12"))
-              (null (ephinea-ta-client::display-device-output-index
-                     "\\\\.\\DISPLAY"))
-              (null (ephinea-ta-client::display-device-output-index ""))))
   (let ((args (build-ffmpeg-args :window-title "T" :output-path "out.mp4"
                                  :capture-monitor
                                  (list :output-idx 1

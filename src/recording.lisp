@@ -496,19 +496,12 @@ smaller than +CAPTURE-CROP-MIN-PIXELS+ a side."
                    (>= height +capture-crop-min-pixels+))
           (values (- left ml) (- top mt) width height))))))
 
-(defun display-device-output-index (device-name)
-  "0-based output index from a GDI device name: \"\\\\.\\DISPLAY3\" -> 2.
-NIL when the name has no trailing number. ddagrab wants a DXGI output
-index; on a single-adapter machine DXGI enumerates outputs in GDI
-DISPLAYn order, so n-1 is the right index without a DXGI enumeration
-(multi-adapter rigs could mismatch, but a wrong monitor still records
-SOMETHING recoverable, unlike gdigrab's black frames)."
-  (let ((name-end (search "DISPLAY" device-name)))
-    (when name-end
-      (let ((n (parse-integer device-name :start (+ name-end 7)
-                                          :junk-allowed t)))
-        (when (and n (plusp n))
-          (1- n))))))
+;; ddagrab's output index is resolved by DXGI enumeration
+;; (DXGI-OUTPUT-INDEX-FOR-DEVICE, ffmpeg-win32): the obvious
+;; "DISPLAYn -> index n-1" guess captured a NEIGHBORING monitor on the
+;; first multi-monitor field machine (run 1047 recorded the player's
+;; Discord instead of the game), and a wrong monitor is a privacy
+;; leak, so nothing may ever guess it again.
 
 (defun build-ffmpeg-args (&key window-title output-path audio-pipe
                                capture-monitor video-encoder gpu-chain

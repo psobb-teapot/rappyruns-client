@@ -402,6 +402,111 @@ fullscreen chain (*HW-FULLSCREEN-GPU-CHAIN*)."
             :until (zerop code)
             :do (write-char (code-char code) out)))))
 
+;;; DXGI output lookup. ddagrab picks its monitor by DXGI output index
+;;; on the default adapter, and DXGI's enumeration order has nothing to
+;;; do with GDI's DISPLAYn numbering: the old n-1 guess captured a
+;;; neighboring monitor - someone's Discord - on the first multi-monitor
+;;; field machine (run 1047, 2026-07-17). A wrong monitor is a privacy
+;;; leak, not a recoverable recording, so the index now comes from
+;;; enumerating the default adapter's outputs (the same set ddagrab
+;;; sees) and matching DXGI_OUTPUT_DESC.DeviceName - the same
+;;; \\.\DISPLAYn string MONITORINFOEX hands us. No match, no ddagrab.
+
+(fli:register-module :dxgi :real-name "dxgi" :connection-style :automatic)
+
+(fli:define-c-struct dxgi-output-desc
+  (device-name (:c-array (:unsigned :short) 32))
+  (desktop-coordinates (:struct win-rect))
+  (attached-to-desktop (:boolean :int))
+  (rotation :int)
+  (monitor :pointer))
+
+(fli:define-foreign-function (%create-dxgi-factory1 "CreateDXGIFactory1")
+    ((riid :pointer)
+     (factory (:reference-return :pointer)))
+  :result-type (:unsigned :long)
+  :calling-convention :stdcall
+  :module :dxgi)
+
+;; Lazily built (see the audio-win32 note: load-time foreign memory
+;; does not survive delivery). IID_IDXGIFactory, not Factory1: this
+;; machine's CreateDXGIFactory1 answers E_NOINTERFACE for the Factory1
+;; IID, and EnumAdapters/EnumOutputs/GetDesc are plain-Factory methods
+;; anyway.
+(defvar *iid-idxgifactory* nil)
+
+(defun iid-idxgifactory ()
+  (or *iid-idxgifactory*
+      (setf *iid-idxgifactory*
+            (make-guid #x7B7166EC #x21C7 #x44AE
+                       '(#xB2 #x1A #xC9 #xAE #x32 #x1A #xE3 #x69)))))
+
+;; EnumAdapters, EnumOutputs and GetDesc all sit at vtable slot 7 of
+;; their interfaces (IUnknown 0-2 + IDXGIObject 3-6 come first).
+(fli:define-foreign-funcallable com-call-enum-child
+    ((this :pointer)
+     (index (:unsigned :int))
+     (child (:reference-return :pointer)))
+  :result-type (:unsigned :long)
+  :calling-convention :stdcall)
+
+(fli:define-foreign-funcallable com-call-output-get-desc
+    ((this :pointer)
+     (desc (:pointer (:struct dxgi-output-desc))))
+  :result-type (:unsigned :long)
+  :calling-convention :stdcall)
+
+(defun dxgi-desc-device-name (desc)
+  (let ((chars (fli:foreign-slot-pointer desc 'device-name)))
+    (with-output-to-string (out)
+      (loop :for i :from 0 :below 32
+            :for code := (fli:foreign-aref chars i)
+            :until (zerop code)
+            :do (write-char (code-char code) out)))))
+
+(defparameter +dxgi-max-outputs+ 8
+  "Enumeration cap; EnumOutputs returns DXGI_ERROR_NOT_FOUND well
+before this on any real machine.")
+
+(defun dxgi-output-index-for-device (device-name)
+  "The default adapter's DXGI output index whose DeviceName is
+DEVICE-NAME (\"\\\\.\\DISPLAYn\"), or NIL when DXGI enumeration fails
+or no output matches - including a monitor driven by another adapter,
+which ddagrab (a default-adapter D3D11 device) could not capture
+anyway. A failed lookup logs what WAS there, because that list is the
+whole diagnosis on a remote machine."
+  (multiple-value-bind (hr factory)
+      (%create-dxgi-factory1 (iid-idxgifactory) 0)
+    (when (and (zerop hr) (not (fli:null-pointer-p factory)))
+      (unwind-protect
+           (multiple-value-bind (hr adapter)
+               (com-call-enum-child (com-method factory 7) factory 0 0)
+             (when (and (zerop hr) (not (fli:null-pointer-p adapter)))
+               (unwind-protect
+                    (fli:with-dynamic-foreign-objects
+                        ((desc (:struct dxgi-output-desc)))
+                      (let ((seen '()))
+                        (loop :for index :from 0 :below +dxgi-max-outputs+
+                              :do (multiple-value-bind (hr output)
+                                      (com-call-enum-child
+                                       (com-method adapter 7) adapter index 0)
+                                    (when (or (not (zerop hr))
+                                              (fli:null-pointer-p output))
+                                      (recording-log "capture check: no DXGI output named ~s (adapter 0 has ~{~s~^, ~})"
+                                                     device-name (nreverse seen))
+                                      (return nil))
+                                    (unwind-protect
+                                         (when (zerop (com-call-output-get-desc
+                                                       (com-method output 7)
+                                                       output desc))
+                                           (let ((name (dxgi-desc-device-name desc)))
+                                             (push name seen)
+                                             (when (string= name device-name)
+                                               (return index))))
+                                      (com-release output))))))
+                 (com-release adapter))))
+        (com-release factory)))))
+
 (defun window-client-screen-rect (hwnd)
   "(left top right bottom) of HWND's client area in screen coordinates
 \(what gdigrab title= would capture: no borders, no caption), or NIL
@@ -446,14 +551,18 @@ run 949), and the log is all a remote diagnosis has to go on."
                                                  info 'rc-monitor)))
                        (device (monitor-device-name info))
                        (covers (rect-covers-p window-rect monitor-rect))
-                       (index (display-device-output-index device)))
-                  (recording-log "capture check: window=~a monitor=~a (~a) covers=~a"
-                                 window-rect monitor-rect device covers)
+                       ;; DXGI name match, never the DISPLAYn-1 guess:
+                       ;; the guess put run 1047's capture on the wrong
+                       ;; (Discord) monitor. DXGI-OUTPUT-INDEX-FOR-DEVICE
+                       ;; logs the outputs it saw when nothing matches.
+                       (index (ignore-errors
+                               (dxgi-output-index-for-device device))))
+                  (recording-log "capture check: window=~a monitor=~a (~a) covers=~a dxgi-idx=~a"
+                                 window-rect monitor-rect device covers index)
                   (destructuring-bind (left top right bottom) monitor-rect
                     (cond
                       ((null index)
-                       (recording-log "capture check: no output index from ~s, staying on gdigrab"
-                                      device)
+                       (recording-log "capture check: monitor unresolvable in DXGI, staying on gdigrab")
                        nil)
                       (covers
                        (list :output-idx index
