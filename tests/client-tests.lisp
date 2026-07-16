@@ -2907,6 +2907,40 @@ store functions that persist never touch the real %APPDATA% queue."
     (check "read-credentials on a missing file yields NIL NIL"
            (null (read-credentials path)))))
 
+;;; ------------------------------------------------------------------
+;;; Capture diagnostics (recording.lisp): the log tail that follows a
+;;; video upload to the server
+;;; ------------------------------------------------------------------
+
+(defun run-diagnostics-tests ()
+  (let ((path (merge-pathnames (format nil "eta-test-diag-~d.log"
+                                       (get-internal-real-time))
+                               (uiop:temporary-directory))))
+    (unwind-protect
+         (progn
+           (with-open-file (out path :direction :output :if-exists :supersede
+                                     :external-format :utf-8)
+             (format out "line one~%line two 黒画面~%"))
+           (check "file-tail returns a short file whole"
+                  (let ((tail (ephinea-ta-client::file-tail path 1000)))
+                    (and tail (search "line one" tail)
+                         (search "黒画面" tail))))
+           (check "file-tail keeps the newest end of a long file"
+                  (let ((tail (ephinea-ta-client::file-tail path 12)))
+                    (and (eql 12 (length tail))
+                         (search "黒画面" tail)
+                         (not (search "line one" tail))))))
+      (ignore-errors (delete-file path)))
+    (check "file-tail on a missing file is NIL, not an error"
+           (null (ephinea-ta-client::file-tail path 100))))
+  ;; The report itself must never signal, whatever the machine lacks
+  ;; (SBCL here has no RAM reading and usually no recording log).
+  (let ((report (ephinea-ta-client::diagnostics-report)))
+    (check "diagnostics-report assembles a header and a log section"
+           (and (stringp report)
+                (search "client " report)
+                (search "recording log tail" report)))))
+
 (defun run-client-tests ()
   (setf *failures* 0)
   (load-quest-defs)
@@ -2930,6 +2964,7 @@ store functions that persist never touch the real %APPDATA% queue."
   (run-quest-rule-tests)
   (run-room-picker-tests)
   (run-recorder-tests)
+  (run-diagnostics-tests)
   (run-video-flow-tests)
   (run-upload-queue-tests)
   (run-retention-tests)

@@ -261,6 +261,59 @@ the audio re-encodes through loudnorm, which still runs far faster
 than real time; the margin covers an hour-long recording on a slow
 machine under load.")
 
+;;; Diagnostics report. The capture pipeline writes its decisions to
+;;; %TEMP%\ephinea-ta-recording.log (RECORDING-LOG, ffmpeg-win32); after
+;;; each video upload the client sends the log's tail to the server
+;;; (SEND-RUN-DIAGNOSTICS!, store.lisp) so capture problems on machines
+;;; we cannot reach - the run-949 all-black recordings took a week to
+;;; even see - can be investigated from the run page.
+
+(defun recording-log-path ()
+  "The capture diagnostics log, shared with RECORDING-LOG's writer."
+  (merge-pathnames "ephinea-ta-recording.log" (uiop:temporary-directory)))
+
+(defparameter +diagnostics-tail-chars+ 65536
+  "How much of the recording log's tail rides in a diagnostics report.
+Comfortably several sessions' worth of RECORDING-LOG lines, and small
+next to the video upload it follows.")
+
+(defun file-tail (path max-chars)
+  "The last MAX-CHARS characters of the UTF-8 text file at PATH; NIL
+when the file is missing or unreadable. Reads forward in chunks (the
+file is capped near +RECORDING-LOG-MAX-BYTES+, so this stays cheap)
+rather than seeking, which would land mid-character."
+  (handler-case
+      (with-open-file (in path :external-format :utf-8)
+        (let ((chunk (make-string 65536))
+              (kept nil))
+          (loop
+            (let ((end (read-sequence chunk in)))
+              (when (zerop end) (return))
+              (let ((tail (concatenate 'string (or kept "")
+                                       (subseq chunk 0 end))))
+                (setf kept (if (> (length tail) max-chars)
+                               (subseq tail (- (length tail) max-chars))
+                               tail)))))
+          kept))
+    (error () nil)))
+
+(defun diagnostics-report ()
+  "The capture diagnostics to attach to an uploaded run: a machine
+summary (the values BUILD-FFMPEG-ARGS decides by) plus the recording
+log tail. Never signals; every field degrades to NIL text."
+  (format nil "client ~a~%os ~a ~a~%ram-gb ~a cores ~a~%~
+               hw-encoder ~a gpu-chain ~a low-memory ~a~%~
+               --- recording log tail ---~%~a"
+          (client-version)
+          (ignore-errors (software-type)) (ignore-errors (software-version))
+          (let ((bytes (physical-memory-bytes)))
+            (and bytes (round bytes (expt 2 30))))
+          (logical-processor-count)
+          *hw-video-encoder* *hw-fullscreen-gpu-chain*
+          (low-memory-machine-p)
+          (or (file-tail (recording-log-path) +diagnostics-tail-chars+)
+              "(no recording log)")))
+
 ;;; Paths and filenames
 
 (defun default-record-dir-choice (old-exists-p new-exists-p)

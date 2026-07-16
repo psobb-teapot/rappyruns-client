@@ -365,6 +365,9 @@ are persisted incrementally, so an abrupt exit loses nothing."
     ;; Resident-app tray icon: keeps running when the window is closed
     ;; (CLIENT-CONFIRM-DESTROY hides to the tray) and offers Show / Quit.
     (start-tray!)
+    ;; Stamp the recording log with the build/machine context every
+    ;; later log line (and diagnostics upload) is read against.
+    (log-session-info)
     ;; Pick the GPU H.264 encoder off-thread; the first capture may
     ;; still race it and use libx264 once, which only costs CPU.
     (when (config-value :hw-encode)

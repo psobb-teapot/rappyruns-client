@@ -680,6 +680,28 @@ response. Signals API-ERROR on authentication and transport failures
                   :message (format nil "POST /api/runs/~d/video-file -> ~a: ~a"
                                    server-id status body)))))))
 
+(defun upload-run-diagnostics (server-id log
+                               &key version
+                                    (server-url (config-value :server-url))
+                                    (token (config-value :api-token)))
+  "POST /api/runs/:id/diagnostics: attach the capture diagnostics LOG
+\(DIAGNOSTICS-REPORT, recording.lisp) to the run so a bad recording can
+be investigated server-side. Returns T on success, NIL on any rejected
+status; signals API-ERROR only for transport failures (callers treat
+the whole thing as best-effort)."
+  (multiple-value-bind (status body)
+      (http-request "POST"
+                    (api-url server-url
+                             (format nil "/api/runs/~d/diagnostics" server-id))
+                    :body (let ((object (make-hash-table :test 'equal)))
+                            (setf (gethash "log" object) log)
+                            (when version
+                              (setf (gethash "client_version" object) version))
+                            (jzon:stringify object))
+                    :token token)
+    (declare (ignore body))
+    (eql status 200)))
+
 ;;; Recognizing YouTube links on the clipboard. Deliberately simple
 ;;; string matching (no regex dependency); the server's validator has
 ;;; the final say, this only decides when to offer the attach prompt.

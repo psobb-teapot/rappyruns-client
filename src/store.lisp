@@ -394,17 +394,32 @@ itself and no in-flight tmp/remux file can be caught mid-write."
                          cap :protected protected :uploaded uploaded))
             (ignore-errors (backend-delete-file backend path))))))))
 
+(defun send-run-diagnostics! (server-id)
+  "Best-effort: follow a video upload with the capture diagnostics
+\(machine summary + recording log tail), so a bad recording - all-black
+video, missing audio, a capture that died - can be investigated on the
+server without asking the player to dig files out of %TEMP% (the run
+949 lesson: with players we rarely meet, that ask costs a week).
+Failures are swallowed; diagnostics must never break the upload flow."
+  (ignore-errors
+    (upload-run-diagnostics server-id (diagnostics-report)
+                            :version (client-version))))
+
 (defun upload-entry-video! (entry &key on-progress)
   "Upload ENTRY's recording to its server draft. Success marks the
 entry attached (same flag as the manual URL flow, so every consumer
 agrees the video is on the server); a :duplicate reply means a video
-was already on file, which is just as done. Returns the updated entry."
+was already on file, which is just as done. Returns the updated entry.
+Whatever the server said, the capture diagnostics follow the attempt
+\(SEND-RUN-DIAGNOSTICS!) - a rejected upload is exactly when the
+recording log matters."
   (handler-case
       (multiple-value-bind (outcome payload)
           (upload-run-video (getf entry :server-id)
                             (getf entry :video-path)
                             :offset-ms (getf entry :video-offset-ms)
                             :on-progress on-progress)
+        (send-run-diagnostics! (getf entry :server-id))
         (ecase outcome
           ((:attached :duplicate)
            ;; The site has it now, but the local copy is NOT deleted here:

@@ -85,6 +85,11 @@ audio tail before \"q\" stops it reading.")
 (defconstant +create-no-window+ #x08000000)
 (defconstant +below-normal-priority-class+ #x4000)
 (defconstant +handle-flag-inherit+ 1)
+;; For the child's stderr file (%create-file is bound in audio-win32).
+(defconstant +generic-write+ #x40000000)
+(defconstant +file-share-read+ 1)
+(defconstant +create-always+ 2)
+(defconstant +file-attribute-normal+ #x80)
 
 ;;; Windows command lines are one string; arguments must be quoted per
 ;;; the CommandLineToArgvW rules (the gdigrab title= argument contains
@@ -125,7 +130,8 @@ audio tail before \"q\" stops it reading.")
   thread-handle
   stdin-write   ; our end of the child's stdin pipe
   pid
-  audio)        ; audio-session (audio-win32.lisp) or NIL
+  audio         ; audio-session (audio-win32.lisp) or NIL
+  stderr-path)  ; file the child's stderr goes to, or NIL
 
 (defun create-stdin-pipe ()
   "An anonymous pipe whose read end the child may inherit as stdin.
@@ -154,47 +160,76 @@ Returns (values read-end write-end)."
                         fill-attribute flags show-window cb-reserved2))
     (setf (fli:foreign-slot-value startup dword-slot) 0)))
 
-(defun spawn-process (program args)
+(defun create-inheritable-log-file (path)
+  "An inheritable write handle to a fresh file at PATH, for wiring a
+child's stderr. NIL when the file cannot be created - stderr capture
+is diagnostics, never worth failing the recording over."
+  (fli:with-dynamic-foreign-objects
+      ((attributes (:struct security-attributes)))
+    (setf (fli:foreign-slot-value attributes 'nlength)
+          (fli:size-of '(:struct security-attributes))
+          (fli:foreign-slot-value attributes 'security-descriptor)
+          fli:*null-pointer*
+          (fli:foreign-slot-value attributes 'inherit-handle) t)
+    (let ((handle (%create-file path +generic-write+ +file-share-read+
+                                attributes +create-always+
+                                +file-attribute-normal+ fli:*null-pointer*)))
+      (unless (invalid-handle-p handle)
+        handle))))
+
+(defun spawn-process (program args &key stderr-path)
   "CreateProcessW PROGRAM with ARGS, stdin wired to a pipe we keep.
 Returns an FFMPEG-CAPTURE; signals an error on failure. A bare PROGRAM
 name (e.g. \"ffmpeg.exe\") is searched on PATH by the API.
+With STDERR-PATH, the child's stderr is redirected to that file - at
+-loglevel error anything ffmpeg says there is the reason a capture
+died or recorded garbage, and TRANSCRIBE-CAPTURE-STDERR folds it into
+the recording log when the capture is closed.
 The child runs at below-normal priority: every process spawned here is
 an ffmpeg (capture, remux, -version probe) sharing the machine with a
 live game, and x264 at normal priority visibly stole frame time from
 PSOBB. Windows still gives ffmpeg the leftover cores, so a capture
 keeps up whenever the machine has headroom at all."
   (multiple-value-bind (stdin-read stdin-write) (create-stdin-pipe)
-    (handler-case
-        (fli:with-dynamic-foreign-objects
-            ((startup (:struct startupinfo-w))
-             (process-info (:struct process-information)))
-          (zero-startupinfo startup)
-          (setf (fli:foreign-slot-value startup 'flags) +startf-usestdhandles+
-                (fli:foreign-slot-value startup 'std-input) stdin-read)
-          (let ((ok (fli:with-foreign-string (command element-count byte-count
-                                              :external-format :unicode)
-                        (argv->command-line program args)
-                      (declare (ignore element-count byte-count))
-                      (%create-process fli:*null-pointer* command
-                                       fli:*null-pointer* fli:*null-pointer*
-                                       t (logior +create-no-window+
-                                                 +below-normal-priority-class+)
-                                       fli:*null-pointer* fli:*null-pointer*
-                                       startup process-info))))
-            (unless ok
-              (error "could not start ~a (Windows error ~d)"
-                     program (%get-last-error)))
-            ;; The child inherited its own stdin-read; drop our copy.
-            (%close-handle stdin-read)
-            (make-ffmpeg-capture
-             :process-handle (fli:foreign-slot-value process-info 'process)
-             :thread-handle (fli:foreign-slot-value process-info 'thread)
-             :stdin-write stdin-write
-             :pid (fli:foreign-slot-value process-info 'pid))))
-      (error (condition)
-        (%close-handle stdin-read)
-        (%close-handle stdin-write)
-        (error condition)))))
+    (let ((stderr-handle (and stderr-path
+                              (ignore-errors
+                                (create-inheritable-log-file stderr-path)))))
+      (handler-case
+          (fli:with-dynamic-foreign-objects
+              ((startup (:struct startupinfo-w))
+               (process-info (:struct process-information)))
+            (zero-startupinfo startup)
+            (setf (fli:foreign-slot-value startup 'flags) +startf-usestdhandles+
+                  (fli:foreign-slot-value startup 'std-input) stdin-read)
+            (when stderr-handle
+              (setf (fli:foreign-slot-value startup 'std-error) stderr-handle))
+            (let ((ok (fli:with-foreign-string (command element-count byte-count
+                                                :external-format :unicode)
+                          (argv->command-line program args)
+                        (declare (ignore element-count byte-count))
+                        (%create-process fli:*null-pointer* command
+                                         fli:*null-pointer* fli:*null-pointer*
+                                         t (logior +create-no-window+
+                                                   +below-normal-priority-class+)
+                                         fli:*null-pointer* fli:*null-pointer*
+                                         startup process-info))))
+              (unless ok
+                (error "could not start ~a (Windows error ~d)"
+                       program (%get-last-error)))
+              ;; The child inherited its own copies; drop ours.
+              (%close-handle stdin-read)
+              (when stderr-handle (%close-handle stderr-handle))
+              (make-ffmpeg-capture
+               :process-handle (fli:foreign-slot-value process-info 'process)
+               :thread-handle (fli:foreign-slot-value process-info 'thread)
+               :stdin-write stdin-write
+               :pid (fli:foreign-slot-value process-info 'pid)
+               :stderr-path (and stderr-handle stderr-path))))
+        (error (condition)
+          (%close-handle stdin-read)
+          (%close-handle stdin-write)
+          (when stderr-handle (%close-handle stderr-handle))
+          (error condition))))))
 
 (defun close-capture-handles (capture)
   (%close-handle (ffmpeg-capture-stdin-write capture))
@@ -348,32 +383,62 @@ fullscreen chain (*HW-FULLSCREEN-GPU-CHAIN*)."
   "Plist (:output-idx :width :height) of the monitor the PSOBB window
 covers entirely, or NIL when the window is absent or windowed. The
 dimensions are the monitor rect's - the fullscreen window spans it
-exactly, so they are also the capture size (sizes the GPU-side scale)."
+exactly, so they are also the capture size (sizes the GPU-side scale).
+Every outcome logs its inputs: a wrong verdict here is exactly how a
+capture silently records black (gdigrab on a surface GDI cannot see),
+and the log is all a remote diagnosis has to go on."
   (let ((hwnd (find-psobb-window)))
-    (when hwnd
-      (fli:with-dynamic-foreign-objects ((rect win-rect)
-                                         (info monitorinfoex))
-        (setf (fli:foreign-slot-value info 'cb-size)
-              (fli:size-of '(:struct monitorinfoex)))
-        (let ((monitor (%monitor-from-window hwnd
-                                             +monitor-defaulttonearest+)))
-          (when (and (not (fli:null-pointer-p monitor))
-                     (%get-window-rect hwnd rect)
-                     (%get-monitor-info monitor info))
-            (let ((monitor-rect (rect-list (fli:foreign-slot-pointer
-                                            info 'rc-monitor))))
-              (when (rect-covers-p (rect-list rect) monitor-rect)
-                (let ((index (display-device-output-index
-                              (monitor-device-name info))))
-                  (when index
-                    (destructuring-bind (left top right bottom) monitor-rect
-                      (list :output-idx index
-                            :width (- right left)
-                            :height (- bottom top)))))))))))))
+    (if (null hwnd)
+        (recording-log "fullscreen check: no PSOBB window")
+        (fli:with-dynamic-foreign-objects ((rect win-rect)
+                                           (info monitorinfoex))
+          (setf (fli:foreign-slot-value info 'cb-size)
+                (fli:size-of '(:struct monitorinfoex)))
+          (let ((monitor (%monitor-from-window hwnd
+                                               +monitor-defaulttonearest+)))
+            (if (not (and (not (fli:null-pointer-p monitor))
+                          (%get-window-rect hwnd rect)
+                          (%get-monitor-info monitor info)))
+                (recording-log "fullscreen check: window/monitor query failed")
+                (let ((window-rect (rect-list rect))
+                      (monitor-rect (rect-list (fli:foreign-slot-pointer
+                                                info 'rc-monitor)))
+                      (device (monitor-device-name info)))
+                  (recording-log "fullscreen check: window=~a monitor=~a (~a) covers=~a"
+                                 window-rect monitor-rect device
+                                 (rect-covers-p window-rect monitor-rect))
+                  (when (rect-covers-p window-rect monitor-rect)
+                    (let ((index (display-device-output-index device)))
+                      (if (null index)
+                          (recording-log "fullscreen check: no output index from ~s, staying on gdigrab"
+                                         device)
+                          (destructuring-bind (left top right bottom)
+                              monitor-rect
+                            (list :output-idx index
+                                  :width (- right left)
+                                  :height (- bottom top)))))))))))))
 
 ;;; The live backend
 
 (defclass win32-ffmpeg-backend () ())
+
+(defparameter +recording-log-max-bytes+ (* 1024 1024)
+  "Rotation threshold for the recording log. The log is append-only
+across sessions and now also receives ffmpeg stderr transcripts, so an
+unrotated file would grow without bound; one file of history plus a
+.old generation is plenty for diagnostics.")
+
+(defun rotate-recording-log ()
+  "Move an oversized recording log aside (overwriting the previous
+generation) so the live file stays small enough to read whole."
+  (let ((path (recording-log-path)))
+    (when (> (or (ignore-errors
+                   (with-open-file (s path :element-type '(unsigned-byte 8))
+                     (file-length s)))
+                 0)
+             +recording-log-max-bytes+)
+      (uiop:rename-file-overwriting-target
+       path (make-pathname :type "old" :defaults path)))))
 
 (defun recording-log (fmt &rest args)
   "Append a timestamped line to %TEMP%\\ephinea-ta-recording.log. The
@@ -382,8 +447,8 @@ the field (e.g. \"pointer out of memory bounds\" right after a game
 crash, 2026-07-06) need the full story to be diagnosable after the
 fact. Never signals."
   (ignore-errors
-    (with-open-file (s (merge-pathnames "ephinea-ta-recording.log"
-                                        (uiop:temporary-directory))
+    (rotate-recording-log)
+    (with-open-file (s (recording-log-path)
                        :direction :output :if-exists :append
                        :if-does-not-exist :create
                        :external-format :utf-8)
@@ -393,6 +458,19 @@ fact. Never signals."
                 month day hour min sec))
       (apply #'format s fmt args)
       (terpri s))))
+
+(defun log-session-info ()
+  "One line of machine context at startup, so any recording-log tail
+\(the unit DIAGNOSTICS-REPORT ships to the server) identifies the
+client build and hardware class it came from."
+  (recording-log "session: client ~a, ~a ~a, ram-gb ~a, cores ~a, ffmpeg ~a"
+                 (client-version)
+                 (ignore-errors (software-type))
+                 (ignore-errors (software-version))
+                 (let ((bytes (physical-memory-bytes)))
+                   (and bytes (round bytes (expt 2 30))))
+                 (logical-processor-count)
+                 (ignore-errors (resolve-ffmpeg-path))))
 
 (defmethod backend-fullscreen-monitor ((backend win32-ffmpeg-backend))
   (let ((monitor (ignore-errors (psobb-fullscreen-monitor))))
@@ -431,17 +509,17 @@ fact. Never signals."
                      :channels (audio-session-channels audio))
                     (strip-audio-args args audio-pipe)))
           (handler-case
-              (let ((capture (spawn-process ffmpeg-path args)))
+              (let ((capture (spawn-process ffmpeg-path args
+                                            :stderr-path (stderr-file-for
+                                                          output-path))))
                 (setf (ffmpeg-capture-audio capture) audio)
-                ;; The rate tokens say which profile ran (the low-memory
-                ;; machines this diagnoses can only be read after the fact).
-                (recording-log "capture started: audio=~a ffmpeg=~a~@[ b:v=~a~]~@[ crf=~a~]"
-                               (and audio (audio-session-scope audio))
-                               ffmpeg-path
-                               (let ((p (position "-b:v" args :test #'equal)))
-                                 (and p (nth (1+ p) args)))
-                               (let ((p (position "-crf" args :test #'equal)))
-                                 (and p (nth (1+ p) args))))
+                ;; The full argv, because remote diagnosis of a bad
+                ;; recording starts from what ffmpeg was actually told
+                ;; (which grab, which filter chain, which encoder).
+                (recording-log "capture argv: ~a"
+                               (argv->command-line ffmpeg-path args))
+                (recording-log "capture started: audio=~a"
+                               (and audio (audio-session-scope audio)))
                 capture)
             (error (condition)
               (when audio (stop-audio-session audio))
@@ -454,11 +532,19 @@ fact. Never signals."
 (defmethod backend-capture-alive-p ((backend win32-ffmpeg-backend) capture)
   (capture-alive-p capture))
 
+(defun stderr-file-for (output-path)
+  "Where a spawned ffmpeg's stderr goes: next to its output, so
+concurrent processes (a remux finishing while the next capture starts)
+never share a file."
+  (concatenate 'string (namestring output-path) ".stderr.txt"))
+
 (defmethod backend-start-remux ((backend win32-ffmpeg-backend)
                                 ffmpeg-path args)
   ;; The remux ffmpeg reads no stdin, but SPAWN-PROCESS's pipe is
   ;; harmless and keeps the capture token uniform.
-  (handler-case (spawn-process ffmpeg-path args)
+  (handler-case (spawn-process ffmpeg-path args
+                               :stderr-path (stderr-file-for
+                                             (first (last args))))
     (error (condition)
       (recording-log "remux start FAILED: ~a" condition)
       (values nil (format nil "~a" condition)))))
@@ -500,11 +586,31 @@ fact. Never signals."
     (stop-audio-session (ffmpeg-capture-audio capture)))
   (%terminate-process (ffmpeg-capture-process-handle capture) 1))
 
+(defparameter +stderr-transcript-chars+ 8192
+  "How much of a dead ffmpeg's stderr file survives into the recording
+log. At -loglevel error the file is empty on a good run; when it is
+not, the head repeats one complaint and the tail has the fatal one.")
+
+(defun transcribe-capture-stderr (capture)
+  "Fold the tail of the child's stderr file into the recording log and
+drop the file. Runs at close, when the process is dead and the file is
+complete; a clean run leaves it empty (-loglevel error) and logs
+nothing. Never signals - this is diagnostics, not control flow."
+  (ignore-errors
+    (let ((path (ffmpeg-capture-stderr-path capture)))
+      (when path
+        (let ((tail (file-tail path +stderr-transcript-chars+)))
+          (when (and tail (find-if (lambda (char) (char> char #\Space)) tail))
+            (recording-log "ffmpeg stderr (~a):~%~a" path tail)))
+        (uiop:delete-file-if-exists path)
+        (setf (ffmpeg-capture-stderr-path capture) nil)))))
+
 (defmethod backend-close-capture ((backend win32-ffmpeg-backend) capture)
   ;; Idempotent; also reached when ffmpeg died on its own, where the
   ;; capture thread must not be left serving a dead pipe.
   (when (ffmpeg-capture-audio capture)
     (stop-audio-session (ffmpeg-capture-audio capture)))
+  (transcribe-capture-stderr capture)
   (close-capture-handles capture))
 
 (defmethod backend-rename-file ((backend win32-ffmpeg-backend) from to)
