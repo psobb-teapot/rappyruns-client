@@ -156,6 +156,15 @@ bitrate-mode quality.")
 START-HW-ENCODER-PROBE), or NIL for libx264. Read at capture start, so
 a capture that begins before the probe finishes just uses x264 once.")
 
+(defvar *hw-encoder-probe-state* nil
+  "NIL until the probe has run, :DONE when it produced a verdict (even
+a negative one - *HW-VIDEO-ENCODER* stays NIL on a machine with no
+hardware encoder), :SPAWN-FAILED when ffmpeg itself never started for
+any candidate. The latter is not a missing encoder but a block outside
+the probe - Smart App Control refusing the unsigned ffmpeg.exe with
+\"Windows error 4551\" pinned a whole session to libx264 in the field
+(2026-07-18) - and such blocks lift, so START-RECORDING re-probes.")
+
 (defvar *hw-fullscreen-gpu-chain* nil
   "T when the startup probe verified the zero-copy fullscreen chain
 \(ddagrab -> hwmap -> scale_qsv -> h264_qsv) works on this machine.
@@ -688,7 +697,34 @@ known once the audio session is activated)."
   on-keep              ; (lambda (final-path run)) after a successful save
   last-error)          ; string for the GUI, or NIL
 
+(defvar *capture-failure-notified* nil
+  "T once the tray has warned about the current streak of capture-start
+failures; reset by the next successful start. One balloon per streak,
+not per run - a Smart App Control block can last hours.")
+
+(defvar *software-fallback-notified* nil
+  "T once the tray has warned that captures run on libx264 because the
+encoder probe never got to run (ffmpeg blocked at startup). Once per
+process: machines that genuinely lack a hardware encoder (probe state
+:DONE) are never nagged.")
+
+(defun notify-user (title text &key (icon :warning))
+  "Tray balloon when the tray code is loaded (tray-win32.lisp,
+LispWorks-only, loads after this file) - a silent no-op on SBCL test
+runs, where TRAY-NOTIFY is never defined."
+  (when (fboundp 'tray-notify)
+    (ignore-errors (funcall 'tray-notify title text :icon icon))))
+
 (defun start-recording (recorder window-title)
+  ;; A :SPAWN-FAILED probe verdict is provisional (see the defvar):
+  ;; ffmpeg may have been unblocked since startup, so retry the probe
+  ;; off-thread each time a capture starts. This capture still uses the
+  ;; current verdict; the next one picks up whatever the re-probe finds.
+  (when (and (config-value :hw-encode)
+             (eq *hw-encoder-probe-state* :spawn-failed))
+    ;; FUNCALL: defined in ffmpeg-win32.lisp, which loads after this
+    ;; file (and only on LispWorks, like every path reaching here).
+    (funcall 'start-hw-encoder-probe))
   (let* ((ffmpeg (resolve-ffmpeg-path))
          (output (recording-tmp-path))
          (audio-pid (and (config-value :record-audio) *audio-target-pid*))
@@ -709,15 +745,37 @@ known once the audio session is activated)."
         (backend-start-capture (recorder-backend recorder) ffmpeg args output
                                :audio-pipe audio-pipe :audio-pid audio-pid)
       (if capture
-          (setf (recorder-capture recorder) capture
-                (recorder-capture-start-real recorder) (get-internal-real-time)
-                (recorder-tmp-path recorder) output
-                (recorder-session-runs recorder) '()
-                (recorder-last-error recorder) nil
-                (recorder-state recorder) :recording)
+          (progn
+            (setf (recorder-capture recorder) capture
+                  (recorder-capture-start-real recorder) (get-internal-real-time)
+                  (recorder-tmp-path recorder) output
+                  (recorder-session-runs recorder) '()
+                  (recorder-last-error recorder) nil
+                  (recorder-state recorder) :recording
+                  *capture-failure-notified* nil)
+            ;; The capture spawned but on libx264 only because the
+            ;; startup probe never got to ask the hardware - tell the
+            ;; user why the game may feel heavy (field case 2026-07-18).
+            (when (and (config-value :hw-encode)
+                       (null encoder)
+                       (eq *hw-encoder-probe-state* :spawn-failed)
+                       (not *software-fallback-notified*))
+              (setf *software-fallback-notified* t)
+              (notify-user (tr :notify-software-encode-title)
+                           (tr :notify-software-encode-text)
+                           :icon :info)))
           ;; Stay :idle; the edge trigger retries on the next quest.
-          (setf (recorder-last-error recorder)
-                (or error "could not start ffmpeg"))))))
+          (let ((message (or error "could not start ffmpeg")))
+            (setf (recorder-last-error recorder) message)
+            (unless *capture-failure-notified*
+              (setf *capture-failure-notified* t)
+              (notify-user (tr :notify-capture-failed-title)
+                           ;; 4551 = "an Application Control policy has
+                           ;; blocked this file": tell the user the fix
+                           ;; is in Windows Security, not the client.
+                           (tr (if (search "(Windows error 4551)" message)
+                                   :notify-capture-blocked-text
+                                   :notify-capture-failed-text)))))))))
 
 (defun annotate-video-offsets (recorder runs)
   "Stamp each of RUNS (completed this poll frame) with :VIDEO-OFFSET-MS,

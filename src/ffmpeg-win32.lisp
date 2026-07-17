@@ -262,19 +262,27 @@ even faster - the margin only covers a cold ffmpeg start under load.")
 
 (defun probe-hw-encoder ()
   "First +HW-ENCODER-CANDIDATES+ entry this machine's ffmpeg can
-actually encode with, or NIL when only libx264 remains."
+actually encode with, or NIL when only libx264 remains. The second
+value is the probe's confidence: :DONE when at least one candidate got
+ffmpeg running (so a NIL really means \"no hardware encoder here\"),
+:SPAWN-FAILED when ffmpeg itself never started - an external block
+\(Smart App Control's \"Windows error 4551\" on a fresh install) that
+can lift later, so a :SPAWN-FAILED NIL is provisional."
   (let ((ffmpeg (resolve-ffmpeg-path))
-        (backend (make-instance 'win32-ffmpeg-backend)))
-    (dolist (encoder +hw-encoder-candidates+)
+        (backend (make-instance 'win32-ffmpeg-backend))
+        (spawned nil))
+    (dolist (encoder +hw-encoder-candidates+
+                     (values nil (if spawned :done :spawn-failed)))
       (handler-case
           (let ((capture (spawn-process ffmpeg
                                         (hw-encoder-probe-args encoder))))
+            (setf spawned t)
             (unwind-protect
                  (progn
                    (wait-for-capture backend capture
                                      +hw-probe-timeout-seconds+)
                    (when (backend-capture-succeeded-p backend capture)
-                     (return encoder)))
+                     (return (values encoder :done))))
               (backend-close-capture backend capture)))
         (error (condition)
           (recording-log "hw encoder probe ~a failed to spawn: ~a"
@@ -300,22 +308,41 @@ desktop, which every interactive session allows."
         (recording-log "gpu chain probe failed to spawn: ~a" condition)
         nil))))
 
+(defvar *hw-probe-process* nil
+  "The worker thread of the probe currently in flight, so the capture
+-start retry (START-RECORDING on a :SPAWN-FAILED verdict) never stacks
+a second probe on a slow first one.")
+
 (defun start-hw-encoder-probe ()
-  "Probe in a worker thread and publish the result. Called once from
-MAIN; until it lands, captures fall back to libx264 (see
+  "Probe in a worker thread and publish the result. Called from MAIN at
+startup and again from START-RECORDING while the verdict is
+:SPAWN-FAILED; until it lands, captures fall back to libx264 (see
 *HW-VIDEO-ENCODER*). A QSV winner is probed further for the zero-copy
-fullscreen chain (*HW-FULLSCREEN-GPU-CHAIN*)."
-  (mp:process-run-function
-   "eta-hw-encoder-probe" '()
-   (lambda ()
-     (let ((encoder (ignore-errors (probe-hw-encoder))))
-       (setf *hw-video-encoder* encoder)
-       (recording-log "hw encoder probe: using ~a"
-                      (or encoder "libx264 (no hardware encoder)"))
-       (when (equal encoder "h264_qsv")
-         (setf *hw-fullscreen-gpu-chain* (probe-hw-gpu-chain))
-         (recording-log "gpu chain probe: fullscreen captures ~:[keep the hwdownload fallback~;stay on the GPU (hwmap -> scale_qsv)~]"
-                        *hw-fullscreen-gpu-chain*))))))
+fullscreen chain (*HW-FULLSCREEN-GPU-CHAIN*). No-op while a probe is
+already running."
+  (unless (and *hw-probe-process* (mp:process-alive-p *hw-probe-process*))
+    (setf *hw-probe-process*
+          (mp:process-run-function
+           "eta-hw-encoder-probe" '()
+           (lambda ()
+             (multiple-value-bind (encoder state)
+                 (handler-case (probe-hw-encoder)
+                   ;; RESOLVE-FFMPEG-PATH signaling (no ffmpeg at all)
+                   ;; lands here; treat it like a spawn failure so a
+                   ;; later repair (say, an update restoring the file)
+                   ;; is picked up by the capture-start retry.
+                   (error (condition)
+                     (recording-log "hw encoder probe failed: ~a" condition)
+                     (values nil :spawn-failed)))
+               (setf *hw-video-encoder* encoder
+                     *hw-encoder-probe-state* state)
+               (recording-log "hw encoder probe: using ~a~:[~; (provisional - ffmpeg would not start)~]"
+                              (or encoder "libx264 (no hardware encoder)")
+                              (eq state :spawn-failed))
+               (when (equal encoder "h264_qsv")
+                 (setf *hw-fullscreen-gpu-chain* (probe-hw-gpu-chain))
+                 (recording-log "gpu chain probe: fullscreen captures ~:[keep the hwdownload fallback~;stay on the GPU (hwmap -> scale_qsv)~]"
+                                *hw-fullscreen-gpu-chain*))))))))
 
 ;;; Capture-monitor resolution. An exclusive-fullscreen PSOBB renders
 ;;; past GDI, so a gdigrab capture records black frames (field-observed

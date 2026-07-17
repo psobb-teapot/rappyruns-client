@@ -283,10 +283,17 @@
 (defconstant +error-already-exists+ 183)
 
 (defconstant +nim-add+ 0)
+(defconstant +nim-modify+ 1)
 (defconstant +nim-delete+ 2)
 (defconstant +nif-message+ #x01)
 (defconstant +nif-icon+ #x02)
 (defconstant +nif-tip+ #x04)
+(defconstant +nif-info+ #x10)
+
+;; Balloon (toast on Win10+) icon in dwInfoFlags.
+(defconstant +niif-none+ 0)
+(defconstant +niif-info+ 1)
+(defconstant +niif-warning+ 2)
 
 (defconstant +mf-string+ 0)
 (defconstant +tpm-leftalign+ 0)
@@ -352,11 +359,19 @@ re-added when Explorer restarts.")
         (%load-icon fli:*null-pointer*
                     (fli:make-pointer :address +idi-application+ :type :void)))))
 
+(defun copy-tray-wstring (pointer string max)
+  "Copy STRING into a fixed WCHAR array at POINTER, NUL-terminated,
+truncated to MAX characters. CHAR-CODE per character is fine here: the
+strings are our own UI text, all inside the BMP (one UTF-16 unit)."
+  (let ((n (min (length string) max)))
+    (dotimes (i n)
+      (setf (fli:foreign-aref pointer i) (char-code (char string i))))
+    (setf (fli:foreign-aref pointer n) 0)))
+
 (defun tray-add-icon (hwnd)
   "Register (or re-register) the notification-area icon on HWND."
   (fli:with-dynamic-foreign-objects ()
-    (let ((nid (fli:allocate-dynamic-foreign-object :type 'notify-icon-data))
-          (tip (tr :tray-tooltip)))
+    (let ((nid (fli:allocate-dynamic-foreign-object :type 'notify-icon-data)))
       (setf (fli:foreign-slot-value nid 'cb-size) (fli:size-of 'notify-icon-data)
             (fli:foreign-slot-value nid 'hwnd) hwnd
             (fli:foreign-slot-value nid 'id) +tray-icon-id+
@@ -364,13 +379,39 @@ re-added when Explorer restarts.")
             (logior +nif-message+ +nif-icon+ +nif-tip+)
             (fli:foreign-slot-value nid 'callback-message) +tray-callback-message+
             (fli:foreign-slot-value nid 'icon) (tray-load-icon))
-      ;; szTip is a fixed WCHAR[128]; copy the tooltip and NUL-terminate.
-      (let ((tip-ptr (fli:foreign-slot-pointer nid 'tip))
-            (n (min (length tip) 127)))
-        (dotimes (i n)
-          (setf (fli:foreign-aref tip-ptr i) (char-code (char tip i))))
-        (setf (fli:foreign-aref tip-ptr n) 0))
+      ;; szTip is a fixed WCHAR[128].
+      (copy-tray-wstring (fli:foreign-slot-pointer nid 'tip)
+                         (tr :tray-tooltip) 127)
       (%shell-notify-icon +nim-add+ nid))))
+
+(defun tray-notify (title text &key (icon :warning))
+  "Balloon (toast) notification from the tray icon. Best-effort from
+any thread - Shell_NotifyIcon is not bound to the icon's window thread,
+and no tray (icon not up yet, or the thread died) just means silence.
+With NIF_INFO alone the API reads szInfo/szInfoTitle/dwInfoFlags plus
+uTimeout, so those are the only members set beyond the identity."
+  (let ((hwnd *tray-hwnd*))
+    (when hwnd
+      (ignore-errors
+        (fli:with-dynamic-foreign-objects ()
+          (let ((nid (fli:allocate-dynamic-foreign-object
+                      :type 'notify-icon-data)))
+            (setf (fli:foreign-slot-value nid 'cb-size)
+                  (fli:size-of 'notify-icon-data)
+                  (fli:foreign-slot-value nid 'hwnd) hwnd
+                  (fli:foreign-slot-value nid 'id) +tray-icon-id+
+                  (fli:foreign-slot-value nid 'flags) +nif-info+
+                  (fli:foreign-slot-value nid 'timeout-or-version) 0
+                  (fli:foreign-slot-value nid 'info-flags)
+                  (ecase icon
+                    (:none +niif-none+)
+                    (:info +niif-info+)
+                    (:warning +niif-warning+)))
+            (copy-tray-wstring (fli:foreign-slot-pointer nid 'info-title)
+                               title 63)
+            (copy-tray-wstring (fli:foreign-slot-pointer nid 'info)
+                               text 255)
+            (%shell-notify-icon +nim-modify+ nid)))))))
 
 (defun tray-remove-icon (hwnd)
   "Delete the notification-area icon (only cbSize/hWnd/uID are read)."

@@ -381,6 +381,21 @@
     :tray-quit
     ("Quit"
      "終了")
+    :notify-capture-failed-title
+    ("Recording did not start"
+     "録画を開始できませんでした")
+    :notify-capture-failed-text
+    ("ffmpeg could not be started, so this quest is not being recorded. The next quest retries automatically."
+     "ffmpeg を起動できなかったため、このクエストは録画されていません。次のクエストで自動的に再試行します。")
+    :notify-capture-blocked-text
+    ("Windows blocked ffmpeg.exe (app control policy). Allow it in Windows Security; recording resumes from the next quest."
+     "Windows のアプリ制御ポリシーが ffmpeg.exe をブロックしました。Windows セキュリティで許可すると、次のクエストから録画が再開されます。")
+    :notify-software-encode-title
+    ("Recording on the CPU"
+     "CPU エンコードで録画中")
+    :notify-software-encode-text
+    ("The hardware encoder check could not run at startup, so recording uses software encoding - the game may feel slower. It switches back automatically once ffmpeg can start."
+     "起動時にハードウェアエンコーダを確認できなかったため、ソフトウェアエンコードで録画しています。ゲームが重く感じられる場合があります。ffmpeg が起動できるようになれば自動的に復帰します。")
     :group-updates
     ("Updates"
      "アップデート")
