@@ -101,9 +101,12 @@
 
 ;; The exe's own embedded icon (index 0), used for the tray. NIL exe
 ;; (dev/SBCL) or extraction failure falls back to LoadIconW below.
+;; :ef-wc-string without an explicit external format converts through
+;; FLI:ASCII-WCHAR, which SIGNALS on any non-ASCII character - the exe
+;; may live under a Japanese-named directory, so spell out :unicode.
 (fli:define-foreign-function (%extract-icon "ExtractIconW")
     ((hinst :pointer)
-     (exe-file (:reference-pass :ef-wc-string))
+     (exe-file (:reference-pass (:ef-wc-string :external-format :unicode)))
      (index (:unsigned :int)))
   :result-type :pointer
   :calling-convention :stdcall
@@ -123,11 +126,16 @@
   :calling-convention :stdcall
   :module :user32)
 
+;; The item text is localized ("表示" / "終了" in Japanese), and the
+;; default :ef-wc-string external format (FLI:ASCII-WCHAR) signals on
+;; non-ASCII characters. The window proc's IGNORE-ERRORS then swallowed
+;; that error, so right-clicking the tray icon showed no menu at all on
+;; Japanese UI - :unicode makes the conversion handle the full BMP.
 (fli:define-foreign-function (%append-menu "AppendMenuW")
     ((menu :pointer)
      (flags (:unsigned :int))
      (id-new-item :size-t)              ; UINT_PTR
-     (new-item (:reference-pass :ef-wc-string)))
+     (new-item (:reference-pass (:ef-wc-string :external-format :unicode))))
   :result-type (:boolean :int)
   :calling-convention :stdcall
   :module :user32)
