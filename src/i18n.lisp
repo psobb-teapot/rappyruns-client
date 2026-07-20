@@ -428,7 +428,7 @@
      "インストール先フォルダに書き込めません")
     :update-after-run
     ("~a downloaded - installs after this run"
-     "~a ダウンロード済み - このランの終了後にインストールします")
+     "~a ダウンロード済み - 現在のプレイ終了後にインストールします")
     :update-restarting
     ("installing ~a - restarting..."
      "~a をインストール中 - 再起動します...")
