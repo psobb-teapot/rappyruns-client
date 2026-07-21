@@ -1677,6 +1677,23 @@ over the defaults. Restores the global config afterwards (it is bound)."
              (and vf
                   (search "scale=-2" (nth (1+ vf) args))
                   (search "min(1080" (nth (1+ vf) args)))))
+    ;; The run-1368 color fix: the scale itself converts to YUV with an
+    ;; explicit bt709 matrix (a YUV format right after it, or swscale's
+    ;; untagged BT.601 default comes back), and setparams stamps the
+    ;; rest of the VUI color metadata.
+    (check "x264 args convert to yuv420p on the scale with bt709 tags"
+           (let* ((vf (position "-vf" args :test #'equal))
+                  (filter (and vf (nth (1+ vf) args))))
+             (and filter
+                  (search "out_color_matrix=bt709" filter)
+                  (search "out_range=tv" filter)
+                  (search ",format=yuv420p," filter)
+                  (search "setparams=color_primaries=bt709:color_trc=iec61966-2-1"
+                          filter)
+                  (< (search "scale" filter)
+                     (search ",format=yuv420p," filter))
+                  (< (search ",format=yuv420p," filter)
+                     (search "setparams=" filter)))))
     (check "ffmpeg output path is the last argument"
            (equal "out.mp4" (first (last args))))
     (check "video-only args carry no audio input"
@@ -1835,7 +1852,7 @@ over the defaults. Restores the global config afterwards (it is bound)."
                      pipe)))))
   ;; The zero-copy Intel chain: with the probe-verified GPU chain the
   ;; frames never touch system memory - hwmap hands ddagrab's D3D11
-  ;; frames to scale_qsv, sized from the monitor rect (2560x1600 Retina
+  ;; frames to vpp_qsv, sized from the monitor rect (2560x1600 Retina
   ;; -> 1728x1080), and no hwdownload appears.
   (let* ((monitor (list :output-idx 0 :width 2560 :height 1600))
          (args (build-ffmpeg-args :window-title "T" :output-path "out.mp4"
@@ -1850,7 +1867,12 @@ over the defaults. Restores the global config afterwards (it is bound)."
                 (not (search "hwdownload" filter))))
     (check "qsv chain scales on the GPU to literal capped dimensions"
            (and filter
-                (search "scale_qsv=w=1728:h=1080:format=nv12" filter)))
+                (search "vpp_qsv=w=1728:h=1080:format=nv12" filter)))
+    (check "qsv chain converts with the explicit bt709 matrix and tags"
+           (and filter
+                (search "out_color_matrix=bt709:out_range=tv" filter)
+                (search "setparams=color_primaries=bt709:color_trc=iec61966-2-1"
+                        filter)))
     (check "qsv chain still encodes with h264_qsv at the VBR target"
            (and (member "h264_qsv" args :test #'equal)
                 (member "-b:v" args :test #'equal)))
@@ -1943,6 +1965,11 @@ over the defaults. Restores the global config afterwards (it is bound)."
                 (member "h264_qsv" args :test #'equal)
                 (member "null" args :test #'equal)
                 (equal "-" (first (last args))))))
+  (check "gpu chain probe exercises the capture chain's color options"
+         (find-if (lambda (arg)
+                    (search "vpp_qsv=w=1280:h=720:format=nv12:out_color_matrix=bt709:out_range=tv"
+                            arg))
+                  (ephinea-ta-client::hw-gpu-chain-probe-args)))
   ;; The low-memory profile: an 8 GB machine records at a lower rate so
   ;; the capture tmp + remux + upload churn less of its file cache.
   (check "8 GB machines are low-memory, 16 GB and unknown are not"

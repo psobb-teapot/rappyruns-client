@@ -136,7 +136,7 @@ for yuv420p, and -2 keeps the aspect ratio with an even width.")
 ;;; fell from 7.2 s to 3.1 s of CPU time on an AMD iGPU, and the
 ;;; remaining cost is the shared download+scale, not the encoder).
 ;;; On Intel that remaining cost goes too: a second probe verifies the
-;;; zero-copy fullscreen chain (ddagrab -> hwmap -> scale_qsv ->
+;;; zero-copy fullscreen chain (ddagrab -> hwmap -> vpp_qsv ->
 ;;; h264_qsv) and captures then skip hwdownload + the CPU scale
 ;;; entirely (*HW-FULLSCREEN-GPU-CHAIN*). The field machine this
 ;;; targets - a 2-core Boot Camp MacBook Air recording a Retina
@@ -167,7 +167,7 @@ the probe - Smart App Control refusing the unsigned ffmpeg.exe with
 
 (defvar *hw-fullscreen-gpu-chain* nil
   "T when the startup probe verified the zero-copy fullscreen chain
-\(ddagrab -> hwmap -> scale_qsv -> h264_qsv) works on this machine.
+\(ddagrab -> hwmap -> vpp_qsv -> h264_qsv) works on this machine.
 The hwdownload fallback costs a full GPU->CPU frame copy plus a CPU
 scale every frame - a fixed tax a weak machine (the 2-core MacBook Air
 field report) pays on top of the game - so when the whole pipeline can
@@ -221,28 +221,52 @@ encoders fail to open (fast) without the matching GPU/driver."
 
 (defun hw-gpu-chain-probe-args ()
   "ffmpeg argv testing the zero-copy fullscreen chain: a few desktop
-frames through ddagrab -> hwmap -> scale_qsv -> h264_qsv into the null
+frames through ddagrab -> hwmap -> vpp_qsv -> h264_qsv into the null
 muxer. Exit 0 means the whole D3D11->QSV handoff works on this
 machine's driver stack; anything broken along it (hwmap derive, the
-VPP session, the encoder sharing the device) fails here at startup
-instead of failing a capture mid-quest."
+VPP session with its explicit bt709 conversion, the encoder sharing
+the device) fails here at startup instead of failing a capture
+mid-quest. vpp_qsv, not scale_qsv: only the full VPP filter exposes
+out_color_matrix/out_range, and the probe must exercise the exact
+options BUILD-FFMPEG-ARGS will use."
   (list "-hide_banner" "-loglevel" "error"
         "-f" "lavfi" "-i" "ddagrab=output_idx=0:framerate=30:draw_mouse=0"
         "-frames:v" "8"
-        "-vf" "hwmap=derive_device=qsv,scale_qsv=w=1280:h=720:format=nv12"
+        "-vf" "hwmap=derive_device=qsv,vpp_qsv=w=1280:h=720:format=nv12:out_color_matrix=bt709:out_range=tv"
         "-c:v" "h264_qsv"
         "-f" "null" "-"))
 
 (defun record-scale-dimensions (width height &optional (cap +record-max-height+))
   "Even target WxH for a capture of a WIDTHxHEIGHT source: HEIGHT
 capped at CAP (never upscaled), aspect kept. The GPU scale chain
-\(scale_qsv) gets literal dimensions - the monitor rect is known at
+\(vpp_qsv) gets literal dimensions - the monitor rect is known at
 capture start - where the CPU path lets ffmpeg evaluate its
 scale=-2:trunc(min(...)/2)*2 expression itself. Pure."
   (if (<= height cap)
       (values (* 2 (floor width 2)) (* 2 (floor height 2)))
       (values (* 2 (round (* width cap) (* 2 height)))
               (* 2 (floor cap 2)))))
+
+;;; Color. Every capture source hands over sRGB desktop pixels (BGRA),
+;;; and the RGB->YUV conversion used to happen implicitly - swscale's
+;;; BT.601 default, no matrix tag in the file. Browsers assume BT.709
+;;; for untagged HD, so hosted videos played with shifted hues (run
+;;; 1368: the orange lamps toward red, verified by decoding the same
+;;; frame both ways). Every chain now converts with an explicit
+;;; bt709/limited on the filter that does the conversion (a YUV format
+;;; right after it keeps an untagged auto-insert from sneaking back)
+;;; and stamps the remaining color properties with setparams, so the
+;;; encoder writes complete VUI metadata every player reads the same.
+
+(defparameter +record-color-tags-filter+
+  "setparams=color_primaries=bt709:color_trc=iec61966-2-1"
+  "Tail of every capture filter chain: what the pixels really are -
+sRGB transfer on bt709 primaries (desktop content; also what ddagrab
+already propagated on the hw paths). Matrix and range ride in from the
+converting filter's out_color_matrix/out_range. Frame properties, not
+codec-level -color_trc/-color_primaries flags: the encoders in the
+bundled ffmpeg take VUI from the frames and silently ignored the
+codec options (verified against ffmpeg 8).")
 
 (defun record-scale-filter ()
   ;; fast_bilinear, NOT lanczos: the grab -> scale -> encode loop is
@@ -252,7 +276,10 @@ scale=-2:trunc(min(...)/2)*2 expression itself. Pure."
   ;; i.e. 25 fps -> 18 fps with second-long stalls), which starved
   ;; the capture and desynced the audio. The sharpness difference at
   ;; a 1080p downscale is negligible for run verification.
-  (format nil "scale=-2:trunc(min(~d\\,ih)/2)*2:flags=fast_bilinear"
+  ;; out_color_matrix/out_range take effect when this scale is the
+  ;; RGB->YUV conversion, which the format filter right after it in
+  ;; BUILD-FFMPEG-ARGS guarantees (see the color note above).
+  (format nil "scale=-2:trunc(min(~d\\,ih)/2)*2:flags=fast_bilinear:out_color_matrix=bt709:out_range=tv"
           +record-max-height+))
 
 (defvar *audio-target-pid* nil
@@ -535,12 +562,16 @@ of who encodes - and the encoder gets nv12 frames via the filter
 chain, every vendor's native input. With GPU-CHAIN (QSV,
 probe-verified: *HW-FULLSCREEN-GPU-CHAIN*) on a cropless (fullscreen)
 capture, the frames never leave the GPU - hwmap hands ddagrab's D3D11
-frames to a scale_qsv sized from the monitor rect - dropping the
+frames to a vpp_qsv sized from the monitor rect - dropping the
 per-frame GPU->CPU copy and CPU scale that taxed weak machines; a
 cropped capture keeps the hwdownload path (no crop_qsv in the bundled
 build). With LOW-MEMORY (LOW-MEMORY-MACHINE-P), the bitrate/CRF drops
 to the low-memory profile so recording churns less of a small
-machine's file cache."
+machine's file cache. Every variant converts RGB->YUV with an explicit
+bt709 matrix at limited range and tags the frames
+\(+RECORD-COLOR-TAGS-FILTER+): the untagged BT.601 that swscale
+defaulted to played back through the browser's BT.709 assumption for
+HD, shifting every saturated color on the site (run 1368)."
   (append
    (list "-y" "-loglevel" "error"
          ;; Minimal probing: ffmpeg opens the audio pipe right after
@@ -583,27 +614,38 @@ machine's file cache."
              "-pix_fmt" "yuv420p"))
    (list "-vf"
          (let ((crop (and capture-monitor (getf capture-monitor :crop))))
-           (if (and capture-monitor (not crop) video-encoder gpu-chain)
-               (multiple-value-bind (width height)
-                   (record-scale-dimensions (getf capture-monitor :width)
-                                            (getf capture-monitor :height))
-                 (format nil "hwmap=derive_device=qsv,scale_qsv=w=~d:h=~d:format=nv12"
-                         width height))
-               (let ((base (cond
-                             (crop
-                              ;; The window's client area, cut out of the
-                              ;; monitor frame before the scale sees it.
-                              (destructuring-bind (x y width height) crop
-                                (format nil "hwdownload,format=bgra,crop=~d:~d:~d:~d,~a"
-                                        width height x y
-                                        (record-scale-filter))))
-                             (capture-monitor
-                              (format nil "hwdownload,format=bgra,~a"
-                                      (record-scale-filter)))
-                             (t (record-scale-filter)))))
-                 (if video-encoder
-                     (concatenate 'string base ",format=nv12")
-                     base)))))
+           (concatenate
+            'string
+            (if (and capture-monitor (not crop) video-encoder gpu-chain)
+                (multiple-value-bind (width height)
+                    (record-scale-dimensions (getf capture-monitor :width)
+                                             (getf capture-monitor :height))
+                  ;; vpp_qsv, not scale_qsv: same VPP underneath, but
+                  ;; only the full filter exposes the explicit color
+                  ;; conversion (see the color note; the chain probe
+                  ;; verifies these exact options).
+                  (format nil "hwmap=derive_device=qsv,vpp_qsv=w=~d:h=~d:format=nv12:out_color_matrix=bt709:out_range=tv"
+                          width height))
+                (let ((base (cond
+                              (crop
+                               ;; The window's client area, cut out of the
+                               ;; monitor frame before the scale sees it.
+                               (destructuring-bind (x y width height) crop
+                                 (format nil "hwdownload,format=bgra,crop=~d:~d:~d:~d,~a"
+                                         width height x y
+                                         (record-scale-filter))))
+                              (capture-monitor
+                               (format nil "hwdownload,format=bgra,~a"
+                                       (record-scale-filter)))
+                              (t (record-scale-filter)))))
+                  ;; The YUV format directly after the scale makes the
+                  ;; scale itself the RGB->YUV conversion, so its
+                  ;; out_color_matrix applies (the x264 path's -pix_fmt
+                  ;; alone would leave it to an untagged auto-insert).
+                  (concatenate 'string base
+                               (if video-encoder ",format=nv12" ",format=yuv420p"))))
+            ","
+            +record-color-tags-filter+)))
    (when audio-pipe
      ;; NO -af here, and in particular no loudnorm: its multi-second
      ;; lookahead makes the audio output lag the video permanently,

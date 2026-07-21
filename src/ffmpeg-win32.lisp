@@ -341,7 +341,7 @@ already running."
                               (eq state :spawn-failed))
                (when (equal encoder "h264_qsv")
                  (setf *hw-fullscreen-gpu-chain* (probe-hw-gpu-chain))
-                 (recording-log "gpu chain probe: fullscreen captures ~:[keep the hwdownload fallback~;stay on the GPU (hwmap -> scale_qsv)~]"
+                 (recording-log "gpu chain probe: fullscreen captures ~:[keep the hwdownload fallback~;stay on the GPU (hwmap -> vpp_qsv)~]"
                                 *hw-fullscreen-gpu-chain*))))))))
 
 ;;; Capture-monitor resolution. An exclusive-fullscreen PSOBB renders
