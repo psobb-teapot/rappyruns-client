@@ -1,5 +1,13 @@
 # Rappy Runs client
 
+> Buildable source of the Rappy Runs desktop client, MIT licensed.
+> Ready-to-run downloads live in
+> [rappyruns-client-releases](https://github.com/psobb-teapot/rappyruns-client-releases);
+> the site is at <https://rappyruns-production.up.railway.app>.
+> Development happens in the Rappy Runs monorepo and the client tree is
+> mirrored here (history included) on each release, so what you read
+> here is exactly what the shipped exe is built from.
+
 Desktop companion app for the Rappy Runs leaderboard site. It attaches to
 a running Ephinea PSOBB client (read-only, via `ReadProcessMemory`),
 detects quest starts and completions from quest registers / floor switches
