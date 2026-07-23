@@ -11,7 +11,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 
-$repo = "psobb-teapot/rappyruns-client-releases"
+$repo = "psobb-teapot/rappyruns-client"
 $lispworks = "C:\Program Files\LispWorks\lispworks-8-1-0-x64-windows.exe"
 
 if ($Version -notmatch '^v\d+\.\d+\.\d+$') { throw "Version must look like v1.2.3 (got: $Version)." }
@@ -35,6 +35,12 @@ $build = Start-Process -FilePath $lispworks `
 if ($build.ExitCode -ne 0) { throw "LispWorks build failed (exit $($build.ExitCode))." }
 
 & (Join-Path $PSScriptRoot "package.ps1")
+
+# Mirror the client source to the public repo BEFORE creating the
+# release, so the release tag lands on the exact commit the exe was
+# built from. Skipped in a public-repo checkout (no scripts/ there).
+$sync = Join-Path $PSScriptRoot "..\scripts\publish-client-source.ps1"
+if (Test-Path $sync) { & $sync }
 
 $zip = Join-Path $PSScriptRoot "dist\RappyRunsClient.zip"
 

@@ -1,8 +1,8 @@
 # Rappy Runs client
 
 > Buildable source of the Rappy Runs desktop client, MIT licensed.
-> Ready-to-run downloads live in
-> [rappyruns-client-releases](https://github.com/psobb-teapot/rappyruns-client-releases);
+> Ready-to-run downloads live on this repository's
+> [Releases page](https://github.com/psobb-teapot/rappyruns-client/releases);
 > the site is at <https://rappyruns-production.up.railway.app>.
 > Development happens in the Rappy Runs monorepo and the client tree is
 > mirrored here (history included) on each release, so what you read
@@ -230,15 +230,13 @@ release is all it takes - no site change or redeploy. Uses the [GitHub
 CLI](https://cli.github.com/) (`gh`); the web UI works too (create the
 release on the releases repo and upload the zip as an asset).
 
-One-time setup:
-
-```
-gh repo create psobb-teapot/rappyruns-client-releases --public \
-  --description "Binary releases of the Rappy Runs desktop client"
-```
-
-Give it a single README commit (releases need at least one commit); no
-source goes there.
+Releases live on the public source repo
+(`psobb-teapot/rappyruns-client`, the mirror this tree is published
+to), so every release tag lands on the exact source it was built
+from. The former binary-only repos (`rappyruns-client-releases`,
+`ephinea-ta-client-releases`) were folded into it by rename - GitHub
+redirects the old names for already-deployed updaters, so those names
+must never be reused.
 
 Per release: bump `client/VERSION` to the new `X.Y.Z` and commit it
 (release.ps1 refuses a tag that does not match, and deliver.lisp bakes
@@ -256,7 +254,7 @@ in a file (passing quotes on the `gh` command line is unreliable).
 
 The main asset must be named `RappyRunsClient.zip` - the site's
 download button points at
-`https://github.com/psobb-teapot/rappyruns-client-releases/releases/latest/download/RappyRunsClient.zip`
+`https://github.com/psobb-teapot/rappyruns-client/releases/latest/download/RappyRunsClient.zip`
 (override with `ETA_CLIENT_DOWNLOAD_URL` on the server).
 Pre-releases are excluded from `latest`, so they are safe for test
 builds.
