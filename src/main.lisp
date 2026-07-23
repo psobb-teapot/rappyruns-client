@@ -90,7 +90,9 @@ Aborted (mid-quest quit) runs are dropped when :submit-aborted is off."
                   runs
                   (remove-if (lambda (run) (getf run :aborted)) runs))))
     (dolist (run runs)
-      (enqueue-run! run))
+      ;; The sole stamp point for tracking-only mode: flags read here
+      ;; travel with the queued entry, immune to later settings changes.
+      (enqueue-run! (apply-tracking-mode run)))
     (when (and runs (config-value :auto-submit))
       (submit-queued!))))
 

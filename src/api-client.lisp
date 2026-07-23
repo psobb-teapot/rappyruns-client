@@ -463,6 +463,12 @@ hold nested location lists that become objects."
       (setf (gethash "death_count" object) (getf run :death-count)))
     (when (getf run :aborted)
       (setf (gethash "aborted" object) t))
+    ;; Tracking-only mode (APPLY-TRACKING-MODE): a record-only run,
+    ;; never on a leaderboard, optionally private to the submitter.
+    (when (getf run :unranked)
+      (setf (gethash "unranked" object) t))
+    (when (getf run :run-private)
+      (setf (gethash "private" object) t))
     ;; The submitter's own section id for this run. The players array
     ;; carries each member's section_id but no marker for which row is
     ;; the submitter, so send it separately.
@@ -486,9 +492,10 @@ hold nested location lists that become objects."
                                    entry))
                   'vector)
           (gethash "notes" object)
-          (format nil "Auto-submitted by ephinea-ta-client (~a~:[~;, aborted~])"
+          (format nil "Auto-submitted by ephinea-ta-client (~a~:[~;, aborted~]~:[~;, record only~])"
                   (getf run :quest-name (getf run :quest-slug))
-                  (getf run :aborted)))
+                  (getf run :aborted)
+                  (getf run :unranked)))
     (when (getf run :telemetry)
       (setf (gethash "telemetry" object)
             (telemetry-json (getf run :telemetry))))

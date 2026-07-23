@@ -682,7 +682,21 @@ publishes the Ephinea HP table pointer + scale double."
                     (gethash "display" (aref (gethash "weapons" telemetry) 0))))
       (check "payload event"
              (equal "death" (gethash "type"
-                                     (aref (gethash "events" telemetry) 0)))))))
+                                     (aref (gethash "events" telemetry) 0)))))
+    (check "payload omits unranked and private for a board run"
+           (and (null (gethash "unranked" parsed))
+                (null (gethash "private" parsed)))))
+  ;; Tracking-only mode's flags (APPLY-TRACKING-MODE) ride the payload.
+  (let ((parsed (com.inuoe.jzon:parse
+                 (ephinea-ta-client::run-json
+                  (list :quest-slug "ep1-test" :time-ms 60000 :party-size 1
+                        :players '() :unranked t :run-private t)))))
+    (check "payload unranked rides when stamped"
+           (eq t (gethash "unranked" parsed)))
+    (check "payload private rides with the tracking sub-setting"
+           (eq t (gethash "private" parsed)))
+    (check "payload notes mention record only"
+           (search "record only" (gethash "notes" parsed)))))
 
 ;;; ------------------------------------------------------------------
 ;;; Detector integration: telemetry rides along with completed runs
@@ -1620,6 +1634,20 @@ over the defaults. Restores the global config afterwards (it is bound)."
       (check "disabled recorder does nothing"
              (and (eq (recorder-state rec) :idle)
                   (null (mock-events backend))))))
+  ;; Tracking-only mode suppresses recording even though :record-enabled
+  ;; is a forced-on key.
+  (with-recording-config (:record-enabled t :tracking-only t)
+    (check "tracking-only mode turns recording off"
+           (not (ephinea-ta-client::recording-enabled-p)))
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (check "tracking-only recorder never starts a capture"
+             (and (eq (recorder-state rec) :idle)
+                  (null (mock-events backend))))))
+  (with-recording-config (:record-enabled t :tracking-only nil)
+    (check "recording stays on with tracking-only off"
+           (ephinea-ta-client::recording-enabled-p)))
   ;; Pure helpers.
   (check "sanitize-filename strips reserved characters"
          (string= "a-b-c-d" (sanitize-filename "a:b/c\"d")))
@@ -2837,6 +2865,13 @@ store functions that persist never touch the real %APPDATA% queue."
            (with-test-store ((list :status :submitted :server-id 1
                                    :video-path path :aborted t))
              (check "an aborted-only queue has no upload candidate"
+                    (null (ephinea-ta-client::upload-candidate :now now))))
+           ;; A recording can coexist with :unranked when tracking-only
+           ;; mode was switched on mid-quest; the server refuses its
+           ;; upload, so it must never become a candidate.
+           (with-test-store ((list :status :submitted :server-id 1
+                                   :video-path path :unranked t))
+             (check "an unranked run's recording never uploads"
                     (null (ephinea-ta-client::upload-candidate :now now)))))
       (ignore-errors (delete-file video))))
   ;; The upload URL carries the recorder's video offset when known.
@@ -2855,10 +2890,35 @@ store functions that persist never touch the real %APPDATA% queue."
          (not (ephinea-ta-client::entry-active-p
                (list :status :submitted :server-id 1 :video-path "v.mp4"
                      :aborted t))))
+  (check "an unranked run with a pending video is not active"
+         (not (ephinea-ta-client::entry-active-p
+               (list :status :submitted :server-id 1 :video-path "v.mp4"
+                     :unranked t))))
   (check "status label: aborted drafts say the recording stays local"
          (search "aborted" (ephinea-ta-client::run-status-label
                             (list :status :submitted :aborted t
                                   :video-path "v.mp4"))))
+  (check "status label: unranked drafts read record only"
+         (search "record only" (ephinea-ta-client::run-status-label
+                                (list :status :submitted :unranked t))))
+  ;; Tracking-only mode stamps runs at enqueue time (APPLY-TRACKING-MODE).
+  (let ((run (make-test-run)))
+    (check "tracking mode off leaves the run untouched"
+           (eq run (ephinea-ta-client::apply-tracking-mode
+                    run :tracking-only nil :tracking-private nil)))
+    (let ((stamped (ephinea-ta-client::apply-tracking-mode
+                    run :tracking-only t :tracking-private nil)))
+      (check "tracking mode stamps :unranked"
+             (and (getf stamped :unranked)
+                  (not (getf stamped :run-private)))))
+    (let ((stamped (ephinea-ta-client::apply-tracking-mode
+                    run :tracking-only t :tracking-private t)))
+      (check "the private sub-setting stamps :run-private too"
+             (and (getf stamped :unranked) (getf stamped :run-private)))))
+  (let ((aborted (make-test-run :aborted t)))
+    (check "aborted runs pass through tracking mode untouched"
+           (eq aborted (ephinea-ta-client::apply-tracking-mode
+                        aborted :tracking-only t :tracking-private t))))
   ;; Labels around the upload lifecycle.
   (let ((ephinea-ta-client::*upload-progress* (list 7 50 200)))
     (check "video label: in-flight upload shows its percent"
@@ -2910,12 +2970,14 @@ store functions that persist never touch the real %APPDATA% queue."
              (equal '("c.mp4" "a.mp4")
                     (evict files 600 :uploaded '("c.mp4"))))))
   ;; The queue drives which on-disk files are protected vs reclaimable.
-  (with-test-store ((list :status :submitted :server-id 3
+  (with-test-store ((list :status :submitted :server-id 4
                           :video-path "up.mp4" :video-attached t)
-                    (list :status :submitted :server-id 2
+                    (list :status :submitted :server-id 3
                           :video-path "pending.mp4")
+                    (list :status :submitted :server-id 2
+                          :video-path "aborted.mp4" :aborted t)
                     (list :status :submitted :server-id 1
-                          :video-path "aborted.mp4" :aborted t))
+                          :video-path "unranked.mp4" :unranked t))
     (multiple-value-bind (protected uploaded)
         (ephinea-ta-client::video-path-retention-sets)
       (check "a file awaiting upload is protected"
@@ -2924,7 +2986,10 @@ store functions that persist never touch the real %APPDATA% queue."
              (member "up.mp4" uploaded :test #'equal))
       (check "an aborted run's video is neither protected nor uploaded"
              (and (not (member "aborted.mp4" protected :test #'equal))
-                  (not (member "aborted.mp4" uploaded :test #'equal))))))
+                  (not (member "aborted.mp4" uploaded :test #'equal))))
+      (check "an unranked run's video is not protected either"
+             (and (not (member "unranked.mp4" protected :test #'equal))
+                  (not (member "unranked.mp4" uploaded :test #'equal))))))
   ;; End to end: the sweep reaps the uploaded file first, spares the
   ;; pending one, and reaches the unmatched file only when still over.
   (let* ((backend (make-instance 'mock-backend))

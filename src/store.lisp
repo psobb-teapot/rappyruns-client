@@ -28,11 +28,14 @@ awaiting (re)submission, and entries whose saved video has not been
 attached to their server draft yet (unless the upload was permanently
 rejected - those are as finished as a rejected run). Aborted runs never
 upload their recording (reset-farming would flood hosted storage with
-worthless footage), so a pending video does not keep them active."
+worthless footage), so a pending video does not keep them active;
+neither do unranked (record-only) runs, whose server drafts take no
+video at all."
   (or (member (getf entry :status) '(:queued :failed))
       (and (getf entry :video-path)
            (getf entry :server-id)
            (not (getf entry :aborted))
+           (not (getf entry :unranked))
            (not (getf entry :video-attached))
            (not (getf entry :upload-given-up)))))
 
@@ -106,6 +109,10 @@ line alone. NIL when the server sent no standing."
         (:queued (tr :status-queued))
         (:submitted (let ((base (cond ((getf entry :aborted)
                                        (tr :status-draft-aborted))
+                                      ;; A record-only run boards nothing, so
+                                      ;; no standing note ever arrives for it.
+                                      ((getf entry :unranked)
+                                       (tr :status-draft-unranked))
                                       ((not (getf entry :video-path))
                                        (tr :status-draft-add))
                                       ((and (config-value :video-upload)
@@ -175,6 +182,20 @@ added on the site. Returns the number of entries removed."
                        (setf *runs* kept))))))
     (save-queue!)
     removed))
+
+(defun apply-tracking-mode (run &key (tracking-only (config-value :tracking-only))
+                                     (tracking-private (config-value :tracking-private)))
+  "Stamp a completed detector RUN with tracking-only mode's flags before
+it is enqueued: :unranked (submitted as a record-only run, never on a
+leaderboard) and, when the private sub-setting is on, :run-private.
+Read once at enqueue time - like :submit-aborted - so a queued entry is
+never re-flagged by a later settings change. Aborted runs pass through
+untouched: they are already private, listless drafts."
+  (if (and tracking-only (not (getf run :aborted)))
+      (append (list :unranked t)
+              (when tracking-private (list :run-private t))
+              run)
+      run))
 
 (defun enqueue-run! (run)
   (let ((entry (list* :status :queued run)))
@@ -338,12 +359,16 @@ moderator decision frees a slot, so probing more often is pointless.")
 not backing off. Aborted runs are skipped: their recording stays on
 disk for the player, but a cancelled attempt has no review value and
 heavy reset-farming (100 laps a day happen) would swamp hosted storage.
-An entry whose file vanished from disk (the user deleted it) gives up
-on the spot and the scan moves on."
+Unranked (record-only) runs are skipped too - the server refuses their
+uploads; an entry only carries both :unranked and a :video-path when
+tracking-only mode was switched on mid-quest. An entry whose file
+vanished from disk (the user deleted it) gives up on the spot and the
+scan moves on."
   (dolist (entry (reverse (queued-runs)))
     (when (and (getf entry :video-path)
                (getf entry :server-id)
                (not (getf entry :aborted))
+               (not (getf entry :unranked))
                (not (getf entry :video-attached))
                (not (getf entry :upload-given-up))
                (let ((next (getf entry :next-upload-at)))
@@ -360,9 +385,10 @@ retention must never take them - and UPLOADED, files the site already
 holds, which are the first to reclaim. Returns (values protected
 uploaded). A file on disk matching no queue entry (an old, trimmed run)
 lands in neither and is reaped in the sweep's middle tier. The
-protected predicate mirrors UPLOAD-CANDIDATE's eligibility: aborted and
-given-up entries never upload, so their videos are not protected -
-reset-farm footage is exactly what the budget is meant to reclaim."
+protected predicate mirrors UPLOAD-CANDIDATE's eligibility: aborted,
+unranked and given-up entries never upload, so their videos are not
+protected - reset-farm footage is exactly what the budget is meant to
+reclaim."
   (let ((protected '())
         (uploaded '()))
     (dolist (entry (queued-runs))
@@ -372,6 +398,7 @@ reset-farm footage is exactly what the budget is meant to reclaim."
             ((getf entry :video-attached) (push path uploaded))
             ((and (getf entry :server-id)
                   (not (getf entry :aborted))
+                  (not (getf entry :unranked))
                   (not (getf entry :upload-given-up)))
              (push path protected))))))
     (values protected uploaded)))

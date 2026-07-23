@@ -943,6 +943,13 @@ tmp is renamed onto it - and hand it to ON-KEEP."
   (reset-recorder recorder)
   (setf (recorder-last-error recorder) message))
 
+(defun recording-enabled-p ()
+  "Whether a new quest should start a capture. Tracking-only mode
+\(record-only farming measurement) suppresses recording entirely,
+overriding the forced-on :record-enabled."
+  (and (config-value :record-enabled)
+       (not (config-value :tracking-only))))
+
 (defun recorder-step (recorder detector-state completed-runs window-title)
   "Feed one poll frame. COMPLETED-RUNS is DETECTOR-STEP's return value.
 Runs are accumulated BEFORE the stop check because the detector flips
@@ -958,10 +965,14 @@ to :idle on the very frame the full clear completes."
     (:idle
      ;; Edge-triggered: only a fresh :idle -> :in-quest transition starts
      ;; a capture, so a failed start or a mid-run toggle never produces a
-     ;; partial video of a valid run.
+     ;; partial video of a valid run. Flipping tracking-only mode
+     ;; mid-quest follows the same rule: turning it off never starts a
+     ;; capture for the quest in progress, and turning it on lets a
+     ;; running capture finish (the entry's :unranked flag stops its
+     ;; upload instead).
      (when (and (eq detector-state :in-quest)
                 (not (eq (recorder-last-detector-state recorder) :in-quest))
-                (config-value :record-enabled)
+                (recording-enabled-p)
                 window-title)
        (start-recording recorder window-title)))
     (:recording

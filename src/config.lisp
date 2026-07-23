@@ -20,6 +20,8 @@
         :completion-sound nil   ; forced (hidden): no completion sound
         :trigger-log nil
         :record-enabled t       ; forced (hidden): always record quest videos
+        :tracking-only nil  ; record-only mode for farming-efficiency tracking: no recording/upload, runs submit as unranked (never on a leaderboard); overrides :record-enabled (see RECORDING-ENABLED-P)
+        :tracking-private nil ; submit tracking-only runs private (owner + moderators only); meaningless while :tracking-only is off
         :record-audio t     ; game-only capture (process loopback; see audio-win32)
         :video-upload t         ; forced (hidden): always upload saved recordings
         :record-max-total-gb 20  ; cap the recordings folder; the SOLE reaper of uploaded videos now (immediate delete-after-upload was dropped - it left corrupt/discarded uploads unrecoverable). Oldest+uploaded-first past this (0/blank = unlimited). See APPLY-RECORDING-RETENTION.

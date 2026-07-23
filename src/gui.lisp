@@ -151,6 +151,27 @@ who cannot create rules, never see it."
                          :callback 'register-quest-rule-callback
                          :callback-type :interface
                          :font *ui-font*)
+   ;; Tracking-only mode: no recording or upload, runs submit as
+   ;; record-only (never on a leaderboard) - for players who only
+   ;; measure their farming pace. The private sub-toggle only means
+   ;; anything while the mode is on, so it enables/disables with it.
+   (tracking-only-check capi:check-button
+                        :text (tr :tracking-only-label)
+                        :selected (config-value :tracking-only)
+                        :selection-callback 'toggle-tracking-only-callback
+                        :retract-callback 'toggle-tracking-only-callback
+                        :callback-type :interface
+                        :font *ui-font*
+                        :accessor tracking-only-check)
+   (tracking-private-check capi:check-button
+                           :text (tr :tracking-private-label)
+                           :selected (config-value :tracking-private)
+                           :enabled (config-value :tracking-only)
+                           :selection-callback 'toggle-tracking-private-callback
+                           :retract-callback 'toggle-tracking-private-callback
+                           :callback-type :interface
+                           :font *ui-font*
+                           :accessor tracking-private-check)
    ;; Recording and uploading are fixed behaviors now (see
    ;; +FORCED-CONFIG-KEYS+); only the game-audio toggle remains.
    (record-audio-check capi:check-button
@@ -306,7 +327,8 @@ who cannot create rules, never see it."
    (recording-row capi:row-layout '(record-dir-display record-dir-button)
                   :adjust :center)
    (recording-group capi:column-layout
-                    '(record-audio-check record-storage-note
+                    '(tracking-only-check tracking-private-check
+                      record-audio-check record-storage-note
                       video-retention-note auto-publish-check recording-row)
                     :title (tr :group-recording) :title-position :frame
                     :title-font *ui-font* :adjust :left)
@@ -1090,6 +1112,24 @@ room/enemy as the pre-selected clear condition."
 recording start, so it takes effect from the next quest."
   (setf (config-value :record-audio)
         (capi:button-selected (record-audio-check interface)))
+  (save-config!))
+
+(defun toggle-tracking-only-callback (interface)
+  "Apply tracking-only mode immediately. Read at recording start and at
+quest completion (APPLY-TRACKING-MODE), so it takes effect from the
+next quest; a capture already running finishes normally. The private
+sub-toggle rides along: it is meaningless while the mode is off."
+  (let ((enabled (capi:button-selected (tracking-only-check interface))))
+    (setf (config-value :tracking-only) enabled)
+    (save-config!)
+    (setf (capi:simple-pane-enabled (tracking-private-check interface))
+          enabled)))
+
+(defun toggle-tracking-private-callback (interface)
+  "Apply the record-only privacy toggle immediately; stamps runs at
+quest completion like the mode itself."
+  (setf (config-value :tracking-private)
+        (capi:button-selected (tracking-private-check interface)))
   (save-config!))
 
 ;; The cross-thread update helpers use the -IF-ALIVE variant: the

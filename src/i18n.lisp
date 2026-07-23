@@ -164,6 +164,12 @@
     :save-button
     ("Save & verify"
      "保存して確認")
+    :tracking-only-label
+    ("Tracking-only mode (no recording; times are never ranked)"
+     "録画なし(記録専用)モード (録画せず、記録はランキング対象外)")
+    :tracking-private-label
+    ("Keep record-only times private (you and moderators only)"
+     "記録専用の記録を非公開にする (本人とモデレーターのみ)")
     :record-audio-label
     ("Record game audio (only the game is heard, not Discord etc.)"
      "ゲーム音声を録音する (ゲームの音のみ。Discord などの音は入りません)")
@@ -529,6 +535,9 @@
     :status-draft-aborted
     ("aborted - private, recording kept locally"
      "中断 - 非公開・録画はローカル保存のみ")
+    :status-draft-unranked
+    ("submitted (record only, not ranked)"
+     "送信済み (記録専用・ランキング対象外)")
     :standing-pb
     ("PB! -~a"
      "自己ベスト更新! -~a")
