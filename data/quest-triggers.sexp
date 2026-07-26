@@ -217,6 +217,13 @@
   :names ("The Military Strikes Back") :start (:warp-in) :end (:register 121))
  (:slug "ep2-twilight-sanctuary" :episode 2 :number 1820
   :names ("Twilight Sanctuary") :start (:register 50) :end (:register 254))
+ ;; ------------------------------------------------ Episode 2 - Solo Only
+ ;; A New Hope has no full-clear entry yet (its end trigger is unknown -
+ ;; needs a logged full clear). The Gal Gryphon rule ends when the
+ ;; second of the two sequentially spawning Gal Gryphons dies; entity
+ ;; ids from a 2026-07-26 trigger-log run.
+ (:slug "ep2-a-new-hope-gal-gryphon" :episode 2
+  :names ("A New Hope") :start (:warp-in) :end (:monster-dead 5475))
  ;; ------------------------------------------------ Episode 2 - Event
  (:slug "ep2-christmas-fiasco" :episode 2 :number 901
   :names ("Christmas Fiasco" "Christmas Fiasco Episode 2")
