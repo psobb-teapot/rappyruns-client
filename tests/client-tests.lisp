@@ -724,10 +724,11 @@ publishes the Ephinea HP table pointer + scale double."
 ;;; Detection state machine (driven through mock memory images)
 ;;; ------------------------------------------------------------------
 
-(defun ttf-reader (&key (start 0) (end 0) (seg 0) (pb 0.0)
+(defun ttf-reader (&key (start 0) (end 0) (seg 0) (pb 0.0) warping
                         (difficulty 0) hp-scale)
   (make-game-regions
-   :players (list (make-player-block :name "Ryu" :class-id 2 :floor 1 :pb pb)
+   :players (list (make-player-block :name "Ryu" :class-id 2 :floor 1 :pb pb
+                                     :warping warping)
                   (make-player-block :name "Elly" :class-id 8 :floor 1))
    :quest-name "Towards the Future" :quest-number 118
    :difficulty difficulty :hp-scale hp-scale
@@ -787,14 +788,37 @@ publishes the Ephinea HP table pointer + scale double."
     (sleep 0.02)
     (let ((run (first (step-with detector (ttf-reader :start 1 :end 1 :pb 80.0)))))
       (check "charged PB at start alone stays No PB" (null (getf run :pb)))))
-  ;; Actually discharging a Photon Blast mid-run (gauge drop > 50) is PB.
+  ;; Actually discharging a Photon Blast mid-run (a full gauge
+  ;; collapsing) is PB.
   (let ((detector (make-detector)))
     (step-with detector (lobby-reader))
     (step-with detector (ttf-reader :start 1))
-    (step-with detector (ttf-reader :start 1 :pb 90.0))
+    (step-with detector (ttf-reader :start 1 :pb 100.0))
     (step-with detector (ttf-reader :start 1 :pb 2.0))
     (let ((run (first (step-with detector (ttf-reader :start 1 :end 1)))))
       (check "PB discharge -> PB category" (eq t (getf run :pb)))))
+  ;; A Pioneer 2 telepipe trip zeroes the gauge in-game. A partial
+  ;; charge collapsing is therefore a warp, never a Blast (a Blast
+  ;; needs 100) - the run 1717 miscategorization.
+  (let ((detector (make-detector)))
+    (step-with detector (lobby-reader))
+    (step-with detector (ttf-reader :start 1))
+    (step-with detector (ttf-reader :start 1 :pb 60.0))
+    (step-with detector (ttf-reader :start 1 :pb 0.0))
+    (let ((run (first (step-with detector (ttf-reader :start 1 :end 1)))))
+      (check "partial gauge zeroed (telepipe) stays No PB"
+             (null (getf run :pb)))))
+  ;; Even a full gauge zeroed across a warp is the warp's reset, not a
+  ;; discharge - the warp frames drop the baseline instead of comparing.
+  (let ((detector (make-detector)))
+    (step-with detector (lobby-reader))
+    (step-with detector (ttf-reader :start 1))
+    (step-with detector (ttf-reader :start 1 :pb 100.0))
+    (step-with detector (ttf-reader :start 1 :pb 100.0 :warping t))
+    (step-with detector (ttf-reader :start 1 :pb 0.0))
+    (let ((run (first (step-with detector (ttf-reader :start 1 :end 1)))))
+      (check "full gauge zeroed across a warp stays No PB"
+             (null (getf run :pb)))))
   ;; A quest run that never discharges is No PB, even with Shifta up
   ;; (the segment tests below and this one cover the common case).
   (let ((detector (make-detector)))

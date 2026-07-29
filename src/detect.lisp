@@ -110,14 +110,25 @@ with Shifta up - so a run is No PB until a discharge is seen."
   nil)
 
 (defun update-pb-tracking (detector snapshot)
-  "A large single-frame drop of the PB gauge means a Photon Blast was used."
+  "A Photon Blast discharge is a full gauge collapsing in one frame.
+Only a near-full previous reading counts: a Blast needs 100 to cast,
+and the game also zeroes the gauge on a Pioneer 2 telepipe trip, so a
+partially charged gauge dropping to 0 is a warp, not a Blast (run 1717
+was miscategorized that way). While the player is warping the baseline
+is dropped rather than compared - a full gauge zeroed by the warp
+itself must not count either, whichever frame the zero lands on."
   (let* ((me (snapshot-my-player snapshot))
          (pb (and me (getf me :pb))))
-    (when pb
-      (let ((previous (detector-my-pb detector)))
-        (when (and previous (> (- previous pb) 50.0))
-          (setf (detector-pb-flag detector) t)))
-      (setf (detector-my-pb detector) pb))))
+    (cond ((null pb))
+          ((getf me :warping)
+           (setf (detector-my-pb detector) nil))
+          (t
+           (let ((previous (detector-my-pb detector)))
+             (when (and previous
+                        (>= previous 99.0)
+                        (> (- previous pb) 50.0))
+               (setf (detector-pb-flag detector) t)))
+           (setf (detector-my-pb detector) pb)))))
 
 (defun reset-detector (detector)
   (setf (detector-state detector) :idle
