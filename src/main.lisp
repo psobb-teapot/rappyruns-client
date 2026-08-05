@@ -94,7 +94,12 @@ Aborted (mid-quest quit) runs are dropped when :submit-aborted is off."
       ;; travel with the queued entry, immune to later settings changes.
       (enqueue-run! (apply-tracking-mode run)))
     (when (and runs (config-value :auto-submit))
-      (submit-queued!))))
+      (let ((results (submit-queued!)))
+        ;; The submit reply's board standing, celebrated the moment it
+        ;; lands (a retried entry that finally made it through counts
+        ;; too - its standing arrives now).
+        (notify-standing-toasts results)
+        results))))
 
 #+lispworks
 (defun run-completion-sounds (runs)

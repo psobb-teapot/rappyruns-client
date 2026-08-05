@@ -846,12 +846,13 @@ the game are recorded too. Once per process: the condition is a
 machine/window property, and every capture of the session would repeat
 it.")
 
-(defun notify-user (title text &key (icon :warning))
+(defun notify-user (title text &key (icon :warning) url)
   "Tray balloon when the tray code is loaded (tray-win32.lisp,
 LispWorks-only, loads after this file) - a silent no-op on SBCL test
-runs, where TRAY-NOTIFY is never defined."
+runs, where TRAY-NOTIFY is never defined. URL, when given, is opened
+by a click on the balloon (celebration toasts point at the run page)."
   (when (fboundp 'tray-notify)
-    (ignore-errors (funcall 'tray-notify title text :icon icon))))
+    (ignore-errors (funcall 'tray-notify title text :icon icon :url url))))
 
 (defun start-recording (recorder window-title)
   ;; A :SPAWN-FAILED probe verdict is provisional (see the defvar):

@@ -295,6 +295,10 @@
 (defconstant +niif-info+ 1)
 (defconstant +niif-warning+ 2)
 
+;; Balloon click event, delivered through the icon's callback message
+;; like the mouse events (pre-v4 lParam carries the event directly).
+(defconstant +nin-balloon-userclick+ #x0405)
+
 (defconstant +mf-string+ 0)
 (defconstant +tpm-leftalign+ 0)
 (defconstant +tpm-rightbutton+ #x0002)
@@ -329,6 +333,12 @@ so the mutex is held (closing it would release the instance lock).")
   "The RegisterWindowMessage(\"TaskbarCreated\") id, so the icon is
 re-added when Explorer restarts.")
 
+(defvar *balloon-url* nil
+  "URL a click on the current balloon notification opens, or NIL to
+restore the main window instead (the right response to a warning).
+Set by every TRAY-NOTIFY - Windows shows one balloon at a time, so
+only the latest one's target matters.")
+
 ;;; --- CAPI-side actions (marshalled onto the interface process) ------
 
 (defun tray-show-main-window ()
@@ -344,6 +354,14 @@ re-added when Explorer restarts.")
 (defun tray-quit ()
   "Quit the whole app from the tray menu (defined in main.lisp)."
   (funcall 'quit-app))
+
+(defun tray-balloon-clicked ()
+  "A celebration toast opens its run's page in the browser; a plain
+warning balloon restores the main window."
+  (let ((url *balloon-url*))
+    (if url
+        (open-in-browser url)
+        (tray-show-main-window))))
 
 ;;; --- Window procedure -----------------------------------------------
 
@@ -384,14 +402,17 @@ strings are our own UI text, all inside the BMP (one UTF-16 unit)."
                          (tr :tray-tooltip) 127)
       (%shell-notify-icon +nim-add+ nid))))
 
-(defun tray-notify (title text &key (icon :warning))
+(defun tray-notify (title text &key (icon :warning) url)
   "Balloon (toast) notification from the tray icon. Best-effort from
 any thread - Shell_NotifyIcon is not bound to the icon's window thread,
 and no tray (icon not up yet, or the thread died) just means silence.
 With NIF_INFO alone the API reads szInfo/szInfoTitle/dwInfoFlags plus
-uTimeout, so those are the only members set beyond the identity."
+uTimeout, so those are the only members set beyond the identity.
+URL sets the balloon's click target (see *BALLOON-URL*); NIL resets it
+so a warning's click falls back to raising the main window."
   (let ((hwnd *tray-hwnd*))
     (when hwnd
+      (setf *balloon-url* url)
       (ignore-errors
         (fli:with-dynamic-foreign-objects ()
           (let ((nid (fli:allocate-dynamic-foreign-object
@@ -460,6 +481,8 @@ documented way to keep a tray menu from sticking open."
      (let ((event (logand lparam #xffff)))
        (cond ((= event +wm-lbuttondblclk+)
               (ignore-errors (tray-show-main-window)))
+             ((= event +nin-balloon-userclick+)
+              (ignore-errors (tray-balloon-clicked)))
              ((or (= event +wm-rbuttonup+) (= event +wm-contextmenu+))
               (ignore-errors (tray-popup-menu hwnd)))))
      0)

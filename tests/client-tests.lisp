@@ -2495,6 +2495,49 @@ store functions that persist never touch the real %APPDATA% queue."
            (and note (search "first run" note) (not (search "#" note)))))
   (check "run-standing-note is NIL when the server sent no standing"
          (null (ephinea-ta-client::run-standing-note (list :status :submitted))))
+  ;; Celebration toast: only genuinely good news makes a balloon; the
+  ;; rest stays a quiet line in the list.
+  (check "standing-toast celebrates a provisional #1 over another party"
+         (multiple-value-bind (title text)
+             (ephinea-ta-client::standing-toast
+              (list :quest-name "Lost HEAT SWORD" :time-ms 599123
+                    :standing-rank 1 :standing-parties 5
+                    :standing-delta-ms -3210))
+           (and (search "#1" title)
+                (search "Lost HEAT SWORD" text)
+                (search "9:59.123" text))))
+  (check "standing-toast celebrates a top-3 entry that beat somebody"
+         (multiple-value-bind (title text)
+             (ephinea-ta-client::standing-toast
+              (list :quest-name "Q" :time-ms 60000
+                    :standing-rank 3 :standing-parties 8))
+           (and (search "#3" title) (search "of 8" text))))
+  (check "standing-toast stays quiet in last place, even inside the top 3"
+         (null (ephinea-ta-client::standing-toast
+                (list :quest-name "Q" :time-ms 60000
+                      :standing-rank 3 :standing-parties 3
+                      :standing-delta-ms 1500))))
+  (check "standing-toast on a solo board celebrates the PB, never '#1 of 1'"
+         (multiple-value-bind (title text)
+             (ephinea-ta-client::standing-toast
+              (list :quest-name "Q" :time-ms 60000
+                    :standing-rank 1 :standing-parties 1
+                    :standing-delta-ms -3210))
+           (and (not (search "#" title)) (search "3.21s" text))))
+  (check "standing-toast marks a first run on a solo board without a rank"
+         (multiple-value-bind (title text)
+             (ephinea-ta-client::standing-toast
+              (list :quest-name "Q" :time-ms 60000
+                    :standing-rank 1 :standing-parties 1))
+           (and (search "First" title) (not (search "#" text)))))
+  (check "standing-toast says nothing when behind your own best mid-board"
+         (null (ephinea-ta-client::standing-toast
+                (list :quest-name "Q" :time-ms 60000
+                      :standing-rank 5 :standing-parties 8
+                      :standing-delta-ms 1500))))
+  (check "standing-toast is NIL without a standing"
+         (null (ephinea-ta-client::standing-toast
+                (list :quest-name "Q" :time-ms 60000 :status :submitted))))
   (check "the submitted status label appends the standing note"
          (with-recording-config (:video-upload t)
            (let ((label (ephinea-ta-client::run-status-label

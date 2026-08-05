@@ -378,6 +378,9 @@
     :start-minimized-label
     ("Start minimized to the tray"
      "起動時にトレイに最小化して起動する")
+    :rank-toast-label
+    ("Desktop notification when a run ranks up (provisional #1 / top 3 / PB)"
+     "ランクイン時にデスクトップ通知を表示 (暫定1位・トップ3・自己ベスト)")
     :tray-tooltip
     ("Rappy Runs Client"
      "Rappy Runs クライアント")
@@ -541,6 +544,36 @@
     :standing-rank
     ("prov. #~d of ~d"
      "暫定~d/~d位")
+    ;; Celebration toasts (STANDING-TOAST). BMP characters only: the
+    ;; tray balloon copies one UTF-16 unit per character
+    ;; (COPY-TRAY-WSTRING), so no emoji.
+    :toast-rank1-title
+    ("Provisional #1!"
+     "暫定1位です!")
+    :toast-rank1-text
+    ("~a ~a - the current top time on this board. Click to open the run."
+     "~a ~a - このボードの現在のトップタイムです。クリックで記録ページを開きます。")
+    :toast-rank-title
+    ("Provisional #~d!"
+     "暫定~d位にランクイン!")
+    ;; The third argument is the pre-formatted :standing-rank string -
+    ;; the i18n test formats every entry with three arguments, so no
+    ;; entry may take more.
+    :toast-rank-text
+    ("~a ~a - ~a on this board. Click to open the run."
+     "~a ~a - このボードで~aです。クリックで記録ページを開きます。")
+    :toast-pb-title
+    ("New personal best!"
+     "自己ベスト更新!")
+    :toast-pb-text
+    ("~a ~a - ~a faster than your previous best. Click to open the run."
+     "~a ~a - 自己ベストを~a更新しました。クリックで記録ページを開きます。")
+    :toast-first-title
+    ("First run on this board!"
+     "このボードに初記録!")
+    :toast-first-text
+    ("~a ~a - your first time on this board. Click to open the run."
+     "~a ~a - このボードへの最初の記録です。クリックで記録ページを開きます。")
     :status-duplicate
     ("duplicate (already on server)"
      "重複 (サーバーに登録済み)")

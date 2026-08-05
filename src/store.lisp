@@ -87,6 +87,54 @@ line alone. NIL when the server sent no standing."
             (format nil "~a · ~a" pb-part rank-part)
             pb-part)))))
 
+(defun standing-toast (entry)
+  "Title and text (VALUES title text) for the desktop toast celebrating
+a freshly submitted ENTRY's board standing, or NIL when there is nothing
+to celebrate. Fired the moment the submit reply lands - the emotional
+peak, right after the quest - so it only ever speaks on genuinely good
+news: provisional #1, a top-3 entry that beat somebody, a personal best,
+or a first run on the board. Everything else stays the quiet line in the
+run list (RUN-STANDING-NOTE); a grinder lapping the same quest must not
+hear a balloon every lap. Ranks always read 'provisional': the run has
+not passed video review yet and the site marks unverified times."
+  (let ((rank (getf entry :standing-rank))
+        (parties (getf entry :standing-parties)))
+    (when (and rank parties)
+      (let ((delta (getf entry :standing-delta-ms))
+            (quest (or (getf entry :quest-name) (getf entry :quest-slug)))
+            (time (format-run-time (getf entry :time-ms))))
+        (cond
+          ;; '#1 of 1' is noise (RUN-STANDING-NOTE's rule): a solo board
+          ;; celebrates only PBs and firsts, below.
+          ((and (= rank 1) (>= parties 2))
+           (values (tr :toast-rank1-title)
+                   (tr :toast-rank1-text quest time)))
+          ;; A top-3 entry that actually beat somebody - #3 of 3 is last
+          ;; place, not a podium.
+          ((and (<= rank 3) (< rank parties))
+           (values (tr :toast-rank-title rank)
+                   (tr :toast-rank-text quest time
+                       (tr :standing-rank rank parties))))
+          ((and delta (minusp delta))
+           (values (tr :toast-pb-title)
+                   (tr :toast-pb-text quest time
+                       (format-improvement-ms (- delta)))))
+          ;; No delta = no prior time on this board.
+          ((null delta)
+           (values (tr :toast-first-title)
+                   (tr :toast-first-text quest time))))))))
+
+(defun notify-standing-toasts (entries)
+  "Desktop toast for each just-submitted entry whose standing deserves
+one (STANDING-TOAST), unless the :rank-toast setting is off. Clicking
+the balloon opens the run's page (tray-win32's balloon-click handler).
+Best-effort: NOTIFY-USER is a silent no-op without the tray."
+  (when (config-value :rank-toast)
+    (dolist (entry entries)
+      (multiple-value-bind (title text) (standing-toast entry)
+        (when title
+          (notify-user title text :icon :info :url (getf entry :url)))))))
+
 (defun run-status-label (entry)
   (if (getf entry :video-attached)
       (cond

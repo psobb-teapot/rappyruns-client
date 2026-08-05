@@ -250,6 +250,17 @@ who cannot create rules, never see it."
                           :callback-type :interface
                           :font *ui-font*
                           :accessor start-minimized-check)
+   ;; Celebration toast for a fresh submission's board standing
+   ;; (STANDING-TOAST); it fires from the tray, so it lives with the
+   ;; resident-app settings.
+   (rank-toast-check capi:check-button
+                     :text (tr :rank-toast-label)
+                     :selected (config-value :rank-toast)
+                     :selection-callback 'toggle-rank-toast-callback
+                     :retract-callback 'toggle-rank-toast-callback
+                     :callback-type :interface
+                     :font *ui-font*
+                     :accessor rank-toast-check)
    (record-dir-display capi:title-pane
                        :text (record-dir-label)
                        :font *ui-font*
@@ -338,7 +349,8 @@ who cannot create rules, never see it."
                   :title (tr :group-updates) :title-position :frame
                   :title-font *ui-font* :adjust :left)
    (tray-group capi:column-layout
-               '(close-to-tray-check autostart-check start-minimized-check)
+               '(close-to-tray-check autostart-check start-minimized-check
+                 rank-toast-check)
                :title (tr :group-tray) :title-position :frame
                :title-font *ui-font* :adjust :left)
    ;; The 'register rule' button authors quest rules and is moderator-only
@@ -1071,6 +1083,13 @@ sub-toggle rides along: it is meaningless while the mode is off."
 quest completion like the mode itself."
   (setf (config-value :tracking-private)
         (capi:button-selected (tracking-private-check interface)))
+  (save-config!))
+
+(defun toggle-rank-toast-callback (interface)
+  "Apply the celebration-toast toggle immediately; read at each
+submission (NOTIFY-STANDING-TOASTS)."
+  (setf (config-value :rank-toast)
+        (capi:button-selected (rank-toast-check interface)))
   (save-config!))
 
 ;; The cross-thread update helpers use the -IF-ALIVE variant: the
