@@ -131,6 +131,7 @@ audio tail before \"q\" stops it reading.")
   stdin-write   ; our end of the child's stdin pipe
   pid
   audio         ; audio-session (audio-win32.lisp) or NIL
+  wgc           ; wgc-session (wgc-win32.lisp) feeding the video, or NIL
   stderr-path)  ; file the child's stderr goes to, or NIL
 
 (defun create-stdin-pipe ()
@@ -669,8 +670,13 @@ while a probe is running, while the verdict already matches the
 window's identity (any result - :BLACK and :FAILED are properties of
 the window, not the moment), or within the cooldown. Called from the
 poll loop only while attached and not busy (a probe's window BitBlt
-costs frame time better left to the game during a quest)."
+costs frame time better left to the game during a quest). Also a no-op
+on WGC machines: windowed captures go through the WGC session there
+\(BACKEND-WGC-CAPTURE), so the gdigrab verdict would never be consulted
+and the probe's ffmpeg spawns would be pure waste."
   (unless (or (null window-title)
+              (and (wgc-available-p)
+                   (not (config-value :wgc-disable)))
               (and *gdigrab-probe-process*
                    (mp:process-alive-p *gdigrab-probe-process*)))
     (multiple-value-bind (hwnd-address size) (psobb-window-probe-key)
@@ -781,42 +787,10 @@ run 949), and the log is all a remote diagnosis has to go on."
 
 (defclass win32-ffmpeg-backend () ())
 
-(defparameter +recording-log-max-bytes+ (* 1024 1024)
-  "Rotation threshold for the recording log. The log is append-only
-across sessions and now also receives ffmpeg stderr transcripts, so an
-unrotated file would grow without bound; one file of history plus a
-.old generation is plenty for diagnostics.")
-
-(defun rotate-recording-log ()
-  "Move an oversized recording log aside (overwriting the previous
-generation) so the live file stays small enough to read whole."
-  (let ((path (recording-log-path)))
-    (when (> (or (ignore-errors
-                   (with-open-file (s path :element-type '(unsigned-byte 8))
-                     (file-length s)))
-                 0)
-             +recording-log-max-bytes+)
-      (uiop:rename-file-overwriting-target
-       path (make-pathname :type "old" :defaults path)))))
-
-(defun recording-log (fmt &rest args)
-  "Append a timestamped line to %TEMP%\\ephinea-ta-recording.log. The
-GUI can only show a one-line error label; capture-start failures in
-the field (e.g. \"pointer out of memory bounds\" right after a game
-crash, 2026-07-06) need the full story to be diagnosable after the
-fact. Never signals."
-  (ignore-errors
-    (rotate-recording-log)
-    (with-open-file (s (recording-log-path)
-                       :direction :output :if-exists :append
-                       :if-does-not-exist :create
-                       :external-format :utf-8)
-      (multiple-value-bind (sec min hour day month)
-          (decode-universal-time (get-universal-time))
-        (format s "~2,'0d-~2,'0d ~2,'0d:~2,'0d:~2,'0d "
-                month day hour min sec))
-      (apply #'format s fmt args)
-      (terpri s))))
+;; +RECORDING-LOG-MAX-BYTES+ / ROTATE-RECORDING-LOG / RECORDING-LOG
+;; live in recording.lisp (next to RECORDING-LOG-PATH): the WGC capture
+;; (wgc-win32.lisp), which loads before this file, logs through them
+;; too.
 
 (defun log-session-info ()
   "One line of machine context at startup, so any recording-log tail
@@ -840,9 +814,58 @@ client build and hardware class it came from."
                      (getf monitor :crop)))
     monitor))
 
+(defun window-rect-of (hwnd)
+  "(left top right bottom) of HWND per GetWindowRect, or NIL."
+  (fli:with-dynamic-foreign-objects ((rect win-rect))
+    (when (%get-window-rect hwnd rect)
+      (rect-list rect))))
+
+(defun window-covers-monitor-p (hwnd)
+  "T when HWND spans its whole monitor (fullscreen/borderless), NIL
+when confidently windowed - and T when the queries fail, because the
+caller treats \"windowed\" as license for the WGC path and an unknown
+window state must keep the battle-tested monitor capture instead."
+  (fli:with-dynamic-foreign-objects ((rect win-rect)
+                                     (info monitorinfoex))
+    (setf (fli:foreign-slot-value info 'cb-size)
+          (fli:size-of '(:struct monitorinfoex)))
+    (let ((monitor (%monitor-from-window hwnd +monitor-defaulttonearest+)))
+      (if (and (not (fli:null-pointer-p monitor))
+               (%get-window-rect hwnd rect)
+               (%get-monitor-info monitor info))
+          (rect-covers-p (rect-list rect)
+                         (rect-list (fli:foreign-slot-pointer
+                                     info 'rc-monitor)))
+          t))))
+
+(defmethod backend-wgc-capture ((backend win32-ffmpeg-backend))
+  (when (and (wgc-available-p)
+             ;; Hidden escape hatch, config.sexp only: a machine where
+             ;; WGC misbehaves in the field can go back to the monitor
+             ;; paths without waiting for a release.
+             (not (config-value :wgc-disable)))
+    (let ((hwnd (find-psobb-window)))
+      (when (and hwnd (not (window-covers-monitor-p hwnd)))
+        (let ((session (start-wgc-session hwnd)))
+          (when session
+            (let* ((window-rect (window-rect-of hwnd))
+                   (client (window-client-screen-rect hwnd))
+                   (crop (and window-rect client
+                              (wgc-crop-rect client window-rect
+                                             (wgc-session-width session)
+                                             (wgc-session-height session)))))
+              (recording-log "capturing via wgc ~dx~d~@[ crop=~a~]"
+                             (wgc-session-width session)
+                             (wgc-session-height session) crop)
+              (list :session session
+                    :pipe (wgc-session-pipe-name session)
+                    :width (wgc-session-width session)
+                    :height (wgc-session-height session)
+                    :crop crop))))))))
+
 (defmethod backend-start-capture ((backend win32-ffmpeg-backend)
                                   ffmpeg-path args output-path
-                                  &key audio-pipe audio-pid)
+                                  &key audio-pipe audio-pid wgc-session)
   (handler-case
       (progn
         (ensure-directories-exist output-path)
@@ -872,19 +895,27 @@ client build and hardware class it came from."
               (let ((capture (spawn-process ffmpeg-path args
                                             :stderr-path (stderr-file-for
                                                           output-path))))
-                (setf (ffmpeg-capture-audio capture) audio)
+                (setf (ffmpeg-capture-audio capture) audio
+                      (ffmpeg-capture-wgc capture) wgc-session)
                 ;; The full argv, because remote diagnosis of a bad
                 ;; recording starts from what ffmpeg was actually told
                 ;; (which grab, which filter chain, which encoder).
                 (recording-log "capture argv: ~a"
                                (argv->command-line ffmpeg-path args))
-                (recording-log "capture started: audio=~a"
-                               (and audio (audio-session-scope audio)))
+                (recording-log "capture started: audio=~a wgc=~a"
+                               (and audio (audio-session-scope audio))
+                               (and wgc-session t))
                 capture)
             (error (condition)
               (when audio (stop-audio-session audio))
               (error condition)))))
     (error (condition)
+      ;; The WGC session was adopted the moment it was passed in: a
+      ;; failed spawn must not leave its feeder thread waiting on a
+      ;; pipe no ffmpeg will ever open.
+      (when wgc-session
+        (ignore-errors (stop-wgc-session wgc-session))
+        (ignore-errors (close-wgc-session wgc-session)))
       (recording-log "capture start FAILED: ~a~%  ffmpeg=~a output=~a pid=~a"
                      condition ffmpeg-path output-path audio-pid)
       (values nil (format nil "~a" condition)))))
@@ -944,6 +975,8 @@ never share a file."
 (defmethod backend-kill-capture ((backend win32-ffmpeg-backend) capture)
   (when (ffmpeg-capture-audio capture)
     (stop-audio-session (ffmpeg-capture-audio capture)))
+  (when (ffmpeg-capture-wgc capture)
+    (ignore-errors (stop-wgc-session (ffmpeg-capture-wgc capture))))
   (%terminate-process (ffmpeg-capture-process-handle capture) 1))
 
 (defparameter +stderr-transcript-chars+ 8192
@@ -970,6 +1003,10 @@ nothing. Never signals - this is diagnostics, not control flow."
   ;; capture thread must not be left serving a dead pipe.
   (when (ffmpeg-capture-audio capture)
     (stop-audio-session (ffmpeg-capture-audio capture)))
+  (let ((wgc (shiftf (ffmpeg-capture-wgc capture) nil)))
+    (when wgc
+      (ignore-errors (stop-wgc-session wgc))
+      (ignore-errors (close-wgc-session wgc))))
   (transcribe-capture-stderr capture)
   (close-capture-handles capture))
 

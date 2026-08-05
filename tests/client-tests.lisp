@@ -1353,7 +1353,9 @@ block."
   (remove kind (mock-events backend) :key #'first :test-not #'eq))
 
 (defmethod backend-start-capture ((backend mock-backend) ffmpeg-path args
-                                  output-path &key audio-pipe audio-pid)
+                                  output-path &key audio-pipe audio-pid
+                                                   wgc-session)
+  (declare (ignore wgc-session))
   (record-event backend :start ffmpeg-path args output-path
                 audio-pipe audio-pid)
   (if (eq (mock-start-result backend) :ok)
@@ -1889,6 +1891,76 @@ over the defaults. Restores the global config afterwards (it is bound)."
            (and filter
                 (search "hwdownload" filter)
                 (not (search "hwmap" filter)))))
+  ;; WGC window capture: the client feeds raw BGRA frames over a named
+  ;; pipe (overlap-proof windowed path); the argv reads them as
+  ;; rawvideo and crops the client area out of the whole-window frame.
+  (let ((args (build-ffmpeg-args :window-title "T" :output-path "o.mp4"
+                                 :wgc-capture
+                                 '(:pipe "\\\\.\\pipe\\ephinea-ta-video"
+                                   :width 1286 :height 993
+                                   :crop (3 26 1280 960)))))
+    (check "wgc argv reads raw bgra frames off the pipe"
+           (let ((f (position "rawvideo" args :test #'equal)))
+             (and f
+                  (equal "bgra" (nth (1+ (position "-pixel_format" args
+                                                   :test #'equal))
+                                     args))
+                  (equal "1286x993" (nth (1+ (position "-video_size" args
+                                                       :test #'equal))
+                                         args))
+                  (member "\\\\.\\pipe\\ephinea-ta-video" args
+                          :test #'equal))))
+    (check "wgc argv crops the client area before the scale"
+           (let* ((vf (position "-vf" args :test #'equal))
+                  (filter (and vf (nth (1+ vf) args))))
+             (and filter
+                  (search "crop=1280:960:3:26" filter)
+                  (< (search "crop=" filter) (search "scale" filter)))))
+    (check "wgc argv never touches the GPU grab chains"
+           (let* ((vf (position "-vf" args :test #'equal))
+                  (filter (nth (1+ vf) args)))
+             (and (not (member "gdigrab" args :test #'equal))
+                  (not (search "ddagrab" (format nil "~{~a ~}" args)))
+                  (not (search "hwdownload" filter))
+                  (not (search "hwmap" filter)))))
+    (check "wgc argv keeps the bt709 color tags"
+           (let* ((vf (position "-vf" args :test #'equal))
+                  (filter (nth (1+ vf) args)))
+             (and (search "out_color_matrix=bt709" filter)
+                  (search "setparams=" filter)))))
+  (check "wgc without a crop records the whole frame"
+         (let* ((args (build-ffmpeg-args :window-title "T" :output-path "o.mp4"
+                                         :wgc-capture
+                                         '(:pipe "p" :width 1280 :height 960)))
+                (vf (position "-vf" args :test #'equal))
+                (filter (nth (1+ vf) args)))
+           (and (search "scale" filter)
+                (not (search "crop=" filter)))))
+  (check "wgc with a hw encoder converts to nv12"
+         (let* ((args (build-ffmpeg-args :window-title "T" :output-path "o.mp4"
+                                         :wgc-capture
+                                         '(:pipe "p" :width 1280 :height 960)
+                                         :video-encoder "h264_amf"))
+                (vf (position "-vf" args :test #'equal))
+                (filter (nth (1+ vf) args)))
+           (and (member "h264_amf" args :test #'equal)
+                (search ",format=nv12," filter))))
+  ;; WGC-CROP-RECT: the client area inside the whole-window frame.
+  (check "wgc crop offsets the client rect into the window"
+         (equal '(8 31 1280 960)
+                (ephinea-ta-client::wgc-crop-rect
+                 '(108 131 1388 1091)   ; client on screen
+                 '(100 100 1396 1099)   ; window on screen
+                 1296 999)))
+  (check "wgc crop is clamped to the frame and floored even"
+         (equal '(8 31 1280 960)
+                (ephinea-ta-client::wgc-crop-rect
+                 '(108 131 1389 1092)   ; odd-sized client area
+                 '(100 100 1396 1099)
+                 1296 999)))
+  (check "a degenerate client area yields no wgc crop"
+         (null (ephinea-ta-client::wgc-crop-rect
+                '(100 100 130 130) '(100 100 140 140) 40 40)))
   (check "the default adapter still gets the zero-copy QSV chain"
          (let* ((args (build-ffmpeg-args :window-title "T" :output-path "o.mp4"
                                          :capture-monitor
