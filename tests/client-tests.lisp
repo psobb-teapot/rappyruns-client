@@ -1844,6 +1844,61 @@ over the defaults. Restores the global config afterwards (it is bound)."
   (check "no verdict yet keeps ddagrab"
          (not (ephinea-ta-client::gdigrab-verdict-usable-p
                nil 42 '(1280 960))))
+  ;; Secondary-adapter monitors (hybrid laptops, a display on the
+  ;; second GPU): ddagrab needs its device created on that adapter
+  ;; explicitly; adapter 0 must keep the probe-verified argv untouched.
+  (let ((args (build-ffmpeg-args :window-title "T" :output-path "o.mp4"
+                                 :capture-monitor
+                                 '(:output-idx 1 :adapter 1
+                                   :width 1920 :height 1080))))
+    (check "secondary-adapter capture creates ddagrab's device explicitly"
+           (let ((init (position "-init_hw_device" args :test #'equal)))
+             (and init
+                  (equal "d3d11va=dda:1" (nth (1+ init) args))
+                  (equal "dda" (nth (1+ (position "-filter_hw_device" args
+                                                  :test #'equal))
+                                    args)))))
+    (check "the device args precede the lavfi input"
+           (< (position "-init_hw_device" args :test #'equal)
+              (position "lavfi" args :test #'equal))))
+  (check "adapter 0 leaves the ddagrab argv byte-for-byte unchanged"
+         (equal (build-ffmpeg-args :window-title "T" :output-path "o.mp4"
+                                   :capture-monitor
+                                   '(:output-idx 0 :adapter 0
+                                     :width 1920 :height 1080))
+                (build-ffmpeg-args :window-title "T" :output-path "o.mp4"
+                                   :capture-monitor
+                                   '(:output-idx 0
+                                     :width 1920 :height 1080))))
+  (check "a legacy plist without :adapter creates no explicit device"
+         (not (member "-init_hw_device"
+                      (build-ffmpeg-args :window-title "T" :output-path "o.mp4"
+                                         :capture-monitor
+                                         '(:output-idx 0
+                                           :width 1920 :height 1080))
+                      :test #'equal)))
+  (check "a secondary adapter keeps hwdownload even with the QSV chain"
+         (let* ((args (build-ffmpeg-args :window-title "T" :output-path "o.mp4"
+                                         :capture-monitor
+                                         '(:output-idx 0 :adapter 1
+                                           :width 1920 :height 1080)
+                                         :video-encoder "h264_qsv"
+                                         :gpu-chain t))
+                (vf (position "-vf" args :test #'equal))
+                (filter (and vf (nth (1+ vf) args))))
+           (and filter
+                (search "hwdownload" filter)
+                (not (search "hwmap" filter)))))
+  (check "the default adapter still gets the zero-copy QSV chain"
+         (let* ((args (build-ffmpeg-args :window-title "T" :output-path "o.mp4"
+                                         :capture-monitor
+                                         '(:output-idx 0 :adapter 0
+                                           :width 1920 :height 1080)
+                                         :video-encoder "h264_qsv"
+                                         :gpu-chain t))
+                (vf (position "-vf" args :test #'equal))
+                (filter (and vf (nth (1+ vf) args))))
+           (and filter (search "hwmap" filter))))
   ;; The x264 thread cap: half the logical processors, floor 2, cap 8.
   (check "encoder threads: half the cores"
          (= 4 (ephinea-ta-client::encoder-thread-count 8)))

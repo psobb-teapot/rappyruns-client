@@ -59,9 +59,11 @@ BACKEND-CLOSE-CAPTURE, or (values nil error-string)."))
 
 (defgeneric backend-capture-monitor (backend)
   (:documentation
-   "Plist (:output-idx N :width W :height H [:crop (x y w h)])
+   "Plist (:output-idx N :adapter A :width W :height H [:crop (x y w h)])
 describing the monitor the game window sits on - the 0-based DXGI
-output index and the monitor rect's pixel size - or NIL when the
+output index, the adapter that output belongs to (0 = default; a
+secondary adapter makes BUILD-FFMPEG-ARGS create ddagrab's device
+explicitly) and the monitor rect's pixel size - or NIL when the
 window is absent or the monitor cannot be resolved (BUILD-FFMPEG-ARGS
 then falls back to gdigrab). Queried once per capture start. :CROP,
 present for a window smaller than its monitor, is the client area in
@@ -536,6 +538,17 @@ smaller than +CAPTURE-CROP-MIN-PIXELS+ a side."
                    (>= height +capture-crop-min-pixels+))
           (values (- left ml) (- top mt) width height))))))
 
+(defun capture-secondary-adapter (capture-monitor)
+  "The DXGI adapter index CAPTURE-MONITOR's :ADAPTER names when it is
+not the default adapter, else NIL. ddagrab left to itself creates its
+device on adapter 0, so a monitor on any other adapter (hybrid-graphics
+laptops, a display on the second GPU) needs the device created
+explicitly; adapter 0 (and legacy plists without :ADAPTER) must keep
+today's argv byte-for-byte, because that is the configuration every
+probe verified. Pure."
+  (let ((adapter (and capture-monitor (getf capture-monitor :adapter))))
+    (and adapter (plusp adapter) adapter)))
+
 ;;; gdigrab window probe (decision half; the live half - spawning the
 ;;; probe ffmpeg and keying its verdict to the PSOBB window - is in
 ;;; ffmpeg-win32.lisp). ddagrab reads the composited monitor, so a
@@ -605,8 +618,8 @@ verdicts must fall back to ddagrab, never the other way. Pure."
 file playable even when ffmpeg is killed instead of quitting on \"q\".
 With AUDIO-PIPE, raw 16-bit 48 kHz stereo game audio arrives on that
 named pipe as a second input and is encoded as AAC. With
-CAPTURE-MONITOR (a plist :output-idx :width :height [:crop], see
-BACKEND-CAPTURE-MONITOR), the video comes from ddagrab (Desktop
+CAPTURE-MONITOR (a plist :output-idx :adapter :width :height [:crop],
+see BACKEND-CAPTURE-MONITOR), the video comes from ddagrab (Desktop
 Duplication): GDI cannot see an exclusive-fullscreen Direct3D surface,
 nor a flip-model-composited window (run 949's all-black recordings on
 Windows 11), so gdigrab - which remains only as the fallback when the
@@ -638,11 +651,22 @@ HD, shifting every saturated color on the site (run 1368)."
          ;; Probing one frame instead of probesize-worth keeps video
          ;; time 0 and audio time 0 within a frame of each other.
          "-probesize" "32" "-analyzeduration" "0")
+   ;; A monitor on a secondary adapter: ddagrab's own device would sit
+   ;; on adapter 0 and never see it, so create the device explicitly on
+   ;; the right adapter and hand it to the filter graph (verified
+   ;; against the bundled ffmpeg 8: ddagrab uses the filter_hw_device
+   ;; when one is supplied). output_idx is already adapter-relative
+   ;; (DXGI-OUTPUT-INDEX-FOR-DEVICE).
+   (let ((adapter (capture-secondary-adapter capture-monitor)))
+     (when adapter
+       (list "-init_hw_device" (format nil "d3d11va=dda:~d" adapter)
+             "-filter_hw_device" "dda")))
    (if capture-monitor
        ;; ddagrab is a lavfi source filter; it creates its own D3D11
-       ;; device and outputs GPU frames at a constant FRAMERATE
-       ;; (duplicating frames on static screens), which the -vf chain
-       ;; either downloads for the CPU scale or maps straight to QSV.
+       ;; device (unless one is supplied above) and outputs GPU frames
+       ;; at a constant FRAMERATE (duplicating frames on static
+       ;; screens), which the -vf chain either downloads for the CPU
+       ;; scale or maps straight to QSV.
        (list "-f" "lavfi"
              "-i" (format nil "ddagrab=output_idx=~d:framerate=~d:draw_mouse=0"
                           (getf capture-monitor :output-idx) framerate))
@@ -674,7 +698,14 @@ HD, shifting every saturated color on the site (run 1368)."
          (let ((crop (and capture-monitor (getf capture-monitor :crop))))
            (concatenate
             'string
-            (if (and capture-monitor (not crop) video-encoder gpu-chain)
+            ;; The zero-copy QSV chain stays off on a secondary
+            ;; adapter: the startup probe verified hwmap's QSV derive
+            ;; against ddagrab's default-adapter device, and deriving
+            ;; from another (typically non-Intel) adapter's device is
+            ;; a different, unverified thing - hwdownload works
+            ;; everywhere.
+            (if (and capture-monitor (not crop) video-encoder gpu-chain
+                     (not (capture-secondary-adapter capture-monitor)))
                 (multiple-value-bind (width height)
                     (record-scale-dimensions (getf capture-monitor :width)
                                              (getf capture-monitor :height))

@@ -500,43 +500,63 @@ already running."
   "Enumeration cap; EnumOutputs returns DXGI_ERROR_NOT_FOUND well
 before this on any real machine.")
 
+(defparameter +dxgi-max-adapters+ 8
+  "Adapter enumeration cap; EnumAdapters returns DXGI_ERROR_NOT_FOUND
+well before this on any real machine.")
+
 (defun dxgi-output-index-for-device (device-name)
-  "The default adapter's DXGI output index whose DeviceName is
-DEVICE-NAME (\"\\\\.\\DISPLAYn\"), or NIL when DXGI enumeration fails
-or no output matches - including a monitor driven by another adapter,
-which ddagrab (a default-adapter D3D11 device) could not capture
-anyway. A failed lookup logs what WAS there, because that list is the
-whole diagnosis on a remote machine."
+  "The DXGI output whose DeviceName is DEVICE-NAME (\"\\\\.\\DISPLAYn\"),
+as (values output-index adapter-index), or NIL when DXGI enumeration
+fails or no output matches. EVERY adapter is searched, not just the
+default one: on hybrid-graphics laptops and multi-GPU desktops the
+game's monitor may hang off adapter > 0, where ddagrab can still
+capture it - BUILD-FFMPEG-ARGS just has to hand ddagrab a device
+created on that adapter (-init_hw_device) instead of letting it default
+to adapter 0. OUTPUT-INDEX is relative to its adapter, which is exactly
+what ddagrab's output_idx means on that device. A failed lookup logs
+what WAS there, because that list is the whole diagnosis on a remote
+machine."
   (multiple-value-bind (hr factory)
       (%create-dxgi-factory1 (iid-idxgifactory) 0)
     (when (and (zerop hr) (not (fli:null-pointer-p factory)))
       (unwind-protect
-           (multiple-value-bind (hr adapter)
-               (com-call-enum-child (com-method factory 7) factory 0 0)
-             (when (and (zerop hr) (not (fli:null-pointer-p adapter)))
-               (unwind-protect
-                    (fli:with-dynamic-foreign-objects
-                        ((desc (:struct dxgi-output-desc)))
-                      (let ((seen '()))
-                        (loop :for index :from 0 :below +dxgi-max-outputs+
-                              :do (multiple-value-bind (hr output)
-                                      (com-call-enum-child
-                                       (com-method adapter 7) adapter index 0)
-                                    (when (or (not (zerop hr))
-                                              (fli:null-pointer-p output))
-                                      (recording-log "capture check: no DXGI output named ~s (adapter 0 has ~{~s~^, ~})"
-                                                     device-name (nreverse seen))
-                                      (return nil))
-                                    (unwind-protect
-                                         (when (zerop (com-call-output-get-desc
-                                                       (com-method output 7)
-                                                       output desc))
-                                           (let ((name (dxgi-desc-device-name desc)))
-                                             (push name seen)
-                                             (when (string= name device-name)
-                                               (return index))))
-                                      (com-release output))))))
-                 (com-release adapter))))
+           (fli:with-dynamic-foreign-objects
+               ((desc (:struct dxgi-output-desc)))
+             (let ((seen '()))
+               (loop :for adapter-index :from 0 :below +dxgi-max-adapters+
+                     :do (multiple-value-bind (hr adapter)
+                             (com-call-enum-child (com-method factory 7)
+                                                  factory adapter-index 0)
+                           (when (or (not (zerop hr))
+                                     (fli:null-pointer-p adapter))
+                             (loop-finish))
+                           (unwind-protect
+                                (loop :for index :from 0 :below +dxgi-max-outputs+
+                                      :do (multiple-value-bind (hr output)
+                                              (com-call-enum-child
+                                               (com-method adapter 7)
+                                               adapter index 0)
+                                            (when (or (not (zerop hr))
+                                                      (fli:null-pointer-p output))
+                                              (return))
+                                            (unwind-protect
+                                                 (when (zerop (com-call-output-get-desc
+                                                               (com-method output 7)
+                                                               output desc))
+                                                   (let ((name (dxgi-desc-device-name desc)))
+                                                     (push (format nil "~a[adapter ~d]"
+                                                                   name adapter-index)
+                                                           seen)
+                                                     (when (string= name device-name)
+                                                       ;; Unwinds through every
+                                                       ;; COM-RELEASE cleanup.
+                                                       (return-from dxgi-output-index-for-device
+                                                         (values index adapter-index)))))
+                                              (com-release output))))
+                             (com-release adapter))))
+               (recording-log "capture check: no DXGI output named ~s (saw ~{~s~^, ~})"
+                              device-name (nreverse seen))
+               nil))
         (com-release factory)))))
 
 (defun window-client-screen-rect (hwnd)
@@ -705,54 +725,57 @@ run 949), and the log is all a remote diagnosis has to go on."
                        (monitor-rect (rect-list (fli:foreign-slot-pointer
                                                  info 'rc-monitor)))
                        (device (monitor-device-name info))
-                       (covers (rect-covers-p window-rect monitor-rect))
-                       ;; DXGI name match, never the DISPLAYn-1 guess:
-                       ;; the guess put run 1047's capture on the wrong
-                       ;; (Discord) monitor. DXGI-OUTPUT-INDEX-FOR-DEVICE
-                       ;; logs the outputs it saw when nothing matches.
-                       (index (ignore-errors
-                               (dxgi-output-index-for-device device))))
-                  (recording-log "capture check: window=~a monitor=~a (~a) covers=~a dxgi-idx=~a"
-                                 window-rect monitor-rect device covers index)
-                  (destructuring-bind (left top right bottom) monitor-rect
-                    (cond
-                      ((null index)
-                       (recording-log "capture check: monitor unresolvable in DXGI, staying on gdigrab")
-                       nil)
-                      (covers
-                       (list :output-idx index
-                             :width (- right left)
-                             :height (- bottom top)))
-                      (t
-                       ;; Windowed. gdigrab when the probe verified GDI
-                       ;; reads this window (window capture: whatever
-                       ;; overlaps the game stays OUT of the recording),
-                       ;; else the monitor capture cropped to the client
-                       ;; area, because GDI cannot read a flip-model-
-                       ;; composited window (run 949).
-                       (let ((client (window-client-screen-rect hwnd)))
-                         (cond
-                           ((and client
-                                 (gdigrab-verdict-usable-p
-                                  *gdigrab-probe-verdict*
-                                  (fli:pointer-address hwnd)
-                                  (destructuring-bind (cl ct cr cb) client
-                                    (list (- cr cl) (- cb ct)))))
-                            (recording-log "capture check: windowed, probe-verified gdigrab (overlap-proof window capture)")
-                            nil)
-                           (t
-                            (multiple-value-bind (x y width height)
-                                (and client
-                                     (capture-crop-rect client monitor-rect))
-                              (if (null x)
-                                  (progn
-                                    (recording-log "capture check: unusable client rect ~a, staying on gdigrab"
-                                                   client)
-                                    nil)
-                                  (list :output-idx index
-                                        :width (- right left)
-                                        :height (- bottom top)
-                                        :crop (list x y width height)))))))))))))))))
+                       (covers (rect-covers-p window-rect monitor-rect)))
+                  ;; DXGI name match, never the DISPLAYn-1 guess: the
+                  ;; guess put run 1047's capture on the wrong
+                  ;; (Discord) monitor. DXGI-OUTPUT-INDEX-FOR-DEVICE
+                  ;; logs the outputs it saw when nothing matches.
+                  (multiple-value-bind (index adapter)
+                      (ignore-errors (dxgi-output-index-for-device device))
+                    (recording-log "capture check: window=~a monitor=~a (~a) covers=~a dxgi-idx=~a adapter=~a"
+                                   window-rect monitor-rect device covers
+                                   index adapter)
+                    (destructuring-bind (left top right bottom) monitor-rect
+                      (cond
+                        ((null index)
+                         (recording-log "capture check: monitor unresolvable in DXGI, staying on gdigrab")
+                         nil)
+                        (covers
+                         (list :output-idx index
+                               :adapter adapter
+                               :width (- right left)
+                               :height (- bottom top)))
+                        (t
+                         ;; Windowed. gdigrab when the probe verified GDI
+                         ;; reads this window (window capture: whatever
+                         ;; overlaps the game stays OUT of the recording),
+                         ;; else the monitor capture cropped to the client
+                         ;; area, because GDI cannot read a flip-model-
+                         ;; composited window (run 949).
+                         (let ((client (window-client-screen-rect hwnd)))
+                           (cond
+                             ((and client
+                                   (gdigrab-verdict-usable-p
+                                    *gdigrab-probe-verdict*
+                                    (fli:pointer-address hwnd)
+                                    (destructuring-bind (cl ct cr cb) client
+                                      (list (- cr cl) (- cb ct)))))
+                              (recording-log "capture check: windowed, probe-verified gdigrab (overlap-proof window capture)")
+                              nil)
+                             (t
+                              (multiple-value-bind (x y width height)
+                                  (and client
+                                       (capture-crop-rect client monitor-rect))
+                                (if (null x)
+                                    (progn
+                                      (recording-log "capture check: unusable client rect ~a, staying on gdigrab"
+                                                     client)
+                                      nil)
+                                    (list :output-idx index
+                                          :adapter adapter
+                                          :width (- right left)
+                                          :height (- bottom top)
+                                          :crop (list x y width height))))))))))))))))))
 
 ;;; The live backend
 
