@@ -2098,8 +2098,7 @@ over the defaults. Restores the global config afterwards (it is bound)."
                (null (fifth (first (events-of backend :start)))))))))
 
 ;;; ------------------------------------------------------------------
-;;; Video attach flow: recordings linked to queue entries, clipboard
-;;; URL recognition and target resolution
+;;; Video attach flow: recordings linked to queue entries
 ;;; ------------------------------------------------------------------
 
 (defmacro with-test-store ((&rest initial-runs) &body body)
@@ -2293,56 +2292,7 @@ store functions that persist never touch the real %APPDATA% queue."
                           (queued-runs))))
     (check "clear persists the surviving queue"
            (= 2 (length (ephinea-ta-client::read-sexp-file
-                         ephinea-ta-client::*queue-path*))))
-    (check "cleared pending-video draft is no longer a video candidate"
-           (null (ephinea-ta-client::video-candidates))))
-  ;; Which run does a copied URL belong to?
-  (let ((a (list :quest-slug "a" :time-ms 1 :finished-at 1 :server-id 1))
-        (b (list :quest-slug "b" :time-ms 2 :finished-at 2 :server-id 2)))
-    (check "no candidates -> NIL"
-           (null (ephinea-ta-client::resolve-video-target '() nil)))
-    (check "the deliberate upload target is taken even as the sole candidate"
-           (eq a (ephinea-ta-client::resolve-video-target (list a) (copy-list a))))
-    (check "a lone candidate that was not the upload target -> :choose"
-           (eq :choose (ephinea-ta-client::resolve-video-target (list a) nil)))
-    (check "a lone candidate under a mismatched preference -> :choose"
-           (eq :choose (ephinea-ta-client::resolve-video-target (list a) b)))
-    (check "the preferred run wins among several"
-           (eq b (ephinea-ta-client::resolve-video-target
-                  (list a b) (copy-list b))))
-    (check "several candidates without a preference -> :choose"
-           (eq :choose (ephinea-ta-client::resolve-video-target (list a b) nil)))
-    (check "a stale preference falls back to :choose"
-           (eq :choose (ephinea-ta-client::resolve-video-target
-                        (list a b)
-                        (list :quest-slug "gone" :time-ms 9 :finished-at 9)))))
-  (with-test-store ((list :status :submitted :server-id 1)
-                    (list :status :queued)
-                    (list :status :submitted :server-id 3 :video-attached t))
-    (check "video candidates need a server id and no attached video"
-           (equal '(1)
-                  (mapcar (lambda (entry) (getf entry :server-id))
-                          (ephinea-ta-client::video-candidates)))))
-  ;; The auto-uploaded hosted copy may still be swapped for the
-  ;; player's own link, so those entries stay candidates until an
-  ;; external URL is on file (issue #35).
-  (with-test-store ((list :status :submitted :server-id 4 :video-attached t
-                          :video-uploaded t)
-                    (list :status :submitted :server-id 5 :video-attached t
-                          :video-uploaded t :video-url "https://youtu.be/x")
-                    (list :status :submitted :server-id 6 :video-attached t))
-    (check "an auto-uploaded video can still take an external URL"
-           (equal '(4)
-                  (mapcar (lambda (entry) (getf entry :server-id))
-                          (ephinea-ta-client::video-candidates)))))
-  ;; An aborted run never auto-uploads, but its recording can still be
-  ;; put on YouTube by hand, so it is a candidate for a copied link.
-  (with-test-store ((list :status :submitted :server-id 9 :aborted t
-                          :video-path "v.mp4"))
-    (check "an aborted run is a candidate for a copied YouTube URL"
-           (equal '(9)
-                  (mapcar (lambda (entry) (getf entry :server-id))
-                          (ephinea-ta-client::video-candidates)))))
+                         ephinea-ta-client::*queue-path*)))))
   ;; Labels for the new Video column and statuses.
   (check "video label: saved recording"
          (equal "saved" (ephinea-ta-client::run-video-label
@@ -2390,42 +2340,7 @@ store functions that persist never touch the real %APPDATA% queue."
          (let ((label (ephinea-ta-client::run-status-label
                        (list :status :submitted :video-attached t :aborted t))))
            (and (search "aborted" label)
-                (not (search "awaiting review" label)))))
-  ;; Clipboard URL recognition.
-  (check "watch URLs are recognized"
-         (ephinea-ta-client::youtube-video-url
-          "https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
-  (check "watch URLs with extra query params are recognized"
-         (ephinea-ta-client::youtube-video-url
-          "https://www.youtube.com/watch?app=desktop&v=dQw4w9WgXcQ&t=10s"))
-  (check "youtu.be share URLs are recognized"
-         (ephinea-ta-client::youtube-video-url
-          "https://youtu.be/dQw4w9WgXcQ?si=abc"))
-  (check "shorts and live URLs are recognized"
-         (and (ephinea-ta-client::youtube-video-url
-               "https://www.youtube.com/shorts/dQw4w9WgXcQ")
-              (ephinea-ta-client::youtube-video-url
-               "https://m.youtube.com/live/dQw4w9WgXcQ")))
-  (check "surrounding whitespace is trimmed"
-         (equal "https://youtu.be/dQw4w9WgXcQ"
-                (ephinea-ta-client::youtube-video-url
-                 " https://youtu.be/dQw4w9WgXcQ
-")))
-  (check "non-video YouTube pages are not recognized"
-         (notany #'ephinea-ta-client::youtube-video-url
-                 (list "https://www.youtube.com/"
-                       "https://www.youtube.com/@somechannel"
-                       "https://www.youtube.com/playlist?list=PLx"
-                       "https://www.youtube.com/watch?v=tooshort"
-                       "https://www.youtube.com/watch?v=muchtoolongid")))
-  (check "non-YouTube text is not recognized"
-         (notany #'ephinea-ta-client::youtube-video-url
-                 (list "https://example.com/watch?v=dQw4w9WgXcQ"
-                       "https://twitch.tv/videos/123456"
-                       "watch?v=dQw4w9WgXcQ"
-                       "just some words"
-                       nil
-                       ""))))
+                (not (search "awaiting review" label))))))
 
 ;;; ------------------------------------------------------------------
 ;;; UX helpers: status labels, list trimming, URL and error text

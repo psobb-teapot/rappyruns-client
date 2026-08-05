@@ -527,13 +527,8 @@ do nothing."
   (open-in-browser (api-url (config-value :server-url) "/my/runs")))
 
 ;;; The upload flow: one click opens YouTube plus an Explorer window
-;;; with the recording selected; when the uploaded video's URL is copied
-;;; the poll loop notices (CHECK-CLIPBOARD in main.lisp) and offers to
-;;; attach it to the draft, so the site never has to be opened.
-
-(defvar *last-upload-run* nil
-  "The entry whose Upload to YouTube button was pressed last: the
-preferred target when a copied URL could belong to several runs.")
+;;; with the recording selected; the uploaded video's URL is then
+;;; attached to the draft on the site (My Runs -> Drafts).
 
 (defun open-file-in-explorer (path)
   "Open an Explorer window with PATH's file already selected. Explorer
@@ -567,62 +562,8 @@ auto-uploaded (the just-finished-playing case)."
        (capi:display-message "~a" (tr :recording-file-missing
                                       (getf entry :video-path))))
       (t
-       (setf *last-upload-run* entry)
        (open-file-in-explorer (getf entry :video-path))
        (open-in-browser "https://www.youtube.com/upload")))))
-
-(defun run-choice-label (entry)
-  (format nil "~a  ~a"
-          (or (getf entry :quest-name) (getf entry :quest-slug))
-          (format-run-time (getf entry :time-ms))))
-
-(defun attach-video-in-background (interface entry url)
-  "Network round trip off the GUI thread; result lands back on it."
-  (mp:process-run-function
-   "eta-client-attach-video" '()
-   (lambda ()
-     (multiple-value-bind (updated error already-submitted)
-         (attach-video-url! entry url)
-       (declare (ignore updated))
-       ;; The Upload-to-YouTube intent is consumed once its link is on a
-       ;; run: clear the preferred target so the next copied URL, which
-       ;; may be for something else entirely, is not auto-aimed here.
-       (unless error (setf *last-upload-run* nil))
-       (refresh-runs-list interface)
-       (when (or error already-submitted)
-         (capi:execute-with-interface-if-alive
-          interface
-          (lambda ()
-            (capi:display-message
-             "~a" (if error
-                      (tr :attach-failed error)
-                      (tr :attach-already-submitted))))))))))
-
-(defun offer-clipboard-url (interface url)
-  "Confirm (on the GUI thread) which run the copied URL belongs to,
-then attach it in a worker process."
-  (capi:execute-with-interface-if-alive
-   interface
-   (lambda ()
-     (let ((target (resolve-video-target (video-candidates)
-                                         *last-upload-run*)))
-       (cond
-         ((null target))
-         ((eq target :choose)
-          (multiple-value-bind (entry okp)
-              (capi:prompt-with-list
-               (video-candidates)
-               (tr :attach-choose url)
-               :print-function 'run-choice-label)
-            (when (and okp entry)
-              (attach-video-in-background interface entry url))))
-         (t
-          (when (capi:confirm-yes-or-no
-                 "~a" (tr (if (hosted-video-replaceable-p target)
-                              :attach-confirm-replace
-                              :attach-confirm)
-                          (run-choice-label target) url))
-            (attach-video-in-background interface target url))))))))
 
 (defun open-recordings-folder-callback (interface)
   "Open the recordings folder in Explorer (created on demand so the

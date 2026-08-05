@@ -279,7 +279,7 @@ entries (the pre-submission plists would show stale statuses)."
                                   *runs*))))
     (mapcar #'submit-entry! pending)))
 
-;;; Linking recordings to queue entries and attaching their YouTube URL.
+;;; Linking recordings to queue entries.
 ;;; UPDATE-RUN! replaces entries with copies, so identity across updates
 ;;; is the run's natural key rather than EQ.
 
@@ -303,30 +303,6 @@ link (hosted videos expire under retention; their own channel's do
 not)."
   (and (getf entry :video-uploaded)
        (not (getf entry :video-url))))
-
-(defun video-candidates ()
-  "Entries a copied video URL could belong to: on the server (they have
-an id) and either no video attached yet, or only the auto-uploaded
-hosted copy, which the player may still replace with an external link."
-  (remove-if-not (lambda (entry)
-                   (and (getf entry :server-id)
-                        (or (not (getf entry :video-attached))
-                            (hosted-video-replaceable-p entry))))
-                 (queued-runs)))
-
-(defun resolve-video-target (candidates preferred)
-  "Which of CANDIDATES a copied video URL should go to. Taken
-automatically only for PREFERRED - the run whose Upload to YouTube
-button the player just pressed (so the copied link is the one they were
-sent to fetch). A copied URL is otherwise never silently pinned to a
-run, not even a lone candidate: a link copied for some other purpose (a
-party member's video, a different run submitted on the site) must not
-land on an unrelated draft, so the player picks explicitly (:choose).
-NIL when there are no candidates."
-  (cond
-    ((null candidates) nil)
-    ((and preferred (find preferred candidates :test #'same-run-p)))
-    (t :choose)))
 
 ;;; Automatic upload of saved recordings to the server (which relays
 ;;; them into hosted storage). One upload at a time; failures back off
@@ -480,33 +456,3 @@ recording log matters."
       (update-run! entry :next-upload-at
                    (+ (get-universal-time) +upload-retry-seconds+)
                    :upload-error (api-error-message condition)))))
-
-(defun attach-video-url! (entry video-url)
-  "Attach VIDEO-URL to ENTRY's server run: a draft is promoted to
-pending review, an auto-uploaded run has its hosted copy replaced.
-Returns (values updated-entry error-message already-submitted-p);
-ERROR-MESSAGE is NIL on success. ALREADY-SUBMITTED-P is true when the
-server reports the run already carries a video it will not swap (a
-duplicate reply - typically the run was approved in the meantime); the
-entry is marked attached but keeps its existing video state."
-  (handler-case
-      (multiple-value-bind (outcome payload)
-          (attach-run-video (getf entry :server-id) video-url)
-        (ecase outcome
-          (:attached
-           (if (and (hash-table-p payload) (gethash "duplicate" payload))
-               (values (update-run! entry :video-attached t) nil t)
-               ;; A successful replace deletes the hosted copy server
-               ;; side, so the entry's video is now the external URL,
-               ;; not an upload.
-               (values (update-run! entry :video-attached t
-                                    :video-url video-url
-                                    :video-uploaded nil)
-                       nil)))
-          (:rejected
-           (values nil
-                   (or (and (hash-table-p payload) (gethash "message" payload))
-                       (and (hash-table-p payload) (gethash "error" payload))
-                       "the server rejected the video URL")))))
-    (api-error (condition)
-      (values nil (api-error-message condition)))))

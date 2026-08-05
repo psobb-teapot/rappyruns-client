@@ -461,21 +461,6 @@
     :recording-file-missing
     ("The recording file is missing:~%~%~a"
      "録画ファイルが見つかりません:~%~%~a")
-    :attach-choose
-    ("A YouTube link was copied:~%~a~%~%Attach it to which run?"
-     "YouTube のリンクがコピーされました:~%~a~%~%どの記録に紐付けますか?")
-    :attach-confirm
-    ("Attach the copied YouTube link to this run?~%~%~a~%~a"
-     "コピーされた YouTube のリンクをこの記録に紐付けますか?~%~%~a~%~a")
-    :attach-confirm-replace
-    ("Replace this run's auto-uploaded video with the copied YouTube link?~%The hosted copy will be deleted and your link goes to review instead.~%~%~a~%~a"
-     "この記録の自動アップロードされた動画を、コピーされた YouTube のリンクで差し替えますか?~%ホストされている動画は削除され、代わりにこのリンクが審査対象になります。~%~%~a~%~a")
-    :attach-failed
-    ("Could not attach the video:~%~%~a"
-     "動画を紐付けられませんでした:~%~%~a")
-    :attach-already-submitted
-    ("The video was not changed: the site already has a video on file for this run (it may have been approved in the meantime)."
-     "動画は変更されませんでした: この記録にはサイト側で既に動画が登録されています (その間に承認された可能性があります)。")
     :pairing-waiting
     ("Token: approve the connection in your browser..."
      "トークン: ブラウザで接続を承認してください...")
