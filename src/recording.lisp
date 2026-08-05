@@ -69,9 +69,13 @@ monitor-relative pixels. Monitor capture (ddagrab) is the primary path
 for windowed games too, not just fullscreen: GDI cannot see an
 exclusive-fullscreen Direct3D surface (black frames, the Boot Camp
 machine 2026-07-07) NOR a flip-model-composited window (black frames
-again, run 949 on a Windows 11 machine, 2026-07-16) - and a window
-that gdigrab happens to read fine is captured by ddagrab just as
-well.")
+again, run 949 on a Windows 11 machine, 2026-07-16). But the monitor
+capture is NOT harmless for a windowed game: everything overlapping
+the window - Discord, a browser - lands in the recording, so a
+windowed capture prefers gdigrab whenever the black-frame probe
+\(MAYBE-START-GDIGRAB-PROBE, ffmpeg-win32) has verified that GDI can
+read THIS window; NIL then routes BUILD-FFMPEG-ARGS to gdigrab on
+purpose, and the ddagrab :CROP remains the fallback.")
   (:method (backend) nil))
 
 (defgeneric backend-list-stale-files (backend dir)
@@ -532,6 +536,60 @@ smaller than +CAPTURE-CROP-MIN-PIXELS+ a side."
                    (>= height +capture-crop-min-pixels+))
           (values (- left ml) (- top mt) width height))))))
 
+;;; gdigrab window probe (decision half; the live half - spawning the
+;;; probe ffmpeg and keying its verdict to the PSOBB window - is in
+;;; ffmpeg-win32.lisp). ddagrab reads the composited monitor, so a
+;;; windowed game's capture includes whatever overlaps the window: the
+;;; run-949 workaround traded black frames for recording bystander
+;;; windows on EVERY machine. gdigrab reads the window's own surface
+;;; (overlap-proof), and whether GDI can see a given window is a
+;;; machine- and window-specific fact - so it is probed, not assumed: a
+;;; few gdigrab frames run through blackdetect while the player idles
+;;; outside a quest. Both failure directions are safe - a false "black"
+;;; (a genuinely dark frame during the probe) merely keeps today's
+;;; ddagrab behavior.
+
+(defparameter +gdigrab-probe-frames+ 8
+  "Frames the probe grabs before judging. At the capture framerate this
+is about a quarter second: enough for blackdetect to see real content,
+short enough to finish well within a lobby pause.")
+
+(defun gdigrab-probe-args (window-title)
+  "ffmpeg argv probing whether gdigrab can see WINDOW-TITLE's frames: a
+few window grabs through blackdetect into the null muxer. Exit 0 with
+no blackdetect report on stderr means the window capture works.
+-loglevel info, unlike every other spawn here: blackdetect reports at
+info level and stderr IS this probe's output (-nostats keeps the
+progress spam out of it). d=0 flags even a single black frame, and
+pix_th=0.10 is blackdetect's default luma threshold, pinned because the
+verdict depends on it."
+  (list "-hide_banner" "-loglevel" "info" "-nostats"
+        "-f" "gdigrab"
+        "-framerate" (princ-to-string +record-framerate+)
+        "-draw_mouse" "0"
+        "-i" (format nil "title=~a" window-title)
+        "-frames:v" (princ-to-string +gdigrab-probe-frames+)
+        "-vf" "blackdetect=d=0:pix_th=0.10"
+        "-f" "null" "-"))
+
+(defun blackdetect-reports-black-p (stderr-text)
+  "Did a probe's ffmpeg stderr report a black interval? blackdetect
+prints \"black_start:... black_end:...\" lines for each one; no line,
+no black frames. Pure so the tests can pin the parse."
+  (and stderr-text (search "black_start" stderr-text) t))
+
+(defun gdigrab-verdict-usable-p (verdict hwnd-address client-size)
+  "Does VERDICT - a probe result plist (:hwnd N :size (w h) :result
+:usable/:black/:failed) - prove gdigrab works for the CURRENT window,
+identified by HWND-ADDRESS and CLIENT-SIZE? The identity check matters:
+a windowed<->fullscreen switch recreates or resizes the window, and a
+verdict for the old window says nothing about the new one - stale
+verdicts must fall back to ddagrab, never the other way. Pure."
+  (and verdict
+       (eql (getf verdict :hwnd) hwnd-address)
+       (equal (getf verdict :size) client-size)
+       (eq (getf verdict :result) :usable)))
+
 ;; ddagrab's output index is resolved by DXGI enumeration
 ;; (DXGI-OUTPUT-INDEX-FOR-DEVICE, ffmpeg-win32): the obvious
 ;; "DISPLAYn -> index n-1" guess captured a NEIGHBORING monitor on the
@@ -750,6 +808,13 @@ encoder probe never got to run (ffmpeg blocked at startup). Once per
 process: machines that genuinely lack a hardware encoder (probe state
 :DONE) are never nagged.")
 
+(defvar *overlap-risk-notified* nil
+  "T once the tray has warned that a windowed capture went through
+ddagrab (monitor capture cropped to the game), where windows overlapping
+the game are recorded too. Once per process: the condition is a
+machine/window property, and every capture of the session would repeat
+it.")
+
 (defun notify-user (title text &key (icon :warning))
   "Tray balloon when the tray code is loaded (tray-win32.lisp,
 LispWorks-only, loads after this file) - a silent no-op on SBCL test
@@ -772,12 +837,11 @@ runs, where TRAY-NOTIFY is never defined."
          (audio-pid (and (config-value :record-audio) *audio-target-pid*))
          (audio-pipe (and audio-pid (audio-pipe-name)))
          (encoder (and (config-value :hw-encode) *hw-video-encoder*))
+         (monitor (backend-capture-monitor (recorder-backend recorder)))
          (args (build-ffmpeg-args :window-title window-title
                                   :output-path output
                                   :audio-pipe audio-pipe
-                                  :capture-monitor
-                                  (backend-capture-monitor
-                                   (recorder-backend recorder))
+                                  :capture-monitor monitor
                                   :video-encoder encoder
                                   :gpu-chain
                                   (and (equal encoder "h264_qsv")
@@ -805,6 +869,17 @@ runs, where TRAY-NOTIFY is never defined."
               (setf *software-fallback-notified* t)
               (notify-user (tr :notify-software-encode-title)
                            (tr :notify-software-encode-text)
+                           :icon :info))
+            ;; A :CROP means a windowed game going through the monitor
+            ;; capture (the gdigrab probe could not verify window
+            ;; capture), where anything overlapping the game window is
+            ;; recorded too - tell the user once so nothing private
+            ;; lands in an uploaded run by surprise.
+            (when (and (getf monitor :crop)
+                       (not *overlap-risk-notified*))
+              (setf *overlap-risk-notified* t)
+              (notify-user (tr :notify-overlap-title)
+                           (tr :notify-overlap-text)
                            :icon :info)))
           ;; Stay :idle; the edge trigger retries on the next quest.
           (let ((message (or error "could not start ffmpeg")))

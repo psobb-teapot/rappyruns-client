@@ -350,11 +350,16 @@ already running."
 ;;; whose presentation Windows composites via the flip model (run 949's
 ;;; all-black recordings on Windows 11, 2026-07-16). ddagrab (Desktop
 ;;; Duplication) reads the composited monitor and sees both, so
-;;; BACKEND-CAPTURE-MONITOR routes every capture through it: whole
-;;; monitor when the window covers it (RECT-COVERS-P - borderless
-;;; matches too), cropped to the client area otherwise. gdigrab remains
-;;; only as the fallback when the monitor's DXGI output index or the
-;;; window's client rect cannot be resolved.
+;;; BACKEND-CAPTURE-MONITOR routes captures through it: whole monitor
+;;; when the window covers it (RECT-COVERS-P - borderless matches too),
+;;; cropped to the client area otherwise. But the monitor sees MORE
+;;; than the game: a windowed capture also records whatever overlaps
+;;; the window, so when the background gdigrab probe (below) has
+;;; verified that GDI can read this very window, a windowed capture
+;;; goes back to gdigrab - which reads the window's redirection surface
+;;; and is overlap-proof. gdigrab is otherwise the fallback when the
+;;; monitor's DXGI output index or the window's client rect cannot be
+;;; resolved.
 
 (fli:define-c-struct win-rect
   (left :long)
@@ -550,13 +555,136 @@ when the queries fail."
                 (top (fli:foreign-slot-value point 'y)))
             (list left top (+ left width) (+ top height))))))))
 
+;;; The gdigrab window probe (live half; the argv and the verdict
+;;; predicate are in recording.lisp). Runs in the background while the
+;;; player idles outside a quest - probing at capture start would delay
+;;; the recording past the run's start trigger, like the encoder probe
+;;; note above - and its verdict is keyed to the window's identity
+;;; (hwnd address + client size), because a windowed<->fullscreen
+;;; switch recreates or resizes the window and invalidates it.
+
+(defvar *gdigrab-probe-verdict* nil
+  "Latest probe result: (:hwnd address :size (w h) :result
+:usable/:black/:failed), or NIL before the first probe. Read by
+PSOBB-CAPTURE-MONITOR through GDIGRAB-VERDICT-USABLE-P; only :USABLE
+for the current window routes a windowed capture to gdigrab.")
+
+(defvar *gdigrab-probe-process* nil
+  "The probe worker in flight, or NIL; one at a time.")
+
+(defvar *gdigrab-probe-last-start* nil
+  "Internal real time of the last probe start, or NIL. Throttles
+re-probing when the window identity keeps changing (say, a window being
+dragged across a resize corner).")
+
+(defparameter +gdigrab-probe-min-interval-seconds+ 10
+  "Cooldown between probe starts. A matching verdict never re-probes at
+all; this only spaces the re-probes a changing window identity causes.")
+
+(defun psobb-window-probe-key ()
+  "The PSOBB window's identity for probe purposes: values hwnd-address
+\(w h), or NIL when the window is absent or its client area degenerate
+\(minimized) - nothing worth probing."
+  (let ((hwnd (find-psobb-window)))
+    (when hwnd
+      (let ((client (window-client-screen-rect hwnd)))
+        (when client
+          (destructuring-bind (left top right bottom) client
+            (let ((width (- right left))
+                  (height (- bottom top)))
+              (when (and (>= width +capture-crop-min-pixels+)
+                         (>= height +capture-crop-min-pixels+))
+                (values (fli:pointer-address hwnd)
+                        (list width height))))))))))
+
+(defun probe-gdigrab-window (window-title)
+  "Live verdict on gdigrab reading WINDOW-TITLE's frames: :USABLE when
+frames came through non-black, :BLACK when blackdetect flagged any
+frame (a GDI-invisible surface - or a genuinely dark scene, which
+merely keeps the ddagrab fallback), :FAILED when ffmpeg failed or the
+stderr was unreadable. Synchronous - runs on the probe worker, never
+the poll loop."
+  (let ((backend (make-instance 'win32-ffmpeg-backend))
+        (stderr-path (namestring (merge-pathnames
+                                  "eta-gdigrab-probe-stderr.txt"
+                                  (hcl:get-temp-directory)))))
+    (handler-case
+        (let ((capture (spawn-process (resolve-ffmpeg-path)
+                                      (gdigrab-probe-args window-title)
+                                      :stderr-path stderr-path)))
+          (unwind-protect
+               (progn
+                 (wait-for-capture backend capture
+                                   +hw-probe-timeout-seconds+)
+                 (let ((ok (backend-capture-succeeded-p backend capture))
+                       (stderr (file-tail stderr-path
+                                          +stderr-transcript-chars+)))
+                   (cond ((not ok) :failed)
+                         ((null stderr)
+                          ;; No stderr means no blackdetect verdict:
+                          ;; "not proven black" must never pass for
+                          ;; "proven non-black".
+                          :failed)
+                         ((blackdetect-reports-black-p stderr) :black)
+                         (t :usable))))
+            ;; A wedged probe must not linger grabbing the window.
+            (when (capture-alive-p capture)
+              (ignore-errors
+                (%terminate-process
+                 (ffmpeg-capture-process-handle capture) 1)))
+            ;; The stderr is the probe's DATA (-loglevel info), not an
+            ;; error transcript: keep BACKEND-CLOSE-CAPTURE from
+            ;; folding its stream chatter into the recording log, and
+            ;; drop the file ourselves.
+            (setf (ffmpeg-capture-stderr-path capture) nil)
+            (backend-close-capture backend capture)
+            (uiop:delete-file-if-exists stderr-path)))
+      (error (condition)
+        (recording-log "gdigrab probe failed to spawn: ~a" condition)
+        :failed))))
+
+(defun maybe-start-gdigrab-probe (window-title)
+  "Keep *GDIGRAB-PROBE-VERDICT* current for the PSOBB window: a no-op
+while a probe is running, while the verdict already matches the
+window's identity (any result - :BLACK and :FAILED are properties of
+the window, not the moment), or within the cooldown. Called from the
+poll loop only while attached and not busy (a probe's window BitBlt
+costs frame time better left to the game during a quest)."
+  (unless (or (null window-title)
+              (and *gdigrab-probe-process*
+                   (mp:process-alive-p *gdigrab-probe-process*)))
+    (multiple-value-bind (hwnd-address size) (psobb-window-probe-key)
+      (when (and hwnd-address
+                 (let ((verdict *gdigrab-probe-verdict*))
+                   (not (and verdict
+                             (eql (getf verdict :hwnd) hwnd-address)
+                             (equal (getf verdict :size) size))))
+                 (let ((last *gdigrab-probe-last-start*))
+                   (or (null last)
+                       (>= (- (get-internal-real-time) last)
+                           (* +gdigrab-probe-min-interval-seconds+
+                              internal-time-units-per-second)))))
+        (setf *gdigrab-probe-last-start* (get-internal-real-time)
+              *gdigrab-probe-process*
+              (mp:process-run-function
+               "eta-gdigrab-probe" '()
+               (lambda ()
+                 (let ((result (probe-gdigrab-window window-title)))
+                   (setf *gdigrab-probe-verdict*
+                         (list :hwnd hwnd-address :size size
+                               :result result))
+                   (recording-log "gdigrab probe: window ~a ~a -> ~a"
+                                  hwnd-address size result)))))))))
+
 (defun psobb-capture-monitor ()
   "Plist (:output-idx :width :height [:crop (x y w h)]) of the monitor
-the PSOBB window sits on, or NIL when the window is absent or the
-monitor/crop cannot be resolved (BUILD-FFMPEG-ARGS then falls back to
-gdigrab). A window covering the monitor gets the bare monitor plist (a
-fullscreen capture, and the dimensions size the GPU-side scale); a
-smaller window gets its client area as a monitor-relative :CROP.
+the PSOBB window sits on, or NIL to capture with gdigrab instead -
+deliberately, when the probe verified window capture works for this
+window (overlap-proof), and as the fallback when the window is absent
+or the monitor/crop cannot be resolved. A window covering the monitor
+gets the bare monitor plist (a fullscreen capture, and the dimensions
+size the GPU-side scale); a smaller window gets its client area as a
+monitor-relative :CROP.
 Every outcome logs its inputs: a wrong verdict here is exactly how a
 capture silently records black (gdigrab on a surface GDI cannot see -
 run 949), and the log is all a remote diagnosis has to go on."
@@ -596,22 +724,35 @@ run 949), and the log is all a remote diagnosis has to go on."
                              :width (- right left)
                              :height (- bottom top)))
                       (t
-                       ;; Windowed: monitor capture cropped to the
-                       ;; client area, because GDI cannot read a
-                       ;; flip-model-composited window (run 949).
+                       ;; Windowed. gdigrab when the probe verified GDI
+                       ;; reads this window (window capture: whatever
+                       ;; overlaps the game stays OUT of the recording),
+                       ;; else the monitor capture cropped to the client
+                       ;; area, because GDI cannot read a flip-model-
+                       ;; composited window (run 949).
                        (let ((client (window-client-screen-rect hwnd)))
-                         (multiple-value-bind (x y width height)
-                             (and client
-                                  (capture-crop-rect client monitor-rect))
-                           (if (null x)
-                               (progn
-                                 (recording-log "capture check: unusable client rect ~a, staying on gdigrab"
-                                                client)
-                                 nil)
-                               (list :output-idx index
-                                     :width (- right left)
-                                     :height (- bottom top)
-                                     :crop (list x y width height)))))))))))))))
+                         (cond
+                           ((and client
+                                 (gdigrab-verdict-usable-p
+                                  *gdigrab-probe-verdict*
+                                  (fli:pointer-address hwnd)
+                                  (destructuring-bind (cl ct cr cb) client
+                                    (list (- cr cl) (- cb ct)))))
+                            (recording-log "capture check: windowed, probe-verified gdigrab (overlap-proof window capture)")
+                            nil)
+                           (t
+                            (multiple-value-bind (x y width height)
+                                (and client
+                                     (capture-crop-rect client monitor-rect))
+                              (if (null x)
+                                  (progn
+                                    (recording-log "capture check: unusable client rect ~a, staying on gdigrab"
+                                                   client)
+                                    nil)
+                                  (list :output-idx index
+                                        :width (- right left)
+                                        :height (- bottom top)
+                                        :crop (list x y width height)))))))))))))))))
 
 ;;; The live backend
 

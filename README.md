@@ -90,14 +90,24 @@ machines don't have.)
 ## Recording quest videos
 
 With "Record quest videos automatically" checked, the client records the
-game window with ffmpeg (gdigrab window capture): recording starts when
-a quest's start trigger fires and stops when the run completes or the
-quest is abandoned. A fullscreen game (window covering its whole
-monitor) is captured with ddagrab (Desktop Duplication) instead:
-exclusive-fullscreen Direct3D output is invisible to GDI, so gdigrab
-would record only black frames (field-observed on a Boot Camp
-machine). The fullscreen window covers the monitor, so the monitor
-capture is the game; the check runs once per capture start. Game audio is included by default via the Windows
+game window with ffmpeg: recording starts when a quest's start trigger
+fires and stops when the run completes or the quest is abandoned. The
+capture source is chosen per capture start. A fullscreen game (window
+covering its whole monitor) is captured with ddagrab (Desktop
+Duplication): exclusive-fullscreen Direct3D output is invisible to GDI,
+so gdigrab would record only black frames (field-observed on a Boot
+Camp machine), and the fullscreen window covers the monitor, so the
+monitor capture is the game. A windowed game prefers gdigrab (window
+capture): it reads the window's own surface, so windows overlapping the
+game never appear in the recording. Because some machines composite the
+game window past GDI's reach too (all-black gdigrab captures on a
+Windows 11 flip-model machine), window capture is first verified by a
+background probe - a few gdigrab frames run through ffmpeg's
+blackdetect while no quest is active - and until a probe proves it
+works, windowed games are captured as the monitor cropped to the game's
+client area. In that fallback, windows overlapping the game DO appear
+in the recording; the client warns once per session via a tray
+notification when it happens. Game audio is included by default via the Windows
 process-loopback API (Windows 10 2004+) scoped to the PSOBB process:
 **only the game is heard** - Discord, notifications etc. never end up
 in the video. On older Windows it falls back to endpoint loopback (all

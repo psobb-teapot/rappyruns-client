@@ -276,6 +276,14 @@ update exactly once."
                             (setf last-gui-update now)
                             (ignore-errors (maybe-start-upload recorder))
                             (ignore-errors (maybe-sweep-recordings recorder))
+                            ;; Keep the gdigrab window-capture verdict
+                            ;; fresh while the player idles; never
+                            ;; during a quest or capture (frame time).
+                            (when (and (recording-enabled-p)
+                                       (not *poll-busy-p*))
+                              (ignore-errors
+                                (maybe-start-gdigrab-probe
+                                 (reader-window-title reader))))
                             (update-game-status interface (and reader t)
                                                 detector snapshot recorder)
                             (when (eq (detector-state detector) :in-quest)

@@ -402,6 +402,12 @@
     :notify-software-encode-text
     ("The hardware encoder check could not run at startup, so recording uses software encoding - the game may feel slower. It switches back automatically once ffmpeg can start."
      "起動時にハードウェアエンコーダを確認できなかったため、ソフトウェアエンコードで録画しています。ゲームが重く感じられる場合があります。ffmpeg が起動できるようになれば自動的に復帰します。")
+    :notify-overlap-title
+    ("Other windows may appear in the recording"
+     "他のウィンドウが録画に写る可能性があります")
+    :notify-overlap-text
+    ("The game window cannot be captured directly on this PC, so the screen area under it is recorded instead. Windows overlapping the game (Discord, a browser...) will show up in the video - keep them off the game window while a quest is recording."
+     "このPCではゲームウィンドウを直接キャプチャできないため、ゲームのある画面領域を録画しています。ゲームに重なったウィンドウ(Discord・ブラウザなど)は動画に写り込むため、クエスト録画中はゲームの上に重ねないでください。")
     :group-updates
     ("Updates"
      "アップデート")

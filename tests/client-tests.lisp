@@ -1798,6 +1798,52 @@ over the defaults. Restores the global config afterwards (it is bound)."
            (and (member "h264_qsv" args :test #'equal)
                 (member "null" args :test #'equal)
                 (equal "-" (first (last args))))))
+  ;; The gdigrab window probe: a windowed ddagrab capture records
+  ;; whatever overlaps the game, so a probe-verified gdigrab wins the
+  ;; window back; black/failed/stale verdicts keep ddagrab (safe
+  ;; direction).
+  (let ((args (ephinea-ta-client::gdigrab-probe-args "My Game")))
+    (check "gdigrab probe grabs the window through blackdetect into null"
+           (and (member "gdigrab" args :test #'equal)
+                (member "title=My Game" args :test #'equal)
+                (find-if (lambda (arg) (search "blackdetect" arg)) args)
+                (member "null" args :test #'equal)
+                (equal "-" (first (last args)))))
+    (check "gdigrab probe logs at info (blackdetect reports there)"
+           (let ((level (position "-loglevel" args :test #'equal)))
+             (and level (equal "info" (nth (1+ level) args)))))
+    (check "gdigrab probe grabs a bounded frame count"
+           (let ((frames (position "-frames:v" args :test #'equal)))
+             (and frames
+                  (equal (princ-to-string
+                          ephinea-ta-client::+gdigrab-probe-frames+)
+                         (nth (1+ frames) args))))))
+  (check "a blackdetect report on stderr reads as black"
+         (ephinea-ta-client::blackdetect-reports-black-p
+          "[blackdetect @ 0x1] black_start:0 black_end:0.266 black_duration:0.266"))
+  (check "stream chatter without a report reads as non-black"
+         (not (ephinea-ta-client::blackdetect-reports-black-p
+               "Input #0, gdigrab, from 'title=T': Stream #0:0: Video: bmp")))
+  (check "missing stderr reads as non-black (the caller must fail it)"
+         (not (ephinea-ta-client::blackdetect-reports-black-p nil)))
+  (check "a matching usable verdict enables gdigrab"
+         (ephinea-ta-client::gdigrab-verdict-usable-p
+          '(:hwnd 42 :size (1280 960) :result :usable) 42 '(1280 960)))
+  (check "an hwnd mismatch (window recreated) keeps ddagrab"
+         (not (ephinea-ta-client::gdigrab-verdict-usable-p
+               '(:hwnd 42 :size (1280 960) :result :usable) 43 '(1280 960))))
+  (check "a size mismatch (display mode switch) keeps ddagrab"
+         (not (ephinea-ta-client::gdigrab-verdict-usable-p
+               '(:hwnd 42 :size (1280 960) :result :usable) 42 '(1920 1080))))
+  (check "a black verdict keeps ddagrab"
+         (not (ephinea-ta-client::gdigrab-verdict-usable-p
+               '(:hwnd 42 :size (1280 960) :result :black) 42 '(1280 960))))
+  (check "a failed verdict keeps ddagrab"
+         (not (ephinea-ta-client::gdigrab-verdict-usable-p
+               '(:hwnd 42 :size (1280 960) :result :failed) 42 '(1280 960))))
+  (check "no verdict yet keeps ddagrab"
+         (not (ephinea-ta-client::gdigrab-verdict-usable-p
+               nil 42 '(1280 960))))
   ;; The x264 thread cap: half the logical processors, floor 2, cap 8.
   (check "encoder threads: half the cores"
          (= 4 (ephinea-ta-client::encoder-thread-count 8)))
