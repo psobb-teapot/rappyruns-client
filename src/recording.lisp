@@ -23,13 +23,17 @@
 ;;; Capture-backend protocol
 
 (defgeneric backend-start-capture (backend ffmpeg-path args output-path
-                                   &key audio-pipe audio-pid)
+                                   &key audio-pipe audio-pid wgc-session)
   (:documentation
    "Spawn ffmpeg with ARGS (a list of argv strings; OUTPUT-PATH is the
 last of them, passed separately so the backend can create the
 directory). When AUDIO-PIPE is non-NIL, ARGS reference it as a second
 input and the backend must serve AUDIO-PID's game audio on it (fixing
 the format tokens in ARGS up to match, see RETARGET-AUDIO-ARGS).
+When WGC-SESSION is non-NIL (the :SESSION of a BACKEND-WGC-CAPTURE
+plan), ARGS reference its pipe as the video input; the backend adopts
+the session - it rides on the capture token and is stopped and
+released with it, including when the spawn itself fails.
 Returns a capture token, or (values nil error-string)."))
 
 (defgeneric backend-capture-alive-p (backend capture))
@@ -78,6 +82,22 @@ windowed capture prefers gdigrab whenever the black-frame probe
 \(MAYBE-START-GDIGRAB-PROBE, ffmpeg-win32) has verified that GDI can
 read THIS window; NIL then routes BUILD-FFMPEG-ARGS to gdigrab on
 purpose, and the ddagrab :CROP remains the fallback.")
+  (:method (backend) nil))
+
+(defgeneric backend-wgc-capture (backend)
+  (:documentation
+   "A ready-to-feed Windows.Graphics.Capture plan for the game window:
+plist (:session S :pipe NAME :width W :height H [:crop (x y w h)]), or
+NIL when WGC is unavailable, the game is fullscreen (ddagrab is right
+there: nothing can overlap it and the QSV zero-copy chain stays), or
+the session could not be created. Queried once per capture start,
+BEFORE BACKEND-CAPTURE-MONITOR - window capture beats every monitor
+path for a windowed game because nothing overlapping the window can
+appear in the recording and no GDI readability probe is needed. :CROP
+cuts the client area out of the whole-window frames (WGC captures the
+caption and borders too), window-relative (WGC-CROP-RECT). The
+:SESSION is opaque to the caller; hand it to BACKEND-START-CAPTURE as
+:WGC-SESSION, which owns it from then on.")
   (:method (backend) nil))
 
 (defgeneric backend-list-stale-files (backend dir)
@@ -327,6 +347,43 @@ hcl:get-temp-directory asks Windows at call time instead."
                    #+lispworks (hcl:get-temp-directory)
                    #-lispworks (uiop:temporary-directory)))
 
+(defparameter +recording-log-max-bytes+ (* 1024 1024)
+  "Rotation threshold for the recording log. The log is append-only
+across sessions and now also receives ffmpeg stderr transcripts, so an
+unrotated file would grow without bound; one file of history plus a
+.old generation is plenty for diagnostics.")
+
+(defun rotate-recording-log ()
+  "Move an oversized recording log aside (overwriting the previous
+generation) so the live file stays small enough to read whole."
+  (let ((path (recording-log-path)))
+    (when (> (or (ignore-errors
+                   (with-open-file (s path :element-type '(unsigned-byte 8))
+                     (file-length s)))
+                 0)
+             +recording-log-max-bytes+)
+      (uiop:rename-file-overwriting-target
+       path (make-pathname :type "old" :defaults path)))))
+
+(defun recording-log (fmt &rest args)
+  "Append a timestamped line to %TEMP%\\ephinea-ta-recording.log. The
+GUI can only show a one-line error label; capture-start failures in
+the field (e.g. \"pointer out of memory bounds\" right after a game
+crash, 2026-07-06) need the full story to be diagnosable after the
+fact. Never signals."
+  (ignore-errors
+    (rotate-recording-log)
+    (with-open-file (s (recording-log-path)
+                       :direction :output :if-exists :append
+                       :if-does-not-exist :create
+                       :external-format :utf-8)
+      (multiple-value-bind (sec min hour day month)
+          (decode-universal-time (get-universal-time))
+        (format s "~2,'0d-~2,'0d ~2,'0d:~2,'0d:~2,'0d "
+                month day hour min sec))
+      (apply #'format s fmt args)
+      (terpri s))))
+
 (defparameter +diagnostics-tail-chars+ 65536
   "How much of the recording log's tail rides in a diagnostics report.
 Comfortably several sessions' worth of RECORDING-LOG lines, and small
@@ -538,6 +595,29 @@ smaller than +CAPTURE-CROP-MIN-PIXELS+ a side."
                    (>= height +capture-crop-min-pixels+))
           (values (- left ml) (- top mt) width height))))))
 
+(defun wgc-crop-rect (client-rect window-rect frame-width frame-height)
+  "Where the window's CLIENT-RECT sits inside WINDOW-RECT, as a crop
+(x y width height) in window-relative pixels for cutting the client
+area out of a WGC whole-window frame (WGC captures caption and borders
+too; gdigrab and the ddagrab :CROP both deliver the bare client area,
+and recordings should not change shape with the capture path). Rects
+are (left top right bottom) screen-coordinate lists; FRAME-WIDTH/
+FRAME-HEIGHT bound the crop to what the frames actually hold (the WGC
+frame size can differ from GetWindowRect by the invisible resize
+border). Sizes are floored to even numbers (yuv420p); NIL when the
+result would be degenerate (< +CAPTURE-CROP-MIN-PIXELS+ a side), where
+the whole frame is recorded instead. Pure so the tests can pin it."
+  (destructuring-bind (cl ct cr cb) client-rect
+    (destructuring-bind (wl wt wr wb) window-rect
+      (declare (ignore wr wb))
+      (let* ((x (max 0 (- cl wl)))
+             (y (max 0 (- ct wt)))
+             (width (* 2 (floor (min (- cr cl) (- frame-width x)) 2)))
+             (height (* 2 (floor (min (- cb ct) (- frame-height y)) 2))))
+        (when (and (>= width +capture-crop-min-pixels+)
+                   (>= height +capture-crop-min-pixels+))
+          (list x y width height))))))
+
 (defun capture-secondary-adapter (capture-monitor)
   "The DXGI adapter index CAPTURE-MONITOR's :ADAPTER names when it is
 not the default adapter, else NIL. ddagrab left to itself creates its
@@ -611,13 +691,20 @@ verdicts must fall back to ddagrab, never the other way. Pure."
 ;; leak, so nothing may ever guess it again.
 
 (defun build-ffmpeg-args (&key window-title output-path audio-pipe
-                               capture-monitor video-encoder gpu-chain
+                               capture-monitor wgc-capture
+                               video-encoder gpu-chain
                                low-memory
                                (framerate +record-framerate+))
   "ffmpeg argv (without the program itself). Fragmented MP4 keeps the
 file playable even when ffmpeg is killed instead of quitting on \"q\".
 With AUDIO-PIPE, raw 16-bit 48 kHz stereo game audio arrives on that
 named pipe as a second input and is encoded as AAC. With
+WGC-CAPTURE (a plist :pipe :width :height [:crop], see
+BACKEND-WGC-CAPTURE; it wins over every other video source), the video
+is raw BGRA frames the client itself captures from the game window via
+Windows.Graphics.Capture and serves on the named :PIPE - the
+overlap-proof windowed path; the :CROP cuts the client area out of the
+whole-window frames before the scale. With
 CAPTURE-MONITOR (a plist :output-idx :adapter :width :height [:crop],
 see BACKEND-CAPTURE-MONITOR), the video comes from ddagrab (Desktop
 Duplication): GDI cannot see an exclusive-fullscreen Direct3D surface,
@@ -657,23 +744,37 @@ HD, shifting every saturated color on the site (run 1368)."
    ;; against the bundled ffmpeg 8: ddagrab uses the filter_hw_device
    ;; when one is supplied). output_idx is already adapter-relative
    ;; (DXGI-OUTPUT-INDEX-FOR-DEVICE).
-   (let ((adapter (capture-secondary-adapter capture-monitor)))
-     (when adapter
-       (list "-init_hw_device" (format nil "d3d11va=dda:~d" adapter)
-             "-filter_hw_device" "dda")))
-   (if capture-monitor
-       ;; ddagrab is a lavfi source filter; it creates its own D3D11
-       ;; device (unless one is supplied above) and outputs GPU frames
-       ;; at a constant FRAMERATE (duplicating frames on static
-       ;; screens), which the -vf chain either downloads for the CPU
-       ;; scale or maps straight to QSV.
-       (list "-f" "lavfi"
-             "-i" (format nil "ddagrab=output_idx=~d:framerate=~d:draw_mouse=0"
-                          (getf capture-monitor :output-idx) framerate))
-       (list "-f" "gdigrab"
-             "-framerate" (princ-to-string framerate)
-             "-draw_mouse" "0"
-             "-i" (format nil "title=~a" window-title)))
+   (unless wgc-capture
+     (let ((adapter (capture-secondary-adapter capture-monitor)))
+       (when adapter
+         (list "-init_hw_device" (format nil "d3d11va=dda:~d" adapter)
+               "-filter_hw_device" "dda"))))
+   (cond
+     (wgc-capture
+      ;; The client feeds whole-window BGRA frames at a constant
+      ;; FRAMERATE on the pipe (WGC-CAPTURE-LOOP duplicates unchanged
+      ;; frames, like ddagrab's dup_frames).
+      (list "-f" "rawvideo"
+            "-pixel_format" "bgra"
+            "-video_size" (format nil "~dx~d"
+                                  (getf wgc-capture :width)
+                                  (getf wgc-capture :height))
+            "-framerate" (princ-to-string framerate)
+            "-i" (getf wgc-capture :pipe)))
+     (capture-monitor
+      ;; ddagrab is a lavfi source filter; it creates its own D3D11
+      ;; device (unless one is supplied above) and outputs GPU frames
+      ;; at a constant FRAMERATE (duplicating frames on static
+      ;; screens), which the -vf chain either downloads for the CPU
+      ;; scale or maps straight to QSV.
+      (list "-f" "lavfi"
+            "-i" (format nil "ddagrab=output_idx=~d:framerate=~d:draw_mouse=0"
+                         (getf capture-monitor :output-idx) framerate)))
+     (t
+      (list "-f" "gdigrab"
+            "-framerate" (princ-to-string framerate)
+            "-draw_mouse" "0"
+            "-i" (format nil "title=~a" window-title))))
    (when audio-pipe
      (list "-f" "s16le" "-ar" "48000" "-ac" "2"
            "-thread_queue_size" "1024"
@@ -716,6 +817,15 @@ HD, shifting every saturated color on the site (run 1368)."
                   (format nil "hwmap=derive_device=qsv,vpp_qsv=w=~d:h=~d:format=nv12:out_color_matrix=bt709:out_range=tv"
                           width height))
                 (let ((base (cond
+                              ((and wgc-capture (getf wgc-capture :crop))
+                               ;; The client area, cut out of the
+                               ;; whole-window WGC frame (CPU frames
+                               ;; off the pipe: no hwdownload).
+                               (destructuring-bind (x y width height)
+                                   (getf wgc-capture :crop)
+                                 (format nil "crop=~d:~d:~d:~d,~a"
+                                         width height x y
+                                         (record-scale-filter))))
                               (crop
                                ;; The window's client area, cut out of the
                                ;; monitor frame before the scale sees it.
@@ -868,11 +978,16 @@ runs, where TRAY-NOTIFY is never defined."
          (audio-pid (and (config-value :record-audio) *audio-target-pid*))
          (audio-pipe (and audio-pid (audio-pipe-name)))
          (encoder (and (config-value :hw-encode) *hw-video-encoder*))
-         (monitor (backend-capture-monitor (recorder-backend recorder)))
+         ;; Windowed WGC first - overlap-proof window capture - then
+         ;; the monitor paths (fullscreen, or WGC unavailable/failed).
+         (wgc (backend-wgc-capture (recorder-backend recorder)))
+         (monitor (unless wgc
+                    (backend-capture-monitor (recorder-backend recorder))))
          (args (build-ffmpeg-args :window-title window-title
                                   :output-path output
                                   :audio-pipe audio-pipe
                                   :capture-monitor monitor
+                                  :wgc-capture wgc
                                   :video-encoder encoder
                                   :gpu-chain
                                   (and (equal encoder "h264_qsv")
@@ -880,7 +995,8 @@ runs, where TRAY-NOTIFY is never defined."
                                   :low-memory (low-memory-machine-p))))
     (multiple-value-bind (capture error)
         (backend-start-capture (recorder-backend recorder) ffmpeg args output
-                               :audio-pipe audio-pipe :audio-pid audio-pid)
+                               :audio-pipe audio-pipe :audio-pid audio-pid
+                               :wgc-session (getf wgc :session))
       (if capture
           (progn
             (setf (recorder-capture recorder) capture

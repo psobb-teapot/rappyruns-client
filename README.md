@@ -97,17 +97,23 @@ covering its whole monitor) is captured with ddagrab (Desktop
 Duplication): exclusive-fullscreen Direct3D output is invisible to GDI,
 so gdigrab would record only black frames (field-observed on a Boot
 Camp machine), and the fullscreen window covers the monitor, so the
-monitor capture is the game. A windowed game prefers gdigrab (window
-capture): it reads the window's own surface, so windows overlapping the
-game never appear in the recording. Because some machines composite the
-game window past GDI's reach too (all-black gdigrab captures on a
-Windows 11 flip-model machine), window capture is first verified by a
+monitor capture is the game. A windowed game is captured with Windows
+Graphics Capture (WGC, the API OBS and Game Bar use; Windows 10 1903+):
+the client captures the window's own composited frames itself
+(`src/wgc-win32.lisp`, raw WinRT over FLI) and serves them to ffmpeg as
+raw video over a named pipe - ffmpeg has no WGC input device - so
+windows overlapping the game never appear in the recording, and
+surfaces GDI cannot read (flip-model composition, the all-black
+run-949 recordings) capture fine. Windows may draw a brief border
+around the captured window on some OS versions; it is an on-screen
+indicator only and never appears in the video. On Windows without WGC
+the older windowed paths remain: gdigrab (window capture) when a
 background probe - a few gdigrab frames run through ffmpeg's
-blackdetect while no quest is active - and until a probe proves it
-works, windowed games are captured as the monitor cropped to the game's
-client area. In that fallback, windows overlapping the game DO appear
-in the recording; the client warns once per session via a tray
-notification when it happens. Game audio is included by default via the Windows
+blackdetect while no quest is active - has proven GDI can read the
+window, else the monitor cropped to the game's client area. In that
+last fallback, windows overlapping the game DO appear in the
+recording; the client warns once per session via a tray notification
+when it happens. Game audio is included by default via the Windows
 process-loopback API (Windows 10 2004+) scoped to the PSOBB process:
 **only the game is heard** - Discord, notifications etc. never end up
 in the video. On older Windows it falls back to endpoint loopback (all
