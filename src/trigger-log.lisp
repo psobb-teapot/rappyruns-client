@@ -70,14 +70,13 @@ trigger log and last-kill tracking."
                      (zerop (getf monster :hp 0)))
             :collect monster)))
 
-(defun newly-set-floor-switches (previous snapshot)
-  "Floor switches that flipped 0->1 between PREVIOUS and SNAPSHOT, as a
-list of (:floor F :switch S). Clearing a room commonly fires such a
-switch, so this feeds the room-clear trigger candidate. Same bit layout
-as SNAPSHOT-FLOOR-SWITCH-SET-P. Pure."
+(defun map-floor-switch-diffs (previous snapshot fn)
+  "Call FN with (floor switch old-on-p new-on-p) for every floor-switch
+bit that differs between PREVIOUS and SNAPSHOT - same bit layout as
+SNAPSHOT-FLOOR-SWITCH-SET-P. The shared driver under the room-clear
+candidate scan (0->1 only) and the trigger log (any flip). Pure."
   (let ((old (getf previous :floor-switches))
-        (new (getf snapshot :floor-switches))
-        (result '()))
+        (new (getf snapshot :floor-switches)))
     (when (and old new)
       (dotimes (i (min (length old) (length new)))
         (let ((old-byte (aref old i))
@@ -85,11 +84,23 @@ as SNAPSHOT-FLOOR-SWITCH-SET-P. Pure."
           (unless (= old-byte new-byte)
             (dotimes (bit 8)
               (let ((mask (ash #x80 (- bit))))
-                (when (and (zerop (logand old-byte mask))
-                           (plusp (logand new-byte mask)))
-                  (push (list :floor (floor i 32)
-                              :switch (+ (* 8 (mod i 32)) bit))
-                        result))))))))
+                (unless (= (logand old-byte mask) (logand new-byte mask))
+                  (funcall fn
+                           (floor i 32)
+                           (+ (* 8 (mod i 32)) bit)
+                           (plusp (logand old-byte mask))
+                           (plusp (logand new-byte mask))))))))))))
+
+(defun newly-set-floor-switches (previous snapshot)
+  "Floor switches that flipped 0->1 between PREVIOUS and SNAPSHOT, as a
+list of (:floor F :switch S). Clearing a room commonly fires such a
+switch, so this feeds the room-clear trigger candidate. Pure."
+  (let ((result '()))
+    (map-floor-switch-diffs previous snapshot
+                            (lambda (floor switch old-on new-on)
+                              (when (and (not old-on) new-on)
+                                (push (list :floor floor :switch switch)
+                                      result))))
     (nreverse result)))
 
 (defvar *last-kill* nil
@@ -312,23 +323,12 @@ snapshots of the same loaded quest."
                 (incf changes)
                 (format stream "~a ~s register ~d: ~d -> ~d~%"
                         stamp quest id old-value new-value))))))
-      (let ((old (getf previous :floor-switches))
-            (new (getf snapshot :floor-switches)))
-        (when (and old new)
-          (dotimes (i (min (length old) (length new)))
-            (let ((old-byte (aref old i))
-                  (new-byte (aref new i)))
-              (unless (= old-byte new-byte)
-                (dotimes (bit 8)
-                  (let ((mask (ash #x80 (- bit))))
-                    (unless (= (logand old-byte mask) (logand new-byte mask))
-                      (incf changes)
-                      (format stream "~a ~s floor ~d switch ~d: ~:[off~;on~] -> ~:[off~;on~]~%"
-                              stamp quest
-                              (floor i 32)
-                              (+ (* 8 (mod i 32)) bit)
-                              (plusp (logand old-byte mask))
-                              (plusp (logand new-byte mask)))))))))))
+      (map-floor-switch-diffs
+       previous snapshot
+       (lambda (floor switch old-on new-on)
+         (incf changes)
+         (format stream "~a ~s floor ~d switch ~d: ~:[off~;on~] -> ~:[off~;on~]~%"
+                 stamp quest floor switch old-on new-on)))
       ;; Monster kills: an enemy seen alive last frame now at 0 hp. The
       ;; id printed here is what a "monster:ID" end trigger matches.
       (dolist (monster (newly-killed-monsters previous snapshot))
