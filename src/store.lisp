@@ -52,6 +52,10 @@ LIMIT finished ones, preserving order."
 ;;; (LispWorks-only) GUI so the SBCL tests can cover them.
 
 (defun format-run-time (ms)
+  "Clear time for the runs list. Deliberately simpler than the server's
+UTIL:FORMAT-TIME-MS: past an hour this shows \"65:00.000\" where the
+site shows \"1:05:00.000\" - unifying them is a visible display change
+parked on the refactor backlog (T20)."
   (multiple-value-bind (total-seconds msec) (floor ms 1000)
     (multiple-value-bind (minutes seconds) (floor total-seconds 60)
       (format nil "~d:~2,'0d.~3,'0d" minutes seconds msec))))
