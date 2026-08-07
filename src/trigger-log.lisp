@@ -221,7 +221,8 @@ reads the run-log globals."
                           room))))
 
 ;;; Area names: a room's :map number -> a human area label, mirroring the
-;;; site (src/views.lisp +map-names+ / room-area-text). The client reads
+;;; site (src/views.lisp +map-names+ / room-area-text; the server repo's
+;;; tests/contract-tests.lisp pins the two copies equal). The client reads
 ;;; the real loaded map (+current-map-address+, snapshot :map), which
 ;;; indexes this table directly, so no episode/floor-slot fallback is
 ;;; needed. English only (area names are proper nouns used as-is in JA).
