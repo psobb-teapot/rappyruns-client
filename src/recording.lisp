@@ -690,6 +690,125 @@ verdicts must fall back to ddagrab, never the other way. Pure."
 ;; Discord instead of the game), and a wrong monitor is a privacy
 ;; leak, so nothing may ever guess it again.
 
+(defun video-input-args (window-title capture-monitor wgc-capture framerate)
+  "The video-source argv slice of BUILD-FFMPEG-ARGS: the WGC raw pipe,
+ddagrab (with the explicit device when the monitor sits on a secondary
+adapter), or the gdigrab fallback. Pure; the recorder tests pin the
+exact argv."
+  (append
+   ;; A monitor on a secondary adapter: ddagrab's own device would sit
+   ;; on adapter 0 and never see it, so create the device explicitly on
+   ;; the right adapter and hand it to the filter graph (verified
+   ;; against the bundled ffmpeg 8: ddagrab uses the filter_hw_device
+   ;; when one is supplied). output_idx is already adapter-relative
+   ;; (DXGI-OUTPUT-INDEX-FOR-DEVICE).
+   (unless wgc-capture
+     (let ((adapter (capture-secondary-adapter capture-monitor)))
+       (when adapter
+         (list "-init_hw_device" (format nil "d3d11va=dda:~d" adapter)
+               "-filter_hw_device" "dda"))))
+   (cond
+     (wgc-capture
+      ;; The client feeds whole-window BGRA frames at a constant
+      ;; FRAMERATE on the pipe (WGC-CAPTURE-LOOP duplicates unchanged
+      ;; frames, like ddagrab's dup_frames).
+      (list "-f" "rawvideo"
+            "-pixel_format" "bgra"
+            "-video_size" (format nil "~dx~d"
+                                  (getf wgc-capture :width)
+                                  (getf wgc-capture :height))
+            "-framerate" (princ-to-string framerate)
+            "-i" (getf wgc-capture :pipe)))
+     (capture-monitor
+      ;; ddagrab is a lavfi source filter; it creates its own D3D11
+      ;; device (unless one is supplied above) and outputs GPU frames
+      ;; at a constant FRAMERATE (duplicating frames on static
+      ;; screens), which the -vf chain either downloads for the CPU
+      ;; scale or maps straight to QSV.
+      (list "-f" "lavfi"
+            "-i" (format nil "ddagrab=output_idx=~d:framerate=~d:draw_mouse=0"
+                         (getf capture-monitor :output-idx) framerate)))
+     (t
+      (list "-f" "gdigrab"
+            "-framerate" (princ-to-string framerate)
+            "-draw_mouse" "0"
+            "-i" (format nil "title=~a" window-title))))))
+
+(defun video-encoder-args (video-encoder low-memory)
+  "The encoder argv slice of BUILD-FFMPEG-ARGS: a GPU encoder at VBR or
+the libx264 CRF path; -bf 0 on both (the B-frame reorder delay skewed
+A/V sync per player, run 92). Pure."
+  (if video-encoder
+      (list "-c:v" video-encoder
+            "-b:v" (if low-memory +hw-record-bitrate-low+ +hw-record-bitrate+)
+            "-maxrate" (if low-memory +hw-record-maxrate-low+ +hw-record-maxrate+)
+            "-bufsize" (if low-memory +hw-record-bufsize-low+ +hw-record-bufsize+)
+            "-bf" "0")
+      (list "-c:v" "libx264"
+            "-preset" +record-preset+
+            "-threads" (princ-to-string (encoder-thread-count))
+            "-crf" (princ-to-string (if low-memory +record-crf-low+ +record-crf+))
+            ;; No B-frames: see the encoder-settings note. The fragmented
+            ;; muxer would bake their reorder delay in as a video start
+            ;; offset that browsers and local players interpret
+            ;; differently, skewing A/V sync by 2 frames on the site.
+            "-bf" "0"
+            "-pix_fmt" "yuv420p")))
+
+(defun capture-filter-chain (capture-monitor wgc-capture video-encoder gpu-chain)
+  "The -vf value of BUILD-FFMPEG-ARGS: crop (WGC client area or
+monitor-relative window), the scale, the zero-copy QSV variant, and
+the bt709 color tags every path ends in. Pure."
+  (let ((crop (and capture-monitor (getf capture-monitor :crop))))
+    (concatenate
+     'string
+     ;; The zero-copy QSV chain stays off on a secondary
+     ;; adapter: the startup probe verified hwmap's QSV derive
+     ;; against ddagrab's default-adapter device, and deriving
+     ;; from another (typically non-Intel) adapter's device is
+     ;; a different, unverified thing - hwdownload works
+     ;; everywhere.
+     (if (and capture-monitor (not crop) video-encoder gpu-chain
+              (not (capture-secondary-adapter capture-monitor)))
+         (multiple-value-bind (width height)
+             (record-scale-dimensions (getf capture-monitor :width)
+                                      (getf capture-monitor :height))
+           ;; vpp_qsv, not scale_qsv: same VPP underneath, but
+           ;; only the full filter exposes the explicit color
+           ;; conversion (see the color note; the chain probe
+           ;; verifies these exact options).
+           (format nil "hwmap=derive_device=qsv,vpp_qsv=w=~d:h=~d:format=nv12:out_color_matrix=bt709:out_range=tv"
+                   width height))
+         (let ((base (cond
+                       ((and wgc-capture (getf wgc-capture :crop))
+                        ;; The client area, cut out of the
+                        ;; whole-window WGC frame (CPU frames
+                        ;; off the pipe: no hwdownload).
+                        (destructuring-bind (x y width height)
+                            (getf wgc-capture :crop)
+                          (format nil "crop=~d:~d:~d:~d,~a"
+                                  width height x y
+                                  (record-scale-filter))))
+                       (crop
+                        ;; The window's client area, cut out of the
+                        ;; monitor frame before the scale sees it.
+                        (destructuring-bind (x y width height) crop
+                          (format nil "hwdownload,format=bgra,crop=~d:~d:~d:~d,~a"
+                                  width height x y
+                                  (record-scale-filter))))
+                       (capture-monitor
+                        (format nil "hwdownload,format=bgra,~a"
+                                (record-scale-filter)))
+                       (t (record-scale-filter)))))
+           ;; The YUV format directly after the scale makes the
+           ;; scale itself the RGB->YUV conversion, so its
+           ;; out_color_matrix applies (the x264 path's -pix_fmt
+           ;; alone would leave it to an untagged auto-insert).
+           (concatenate 'string base
+                        (if video-encoder ",format=nv12" ",format=yuv420p"))))
+     ","
+     +record-color-tags-filter+)))
+
 (defun build-ffmpeg-args (&key window-title output-path audio-pipe
                                capture-monitor wgc-capture
                                video-encoder gpu-chain
@@ -738,113 +857,15 @@ HD, shifting every saturated color on the site (run 1368)."
          ;; Probing one frame instead of probesize-worth keeps video
          ;; time 0 and audio time 0 within a frame of each other.
          "-probesize" "32" "-analyzeduration" "0")
-   ;; A monitor on a secondary adapter: ddagrab's own device would sit
-   ;; on adapter 0 and never see it, so create the device explicitly on
-   ;; the right adapter and hand it to the filter graph (verified
-   ;; against the bundled ffmpeg 8: ddagrab uses the filter_hw_device
-   ;; when one is supplied). output_idx is already adapter-relative
-   ;; (DXGI-OUTPUT-INDEX-FOR-DEVICE).
-   (unless wgc-capture
-     (let ((adapter (capture-secondary-adapter capture-monitor)))
-       (when adapter
-         (list "-init_hw_device" (format nil "d3d11va=dda:~d" adapter)
-               "-filter_hw_device" "dda"))))
-   (cond
-     (wgc-capture
-      ;; The client feeds whole-window BGRA frames at a constant
-      ;; FRAMERATE on the pipe (WGC-CAPTURE-LOOP duplicates unchanged
-      ;; frames, like ddagrab's dup_frames).
-      (list "-f" "rawvideo"
-            "-pixel_format" "bgra"
-            "-video_size" (format nil "~dx~d"
-                                  (getf wgc-capture :width)
-                                  (getf wgc-capture :height))
-            "-framerate" (princ-to-string framerate)
-            "-i" (getf wgc-capture :pipe)))
-     (capture-monitor
-      ;; ddagrab is a lavfi source filter; it creates its own D3D11
-      ;; device (unless one is supplied above) and outputs GPU frames
-      ;; at a constant FRAMERATE (duplicating frames on static
-      ;; screens), which the -vf chain either downloads for the CPU
-      ;; scale or maps straight to QSV.
-      (list "-f" "lavfi"
-            "-i" (format nil "ddagrab=output_idx=~d:framerate=~d:draw_mouse=0"
-                         (getf capture-monitor :output-idx) framerate)))
-     (t
-      (list "-f" "gdigrab"
-            "-framerate" (princ-to-string framerate)
-            "-draw_mouse" "0"
-            "-i" (format nil "title=~a" window-title))))
+   (video-input-args window-title capture-monitor wgc-capture framerate)
    (when audio-pipe
      (list "-f" "s16le" "-ar" "48000" "-ac" "2"
            "-thread_queue_size" "1024"
            "-i" audio-pipe))
-   (if video-encoder
-       (list "-c:v" video-encoder
-             "-b:v" (if low-memory +hw-record-bitrate-low+ +hw-record-bitrate+)
-             "-maxrate" (if low-memory +hw-record-maxrate-low+ +hw-record-maxrate+)
-             "-bufsize" (if low-memory +hw-record-bufsize-low+ +hw-record-bufsize+)
-             "-bf" "0")
-       (list "-c:v" "libx264"
-             "-preset" +record-preset+
-             "-threads" (princ-to-string (encoder-thread-count))
-             "-crf" (princ-to-string (if low-memory +record-crf-low+ +record-crf+))
-             ;; No B-frames: see the encoder-settings note. The fragmented
-             ;; muxer would bake their reorder delay in as a video start
-             ;; offset that browsers and local players interpret
-             ;; differently, skewing A/V sync by 2 frames on the site.
-             "-bf" "0"
-             "-pix_fmt" "yuv420p"))
+   (video-encoder-args video-encoder low-memory)
    (list "-vf"
-         (let ((crop (and capture-monitor (getf capture-monitor :crop))))
-           (concatenate
-            'string
-            ;; The zero-copy QSV chain stays off on a secondary
-            ;; adapter: the startup probe verified hwmap's QSV derive
-            ;; against ddagrab's default-adapter device, and deriving
-            ;; from another (typically non-Intel) adapter's device is
-            ;; a different, unverified thing - hwdownload works
-            ;; everywhere.
-            (if (and capture-monitor (not crop) video-encoder gpu-chain
-                     (not (capture-secondary-adapter capture-monitor)))
-                (multiple-value-bind (width height)
-                    (record-scale-dimensions (getf capture-monitor :width)
-                                             (getf capture-monitor :height))
-                  ;; vpp_qsv, not scale_qsv: same VPP underneath, but
-                  ;; only the full filter exposes the explicit color
-                  ;; conversion (see the color note; the chain probe
-                  ;; verifies these exact options).
-                  (format nil "hwmap=derive_device=qsv,vpp_qsv=w=~d:h=~d:format=nv12:out_color_matrix=bt709:out_range=tv"
-                          width height))
-                (let ((base (cond
-                              ((and wgc-capture (getf wgc-capture :crop))
-                               ;; The client area, cut out of the
-                               ;; whole-window WGC frame (CPU frames
-                               ;; off the pipe: no hwdownload).
-                               (destructuring-bind (x y width height)
-                                   (getf wgc-capture :crop)
-                                 (format nil "crop=~d:~d:~d:~d,~a"
-                                         width height x y
-                                         (record-scale-filter))))
-                              (crop
-                               ;; The window's client area, cut out of the
-                               ;; monitor frame before the scale sees it.
-                               (destructuring-bind (x y width height) crop
-                                 (format nil "hwdownload,format=bgra,crop=~d:~d:~d:~d,~a"
-                                         width height x y
-                                         (record-scale-filter))))
-                              (capture-monitor
-                               (format nil "hwdownload,format=bgra,~a"
-                                       (record-scale-filter)))
-                              (t (record-scale-filter)))))
-                  ;; The YUV format directly after the scale makes the
-                  ;; scale itself the RGB->YUV conversion, so its
-                  ;; out_color_matrix applies (the x264 path's -pix_fmt
-                  ;; alone would leave it to an untagged auto-insert).
-                  (concatenate 'string base
-                               (if video-encoder ",format=nv12" ",format=yuv420p"))))
-            ","
-            +record-color-tags-filter+)))
+         (capture-filter-chain capture-monitor wgc-capture
+                               video-encoder gpu-chain))
    (when audio-pipe
      ;; NO -af here, and in particular no loudnorm: its multi-second
      ;; lookahead makes the audio output lag the video permanently,
