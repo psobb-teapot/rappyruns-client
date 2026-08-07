@@ -2516,6 +2516,87 @@ store functions that persist never touch the real %APPDATA% queue."
                 (not (search "awaiting review" label))))))
 
 ;;; ------------------------------------------------------------------
+;;; Coverage gaps: pure helpers that had no direct tests (T16)
+;;; ------------------------------------------------------------------
+
+(defun run-pure-helper-tests ()
+  (format t "~&--- pure helpers ---~%")
+  ;; parse-url (api-client): the URL splitter every request goes through.
+  (multiple-value-bind (scheme host port path)
+      (ephinea-ta-client::parse-url "https://example.com/api/quests")
+    (check "parse-url https defaults"
+           (and (equal scheme "https") (equal host "example.com")
+                (eql port 443) (equal path "/api/quests"))))
+  (multiple-value-bind (scheme host port path)
+      (ephinea-ta-client::parse-url "http://localhost:8123")
+    (check "parse-url explicit port, bare authority"
+           (and (equal scheme "http") (equal host "localhost")
+                (eql port 8123) (equal path "/"))))
+  (check "parse-url schemeless URL signals api-error"
+         (eq :api-error
+             (handler-case (ephinea-ta-client::parse-url "example.com/x")
+               (ephinea-ta-client::api-error () :api-error)
+               (error () :other))))
+  ;; Pinned current behavior: a junk port escapes as a bare
+  ;; parse-error, NOT api-error (backlog T16 - fix is a behavior
+  ;; change, so first freeze what it does today).
+  (check "parse-url junk port signals a non-api error (pinned)"
+         (eq :other
+             (handler-case (ephinea-ta-client::parse-url "http://h:abc/")
+               (ephinea-ta-client::api-error () :api-error)
+               (error () :other))))
+  ;; u64-double (memory): the f64 decoder under the Anguish HP-scale read.
+  (check "u64-double decodes 1.0"
+         (= 1.0d0 (ephinea-ta-client::u64-double #x3FF0000000000000)))
+  (check "u64-double decodes -2.5"
+         (= -2.5d0 (ephinea-ta-client::u64-double #xC004000000000000)))
+  (check "u64-double decodes the Anguish 1.30 scale"
+         (< (abs (- 1.30d0 (ephinea-ta-client::u64-double #x3FF4CCCCCCCCCCCD)))
+            1d-12))
+  (check "u64-double clamps infinity/NaN"
+         (= 1.7d308 (ephinea-ta-client::u64-double #x7FF0000000000000)))
+  (check "u64-double decodes subnormals"
+         (< 0 (ephinea-ta-client::u64-double 1) 1d-300))
+  ;; trigger-met-p (detect): the two arms not exercised through
+  ;; detector-step's snapshots.
+  (check "trigger-met-p warp-in needs a landed player"
+         (and (ephinea-ta-client::trigger-met-p
+               '(:warp-in) '(:players ((:floor 1 :warping nil))))
+              (not (ephinea-ta-client::trigger-met-p
+                    '(:warp-in) '(:players ((:floor 1 :warping t)))))
+              (not (ephinea-ta-client::trigger-met-p
+                    '(:warp-in) '(:players ((:floor 0 :warping nil)))))))
+  (check "trigger-met-p monster-dead consults killed ids"
+         (and (ephinea-ta-client::trigger-met-p
+               '(:monster-dead 42) '() '(41 42))
+              (not (ephinea-ta-client::trigger-met-p
+                    '(:monster-dead 42) '() '(41)))))
+  ;; deduplicate-path (recording): Explorer-style collision counter.
+  (let* ((dir (uiop:temporary-directory))
+         (stem (format nil "eta-t16-~d" (get-universal-time)))
+         (taken (namestring (merge-pathnames (format nil "~a.mp4" stem) dir)))
+         (free (namestring (merge-pathnames (format nil "~a-free.mp4" stem) dir))))
+    (unwind-protect
+         (progn
+           (with-open-file (out taken :direction :output) (declare (ignorable out)))
+           (check "deduplicate-path leaves a free name alone"
+                  (equal free (ephinea-ta-client::deduplicate-path free)))
+           (check "deduplicate-path counters a taken name"
+                  (equal (namestring (merge-pathnames
+                                      (format nil "~a (2).mp4" stem) dir))
+                         (ephinea-ta-client::deduplicate-path taken))))
+      (ignore-errors (delete-file taken))))
+  ;; unknown-slugs (quests): the startup slug cross-check.
+  (let ((defs (list (ephinea-ta-client::make-quest-def :slug "ep1-known")
+                    (ephinea-ta-client::make-quest-def :slug "ep2-typo"))))
+    (check "unknown-slugs reports only the unmatched"
+           (equal '("ep2-typo")
+                  (ephinea-ta-client::unknown-slugs '("ep1-known") defs)))
+    (check "unknown-slugs empty when everything matches"
+           (null (ephinea-ta-client::unknown-slugs
+                  '("ep1-known" "ep2-typo") defs)))))
+
+;;; ------------------------------------------------------------------
 ;;; Quest-rule form logic (rule-form.lisp)
 ;;; ------------------------------------------------------------------
 
@@ -3341,6 +3422,7 @@ store functions that persist never touch the real %APPDATA% queue."
   (run-trigger-log-tests)
   (run-quest-rule-tests)
   (run-rule-form-tests)
+  (run-pure-helper-tests)
   (run-room-picker-tests)
   (run-recorder-tests)
   (run-diagnostics-tests)
