@@ -55,6 +55,10 @@
            ;; api
            #:fetch-quests #:fetch-me #:normalize-token #:submit-run
            #:login-with-password #:create-quest-rule #:trigger->json
+           ;; quest-rule form logic (rule-form.lisp, used by tests)
+           #:timeable-quests #:quest-parent-label #:detected-parent
+           #:rule-trigger-label #:rule-error-message #:rule-manual-marker-p
+           #:parse-int-in-range #:resolve-manual-trigger #:moderator-role-p
            ;; login.txt credentials (pure parts, used by tests)
            #:parse-credentials #:read-credentials #:credentials-path
            ;; store

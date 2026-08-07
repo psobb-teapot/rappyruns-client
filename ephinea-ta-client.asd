@@ -30,6 +30,9 @@
                              (:file "ffmpeg-win32" :if-feature :lispworks)
                              (:file "trigger-log")
                              (:file "api-client")
+                             ;; Pure logic of the GUI's quest-rule form,
+                             ;; portable so client-tests can reach it.
+                             (:file "rule-form")
                              (:file "updater")
                              (:file "store")
                              (:file "gui" :if-feature :lispworks)

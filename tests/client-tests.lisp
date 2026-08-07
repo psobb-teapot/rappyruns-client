@@ -2516,6 +2516,80 @@ store functions that persist never touch the real %APPDATA% queue."
                 (not (search "awaiting review" label))))))
 
 ;;; ------------------------------------------------------------------
+;;; Quest-rule form logic (rule-form.lisp)
+;;; ------------------------------------------------------------------
+
+(defun run-rule-form-tests ()
+  (format t "~&--- rule form ---~%")
+  (flet ((table (&rest kvs)
+           (let ((h (make-hash-table :test 'equal)))
+             (loop :for (k v) :on kvs :by #'cddr :do (setf (gethash k h) v))
+             h)))
+    (let* ((timeable (table "name" "GDV reset" "slug" "ep2-gdv-reset"
+                            "episode" 2
+                            "start" (table "type" "warp-in")
+                            "end" (table "type" "register")
+                            "game_number" 118
+                            "game_names" (vector "Gal Da Val")))
+           (bare (table "name" "Plain" "slug" "ep1-plain" "episode" 1))
+           (parents (timeable-quests (vector timeable bare))))
+      (check "timeable-quests keeps only trigger-carrying quests"
+             (equal parents (list timeable)))
+      (check "detected-parent matches by game number"
+             (eq timeable
+                 (detected-parent parents (list :number 118 :episode 2))))
+      (check "detected-parent falls back to episode + name"
+             (eq timeable
+                 (detected-parent parents
+                                  (list :number 0 :name "Gal Da Val"
+                                        :episode 2))))
+      (check "detected-parent needs the episode to agree"
+             (null (detected-parent parents
+                                    (list :number 0 :name "Gal Da Val"
+                                          :episode 1))))
+      (check "detected-parent nil run-quest"
+             (null (detected-parent parents nil))))
+    (check "rule-error-message prefers the message"
+           (equal "boom" (rule-error-message (table "message" "boom"))))
+    (check "rule-error-message joins the errors"
+           (equal "a; b" (rule-error-message
+                          (table "errors" (vector "a" "b")))))
+    (check "rule-error-message shrugs at garbage"
+           (equal "?" (rule-error-message nil))))
+  (check "rule-trigger-label nil" (equal "" (rule-trigger-label nil)))
+  (check "rule-trigger-label warp-in"
+         (equal "warp-in" (rule-trigger-label '(:warp-in))))
+  (check "rule-trigger-label register"
+         (equal "register:7" (rule-trigger-label '(:register 7))))
+  (check "rule-trigger-label floor-switch"
+         (equal "floor-switch:3:42" (rule-trigger-label '(:floor-switch 3 42))))
+  (check "rule-trigger-label monster"
+         (equal "monster:9" (rule-trigger-label '(:monster-dead 9))))
+  (check "rule-manual-marker-p marker" (rule-manual-marker-p :monster))
+  (check "rule-manual-marker-p trigger list"
+         (not (rule-manual-marker-p '(:warp-in))))
+  (check "parse-int-in-range trims and parses"
+         (eql 42 (parse-int-in-range " 42 " 0 255)))
+  (check "parse-int-in-range rejects out of range"
+         (null (parse-int-in-range "256" 0 255)))
+  (check "parse-int-in-range rejects junk"
+         (null (parse-int-in-range "4x" 0 255)))
+  (check "resolve monster"
+         (equal '(:monster-dead 300) (resolve-manual-trigger :monster "300" nil)))
+  (check "resolve floor-switch"
+         (equal '(:floor-switch 5 128)
+                (resolve-manual-trigger :floor-switch "5" "128")))
+  (check "resolve floor-switch rejects a bad switch"
+         (null (resolve-manual-trigger :floor-switch "5" "300")))
+  (check "resolve register"
+         (equal '(:register 8) (resolve-manual-trigger :register "8" nil)))
+  (check "moderator-role-p"
+         (and (moderator-role-p "moderator")
+              (moderator-role-p "admin")
+              (not (moderator-role-p "user"))
+              (not (moderator-role-p nil)))))
+
+;;; ------------------------------------------------------------------
 ;;; UX helpers: status labels, list trimming, URL and error text
 ;;; ------------------------------------------------------------------
 
@@ -3266,6 +3340,7 @@ store functions that persist never touch the real %APPDATA% queue."
   (run-gdv-segment-test)
   (run-trigger-log-tests)
   (run-quest-rule-tests)
+  (run-rule-form-tests)
   (run-room-picker-tests)
   (run-recorder-tests)
   (run-diagnostics-tests)
