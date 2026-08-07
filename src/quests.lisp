@@ -25,17 +25,23 @@ the server-defined ones does not drop or duplicate them.")
 (defvar *server-quest-defs* '()
   "Definitions built from GET /api/quests (moderator-created categories).")
 
+(defun exe-adjacent-path (relative)
+  "RELATIVE resolved next to the delivered executable, or NIL when it
+is not there. argv[0]-based, so a bare relative argv[0] plus a changed
+working directory can miss - updater.lisp resolves through
+lw:lisp-image-name for exactly that reason; unifying the two is a
+behavior change parked on the refactor backlog."
+  (let ((exe (ignore-errors (first (uiop:raw-command-line-arguments)))))
+    (and exe
+         (probe-file
+          (merge-pathnames relative
+                           (uiop:pathname-directory-pathname exe))))))
+
 (defun quest-triggers-path ()
   "data/quest-triggers.sexp next to the executable (delivered image) or
 relative to this system's source directory (development)."
-  (let* ((exe (ignore-errors (first (uiop:raw-command-line-arguments))))
-         (image-relative
-           (and exe
-                (probe-file
-                 (merge-pathnames "data/quest-triggers.sexp"
-                                  (uiop:pathname-directory-pathname exe))))))
-    (or image-relative
-        (asdf:system-relative-pathname :ephinea-ta-client "data/quest-triggers.sexp"))))
+  (or (exe-adjacent-path "data/quest-triggers.sexp")
+      (asdf:system-relative-pathname :ephinea-ta-client "data/quest-triggers.sexp")))
 
 (defun recompute-quest-defs ()
   "Server categories win over builtin ones on slug collision."

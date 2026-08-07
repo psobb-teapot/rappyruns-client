@@ -473,12 +473,7 @@ in it is open) so recordings never split across two folders."
   (let ((configured (string-trim " " (or (config-value :ffmpeg-path) ""))))
     (if (plusp (length configured))
         configured
-        (let* ((exe (ignore-errors (first (uiop:raw-command-line-arguments))))
-               (bundled (and exe
-                             (probe-file
-                              (merge-pathnames
-                               "ffmpeg/ffmpeg.exe"
-                               (uiop:pathname-directory-pathname exe))))))
+        (let ((bundled (exe-adjacent-path "ffmpeg/ffmpeg.exe")))
           (if bundled (namestring bundled) "ffmpeg.exe")))))
 
 (defun sanitize-filename (string)

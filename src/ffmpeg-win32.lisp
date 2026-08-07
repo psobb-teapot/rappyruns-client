@@ -417,14 +417,19 @@ already running."
         (fli:foreign-slot-value rect 'right)
         (fli:foreign-slot-value rect 'bottom)))
 
+(defun utf16-aref-z-string (chars limit)
+  "The NUL-terminated UTF-16 string in the foreign array CHARS (at most
+LIMIT code units, BMP only) - the device-name fields of MONITORINFOEX
+and DXGI_OUTPUT_DESC."
+  (with-output-to-string (out)
+    (loop :for i :from 0 :below limit
+          :for code := (fli:foreign-aref chars i)
+          :until (zerop code)
+          :do (write-char (code-char code) out))))
+
 (defun monitor-device-name (info)
   "The szDevice field of a MONITORINFOEX pointer as a string."
-  (let ((device (fli:foreign-slot-pointer info 'device)))
-    (with-output-to-string (out)
-      (loop :for i :from 0 :below 32
-            :for code := (fli:foreign-aref device i)
-            :until (zerop code)
-            :do (write-char (code-char code) out)))))
+  (utf16-aref-z-string (fli:foreign-slot-pointer info 'device) 32))
 
 ;;; DXGI output lookup. ddagrab picks its monitor by DXGI output index
 ;;; on the default adapter, and DXGI's enumeration order has nothing to
@@ -481,12 +486,7 @@ already running."
   :calling-convention :stdcall)
 
 (defun dxgi-desc-device-name (desc)
-  (let ((chars (fli:foreign-slot-pointer desc 'device-name)))
-    (with-output-to-string (out)
-      (loop :for i :from 0 :below 32
-            :for code := (fli:foreign-aref chars i)
-            :until (zerop code)
-            :do (write-char (code-char code) out)))))
+  (utf16-aref-z-string (fli:foreign-slot-pointer desc 'device-name) 32))
 
 (defparameter +dxgi-max-outputs+ 8
   "Enumeration cap; EnumOutputs returns DXGI_ERROR_NOT_FOUND well

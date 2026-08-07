@@ -8,6 +8,22 @@
 (fli:register-module :kernel32 :real-name "kernel32" :connection-style :automatic)
 (fli:register-module :shell32 :real-name "shell32" :connection-style :automatic)
 
+;; Shared by every -win32 file (winhttp's status checks, the tray's
+;; mutex guard, ffmpeg's pipe errors); defined once here, first Win32
+;; file in the system.
+(fli:define-foreign-function (%get-last-error "GetLastError")
+    ()
+  :result-type (:unsigned :long)
+  :calling-convention :stdcall
+  :module :kernel32)
+
+(defun utf16-buffer-string (buffer count)
+  "COUNT UTF-16 code units from the foreign (:unsigned :short) BUFFER
+as a string. BMP only - no surrogate pairing, like every caller."
+  (with-output-to-string (out)
+    (dotimes (i count)
+      (write-char (code-char (fli:dereference buffer :index i)) out))))
+
 (fli:define-foreign-function (%find-window "FindWindowW")
     ((class-name :pointer)
      (window-name (:reference-pass :ef-wc-string)))
@@ -183,10 +199,7 @@ an exact match - the FindWindowW candidate name is not good enough."
                     :type '(:unsigned :short) :nelems max-count))
            (length (%get-window-text hwnd buffer max-count)))
       (when (plusp length)
-        (with-output-to-string (out)
-          (dotimes (i length)
-            (write-char (code-char (fli:dereference buffer :index i))
-                        out)))))))
+        (utf16-buffer-string buffer length)))))
 
 (defun open-psobb-reader ()
   "Attach to a running PSOBB process; NIL when not found."
@@ -274,10 +287,7 @@ is sufficient access."
           (%query-full-process-image-name (live-reader-handle reader) 0
                                           buffer max-chars)
         (when (and ok (plusp length) (<= length max-chars))
-          (with-output-to-string (out)
-            (dotimes (i length)
-              (write-char (code-char (fli:dereference buffer :index i))
-                          out))))))))
+          (utf16-buffer-string buffer length))))))
 
 (fli:define-c-struct guid
   (data1 (:unsigned :long))
@@ -399,11 +409,7 @@ is sufficient access."
                                   cert +cert-name-simple-display-type+ 0
                                   fli:*null-pointer* buffer max-chars)))
                     (when (> length 1)
-                      (with-output-to-string (out)
-                        (dotimes (i (1- length))
-                          (write-char (code-char
-                                       (fli:dereference buffer :index i))
-                                      out))))))))))))))
+                      (utf16-buffer-string buffer (1- length)))))))))))))
 
 (defun authenticode-verify (path)
   "WinVerifyTrust Authenticode check of the file at PATH.

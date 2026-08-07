@@ -78,12 +78,6 @@
   :calling-convention :stdcall
   :module :kernel32)
 
-(fli:define-foreign-function (%get-last-error "GetLastError")
-    ()
-  :result-type (:unsigned :long)
-  :calling-convention :stdcall
-  :module :kernel32)
-
 (fli:define-foreign-function (%find-window-class "FindWindowW")
     ((class-name (:reference-pass :ef-wc-string))
      (window-name :pointer))

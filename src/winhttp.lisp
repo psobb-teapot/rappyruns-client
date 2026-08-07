@@ -8,13 +8,8 @@
 
 (fli:register-module :winhttp :real-name "winhttp" :connection-style :automatic)
 
-;; kernel32 is registered in win32.lisp, which loads before this file.
-(fli:define-foreign-function (%get-last-error "GetLastError")
-    ()
-  :result-type (:unsigned :long)
-  :calling-convention :stdcall
-  :module :kernel32)
-
+;; kernel32 is registered (and %get-last-error defined) in win32.lisp,
+;; which loads before this file.
 (fli:define-foreign-function (%win-http-open "WinHttpOpen")
     ((agent (:reference-pass :ef-wc-string))
      (access-type (:unsigned :long))
