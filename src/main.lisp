@@ -173,6 +173,126 @@ update exactly once."
         (apply-update-restart interface (car ready) (cdr ready))))))
 
 #+lispworks
+(defun maybe-submit-retry (interface)
+  "\"Submit pending runs\": drain the retry queue once when the button
+asked for it - with or without the game running."
+  (when *retry-requested*
+    (setf *retry-requested* nil)
+    (submit-queued!)
+    (refresh-runs-list interface)))
+
+#+lispworks
+(defun poll-search-step (interface detector recorder)
+  "One unattached iteration: probe for the game (refusing untrusted
+binaries) and, while there is none, keep stops, retries and uploads
+moving before the search wait. Returns the freshly attached reader, or
+NIL to keep searching."
+  (let ((reader (open-psobb-reader)))
+    (cond (reader
+           ;; Refuse anything but the signed official
+           ;; client - no attach, no recording.
+           (let ((rejection (psobb-trust-rejection reader)))
+             (setf *psobb-rejection* rejection)
+             (when rejection
+               (close-reader reader)
+               (setf reader nil))))
+          ;; The rejected process went away: back to
+          ;; plain searching.
+          ((and *psobb-rejection* (not (find-psobb-window)))
+           (setf *psobb-rejection* nil)))
+    (setf *audio-target-pid*
+          (and reader (live-reader-pid reader)))
+    (if reader
+        (detector-step detector nil) ; fresh attach: disarm
+        (progn
+          ;; Keep any in-flight stop moving (deletes
+          ;; the abandoned file once ffmpeg exits).
+          (ignore-errors
+            (recorder-step recorder
+                           (detector-state detector)
+                           '() nil))
+          ;; "Submit pending runs" must work without
+          ;; the game running too.
+          (maybe-submit-retry interface)
+          ;; Uploads happen while the game is closed
+          ;; too.
+          (ignore-errors (maybe-start-upload recorder))
+          (ignore-errors (maybe-sweep-recordings recorder))
+          (update-game-status interface nil detector nil
+                              recorder *psobb-rejection*)
+          (mp:process-wait-with-timeout
+           "waiting for game" +search-interval+
+           (lambda () *stop-requested*))))
+    reader))
+
+#+lispworks
+(defun poll-detach-step (reader detector recorder)
+  "The attached process died: release everything reader-bound and
+disarm the detector; the recorder gets one step to wind down. The
+caller forgets the reader and the previous snapshot."
+  (close-reader reader)
+  (setf *audio-target-pid* nil)
+  (detector-step detector nil)
+  (ignore-errors
+    (recorder-step recorder (detector-state detector)
+                   '() nil)))
+
+#+lispworks
+(defun poll-frame-step (interface reader detector recorder
+                        previous-snapshot last-gui-update)
+  "One attached iteration: snapshot, detect, record and log, then the
+rate-limited GUI refresh and the poll wait. Returns (values
+new-previous-snapshot new-last-gui-update) for the caller to carry
+into the next iteration."
+  (let* ((snapshot (augment-snapshot
+                    reader
+                    (ignore-errors (read-snapshot reader))))
+         (runs (detector-step detector snapshot)))
+    ;; Recording never interferes with detection or
+    ;; submission; errors only reach the GUI label.
+    (ignore-errors
+      (recorder-step recorder (detector-state detector)
+                     runs (reader-window-title reader)))
+    (when runs
+      (run-completion-sounds runs)
+      (refresh-runs-list interface))
+    (when (config-value :trigger-log)
+      (ignore-errors
+        (log-trigger-changes previous-snapshot snapshot)))
+    ;; Track the last kill regardless of the log toggle:
+    ;; the rule-registration dialog reads it any time.
+    (ignore-errors
+      (update-last-kill previous-snapshot snapshot))
+    ;; Accumulate this run's kills / switch flips by
+    ;; room, for the post-run room/enemy rule picker.
+    (ignore-errors
+      (update-run-logs previous-snapshot snapshot))
+    (maybe-submit-retry interface)
+    (let ((now (get-internal-real-time)))
+      (when (> (- now last-gui-update)
+               (* +gui-update-interval+
+                  internal-time-units-per-second))
+        (setf last-gui-update now)
+        (ignore-errors (maybe-start-upload recorder))
+        (ignore-errors (maybe-sweep-recordings recorder))
+        ;; Keep the gdigrab window-capture verdict
+        ;; fresh while the player idles; never
+        ;; during a quest or capture (frame time).
+        (when (and (recording-enabled-p)
+                   (not *poll-busy-p*))
+          (ignore-errors
+            (maybe-start-gdigrab-probe
+             (reader-window-title reader))))
+        (update-game-status interface (and reader t)
+                            detector snapshot recorder)
+        (when (eq (detector-state detector) :in-quest)
+          (refresh-runs-list interface))))
+    (mp:process-wait-with-timeout
+     "poll interval" +poll-interval+
+     (lambda () *stop-requested*))
+    (values snapshot last-gui-update)))
+
+#+lispworks
 (defun poll-loop ()
   ;; INTERFACE is re-read from *INTERFACE* every iteration: the language
   ;; toggle replaces the window (REBUILD-INTERFACE), and updates must
@@ -196,106 +316,17 @@ update exactly once."
                    (cond
                      ;; Not attached: look for the game once per second.
                      ((null reader)
-                      (setf reader (open-psobb-reader))
-                      (cond (reader
-                             ;; Refuse anything but the signed official
-                             ;; client - no attach, no recording.
-                             (let ((rejection (psobb-trust-rejection reader)))
-                               (setf *psobb-rejection* rejection)
-                               (when rejection
-                                 (close-reader reader)
-                                 (setf reader nil))))
-                            ;; The rejected process went away: back to
-                            ;; plain searching.
-                            ((and *psobb-rejection* (not (find-psobb-window)))
-                             (setf *psobb-rejection* nil)))
-                      (setf *audio-target-pid*
-                            (and reader (live-reader-pid reader)))
-                      (if reader
-                          (detector-step detector nil) ; fresh attach: disarm
-                          (progn
-                            ;; Keep any in-flight stop moving (deletes
-                            ;; the abandoned file once ffmpeg exits).
-                            (ignore-errors
-                              (recorder-step recorder
-                                             (detector-state detector)
-                                             '() nil))
-                            ;; "Submit pending runs" must work without
-                            ;; the game running too.
-                            (when *retry-requested*
-                              (setf *retry-requested* nil)
-                              (submit-queued!)
-                              (refresh-runs-list interface))
-                            ;; Uploads happen while the game is closed
-                            ;; too.
-                            (ignore-errors (maybe-start-upload recorder))
-                            (ignore-errors (maybe-sweep-recordings recorder))
-                            (update-game-status interface nil detector nil
-                                                recorder *psobb-rejection*)
-                            (mp:process-wait-with-timeout
-                             "waiting for game" +search-interval+
-                             (lambda () *stop-requested*)))))
+                      (setf reader (poll-search-step interface detector
+                                                     recorder)))
                      ;; Attached but the process died: detach.
                      ((not (reader-alive-p reader))
-                      (close-reader reader)
-                      (setf reader nil)
-                      (setf *audio-target-pid* nil)
-                      (setf previous-snapshot nil)
-                      (detector-step detector nil)
-                      (ignore-errors
-                        (recorder-step recorder (detector-state detector)
-                                       '() nil)))
+                      (poll-detach-step reader detector recorder)
+                      (setf reader nil
+                            previous-snapshot nil))
                      (t
-                      (let* ((snapshot (augment-snapshot
-                                        reader
-                                        (ignore-errors (read-snapshot reader))))
-                             (runs (detector-step detector snapshot)))
-                        ;; Recording never interferes with detection or
-                        ;; submission; errors only reach the GUI label.
-                        (ignore-errors
-                          (recorder-step recorder (detector-state detector)
-                                         runs (reader-window-title reader)))
-                        (when runs
-                          (run-completion-sounds runs)
-                          (refresh-runs-list interface))
-                        (when (config-value :trigger-log)
-                          (ignore-errors
-                            (log-trigger-changes previous-snapshot snapshot)))
-                        ;; Track the last kill regardless of the log toggle:
-                        ;; the rule-registration dialog reads it any time.
-                        (ignore-errors
-                          (update-last-kill previous-snapshot snapshot))
-                        ;; Accumulate this run's kills / switch flips by
-                        ;; room, for the post-run room/enemy rule picker.
-                        (ignore-errors
-                          (update-run-logs previous-snapshot snapshot))
-                        (setf previous-snapshot snapshot)
-                        (when *retry-requested*
-                          (setf *retry-requested* nil)
-                          (submit-queued!)
-                          (refresh-runs-list interface))
-                        (let ((now (get-internal-real-time)))
-                          (when (> (- now last-gui-update)
-                                   (* +gui-update-interval+
-                                      internal-time-units-per-second))
-                            (setf last-gui-update now)
-                            (ignore-errors (maybe-start-upload recorder))
-                            (ignore-errors (maybe-sweep-recordings recorder))
-                            ;; Keep the gdigrab window-capture verdict
-                            ;; fresh while the player idles; never
-                            ;; during a quest or capture (frame time).
-                            (when (and (recording-enabled-p)
-                                       (not *poll-busy-p*))
-                              (ignore-errors
-                                (maybe-start-gdigrab-probe
-                                 (reader-window-title reader))))
-                            (update-game-status interface (and reader t)
-                                                detector snapshot recorder)
-                            (when (eq (detector-state detector) :in-quest)
-                              (refresh-runs-list interface)))))
-                      (mp:process-wait-with-timeout
-                       "poll interval" +poll-interval+
-                       (lambda () *stop-requested*)))))
+                      (multiple-value-setq (previous-snapshot last-gui-update)
+                        (poll-frame-step interface reader detector recorder
+                                         previous-snapshot last-gui-update)))))
       (ignore-errors (recorder-shutdown recorder))
       (close-trigger-log)
       (when reader (close-reader reader)))))
