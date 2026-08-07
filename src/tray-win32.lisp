@@ -569,13 +569,6 @@ message loop until WM_QUIT."
       (setf *tray-process*
             (mp:process-run-function "eta-client-tray" '() 'tray-thread-main)))))
 
-(defun stop-tray! ()
-  "Ask the tray thread to remove its icon and end its loop. WM_CLOSE ->
-DefWindowProc -> DestroyWindow -> WM_DESTROY (see the window proc)."
-  (let ((hwnd *tray-hwnd*))
-    (when hwnd
-      (ignore-errors (%post-message hwnd +wm-close+ 0 0)))))
-
 (defun tray-remove-icon-now ()
   "Synchronously drop our tray icon (called on quit before ExitProcess,
 so no ghost icon lingers in the notification area)."

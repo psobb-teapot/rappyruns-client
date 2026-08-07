@@ -242,15 +242,6 @@ keeps up whenever the machine has headroom at all."
       (%get-exit-code-process (ffmpeg-capture-process-handle capture) 0)
     (and ok (= code +still-active+))))
 
-(defun ffmpeg-available-p ()
-  "T when RESOLVE-FFMPEG-PATH points at something that starts. Used by
-the GUI to validate the recording checkbox; -version exits on its own."
-  (handler-case
-      (let ((capture (spawn-process (resolve-ffmpeg-path) (list "-version"))))
-        (close-capture-handles capture)
-        t)
-    (error () nil)))
-
 ;;; Hardware-encoder probe. Runs once, in the background, at startup;
 ;;; the winner lands in *HW-VIDEO-ENCODER* (recording.lisp) and every
 ;;; later capture uses it. Probing at capture start instead would
