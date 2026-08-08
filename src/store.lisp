@@ -49,11 +49,39 @@ LIMIT finished ones, preserving order."
                runs)))
 
 (defun unlinked-p ()
-  "True while no API token is configured - the client measures in
-local-only mode: runs queue on this machine and nothing is submitted
-until the user links with the site (pairing, login.txt or a pasted
-token)."
+  "True while no site account is linked (no :api-token). The client
+still measures and submits - under the anonymous guest token, private
+on the server with a share URL - until the user links and the guest's
+runs are adopted (MERGE-ANONYMOUS in gui.lisp's CHECK-TOKEN)."
   (string= (normalize-token (config-value :api-token)) ""))
+
+(defun anonymous-client-label ()
+  "Token label for the auto-registered guest, so the site's token list
+says which computer it belongs to, like the pairing label."
+  (let ((name (ignore-errors (machine-instance))))
+    (if (and (stringp name) (string/= name ""))
+        (format nil "Desktop client (~a) [guest]" name)
+        "Desktop client [guest]")))
+
+(defun ensure-submission-token ()
+  "The token submissions go out with, registering a fresh anonymous
+guest first when the client has neither a linked account nor a guest.
+Returns NIL when no token can be had (offline, or the server refused
+the registration) - entries then stay :queued for a later pass."
+  (let ((token (submission-token)))
+    (if (string/= token "")
+        token
+        ;; Any failure - refusal, transport, DNS - just means "not
+        ;; now"; the next submission pass registers again. (Raw socket
+        ;; errors on the SBCL test backend are not API-ERRORs, so this
+        ;; catches ERROR wholesale.)
+        (handler-case
+            (let ((token (register-anonymous
+                          :label (anonymous-client-label))))
+              (setf (config-value :anon-token) token)
+              (save-config!)
+              token)
+          (error () nil)))))
 
 ;;; Display helpers for run entries. They live here rather than in the
 ;;; (LispWorks-only) GUI so the SBCL tests can cover them.
@@ -200,7 +228,10 @@ handler). Best-effort: NOTIFY-USER is a silent no-op without the tray."
         (t
          (tr :status-video-attached)))
       (case (getf entry :status)
-        (:queued (if (unlinked-p)
+        ;; With no token at all (offline first run, before the guest
+        ;; registration could reach the server) the queue is parked;
+        ;; the label says so instead of promising an imminent submit.
+        (:queued (if (string= (submission-token) "")
                      (tr :status-queued-unlinked)
                      (tr :status-queued)))
         (:submitted (let ((base (cond ((getf entry :aborted)
@@ -368,12 +399,11 @@ fresh submission also carries the board standing the server computed."
 
 (defun submit-queued! ()
   "Try to submit every :queued or :failed run. Returns the UPDATED
-entries (the pre-submission plists would show stale statuses). While
-the client is unlinked this is a no-op returning NIL: entries stay
-:queued on this machine instead of bouncing off the server as 401
-failures, and the flush after linking (FINISH-PAIRING / CHECK-TOKEN)
-picks them all up."
-  (unless (unlinked-p)
+entries (the pre-submission plists would show stale statuses). Unlinked
+clients submit too - ENSURE-SUBMISSION-TOKEN registers an anonymous
+guest on first need; only when no token can be had at all (offline) is
+this a no-op returning NIL, leaving entries :queued for the next pass."
+  (when (ensure-submission-token)
     (let ((pending (with-runs-lock
                      (remove-if-not (lambda (entry)
                                       (member (getf entry :status) '(:queued :failed)))

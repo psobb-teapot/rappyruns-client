@@ -553,13 +553,9 @@ and saved immediately (no Save settings needed)."
 
 (defun retry-callback (interface)
   (declare (ignore interface))
-  ;; Unlinked, a retry pass would be a silent no-op (SUBMIT-QUEUED!
-  ;; skips the server) - say what the button needs instead.
-  (if (unlinked-p)
-      (capi:display-message "~a" (tr :retry-needs-link))
-      ;; The poll loop owns submission; just flag the queue for a retry
-      ;; pass.
-      (setf *retry-requested* t)))
+  ;; The poll loop owns submission; just flag the queue for a retry
+  ;; pass. Unlinked clients submit too (anonymously), so no gate here.
+  (setf *retry-requested* t))
 
 (defun clear-list-callback (interface)
   "Clear the runs list after confirmation. Only unsent runs stay (see
@@ -1242,6 +1238,20 @@ the Save settings flow."
                                        (tr :token-ok name))
                         (apply-moderator-role interface user)
                         (apply-auto-publish interface user)
+                        ;; Adopt the anonymous guest's runs the moment
+                        ;; a linked token verifies, then drop the guest
+                        ;; token (:gone - purged or already merged -
+                        ;; drops it too; only transport failures leave
+                        ;; it for the next verification to retry).
+                        (let ((anon (normalize-token
+                                     (config-value :anon-token))))
+                          (when (string/= anon "")
+                            (handler-case
+                                (progn
+                                  (merge-anonymous anon :token token)
+                                  (setf (config-value :anon-token) "")
+                                  (save-config!))
+                              (api-error () nil))))
                         ;; A verified token flushes the local backlog:
                         ;; runs queued while unlinked (or while the
                         ;; server was unreachable) submit on the poll

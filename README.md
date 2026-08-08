@@ -46,10 +46,14 @@ signatures stay valid by design.
 
 First-time setup in the GUI:
 
-0. No account is needed to measure: unlinked (no token), the client
-   still times and queues every finished run on this machine
-   (`Status: saved on this PC`), and nothing is submitted. Linking
-   later flushes the whole backlog to the site.
+0. No account is needed to measure: unlinked (no `:api-token`), the
+   client auto-registers an anonymous guest (`POST
+   /api/register-anonymous`, token kept in `:anon-token`) and submits
+   runs with it. Guest runs are private on the server and reachable
+   only through their unguessable share URL (`/runs/:id?share=...`,
+   what the runs list opens on double-click). Linking later calls
+   `POST /api/merge-anonymous`, which moves every guest run onto the
+   account (share links keep working) and deletes the guest.
 1. "Link with the site" (Settings tab) starts the browser pairing:
    the client registers a one-time code (`POST /api/pair`), opens
    `/pair?code=...` in the browser (requires site login) and polls

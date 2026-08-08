@@ -440,7 +440,10 @@ whenever no quest is loaded (see *GHOST-FETCH-PTR*)."
                                     :name (getf snapshot :quest-name))))
          (when (and defs
                     (config-value :ghost-race)
-                    (string/= (normalize-token (config-value :api-token)) ""))
+                    ;; The guest token counts: an anonymous player's own
+                    ;; PBs live under the guest account, so they get
+                    ;; ghost races against themselves too.
+                    (string/= (submission-token) ""))
            (values (mapcar #'quest-def-slug defs)
                    (difficulty-label (getf snapshot :difficulty)
                                      (getf snapshot :anguish))

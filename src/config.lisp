@@ -13,6 +13,7 @@
 (defparameter *default-config*
   (list :server-url "https://rappyruns-production.up.railway.app"
         :api-token ""
+        :anon-token ""      ; anonymous guest token, auto-registered before the first unlinked submission (SUBMISSION-TOKEN prefers :api-token); cleared when linking merges the guest into the real account
         :language :en      ; UI language, :en or :ja (i18n.lisp)
         :auto-submit t          ; forced (hidden): always submit on completion
         :submit-aborted t       ; forced (hidden): record quests quit mid-run (private on the server)

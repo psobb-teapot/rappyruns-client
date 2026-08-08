@@ -277,27 +277,41 @@
     (check "trim keeps the newest finished entries in order"
            (equal (subseq (mapcar (lambda (e) (getf e :n)) runs) 0 10)
                   (subseq (mapcar (lambda (e) (getf e :n)) trimmed) 0 10))))
-  ;; Unlinked (no API token) mode: measuring works but nothing submits -
-  ;; the queued label points at linking and SUBMIT-QUEUED! stays off the
-  ;; network entirely, so no 401 failures pile up before the user links.
-  (check "unlinked-p is true with the default (empty) token"
+  ;; Anonymous-guest mode: measuring needs no account. Submissions
+  ;; prefer the linked token, fall back to the guest token, and only
+  ;; park the queue when neither exists and the guest registration
+  ;; cannot reach the server.
+  (check "unlinked-p is true with the default (empty) api token"
          (with-recording-config ()
            (ephinea-ta-client::unlinked-p)))
-  (check "unlinked-p is false once a token is configured"
+  (check "unlinked-p is false once a linked token is configured"
          (with-recording-config (:api-token "eta_x")
            (not (ephinea-ta-client::unlinked-p))))
-  (check "queued label while unlinked points at linking with the site"
+  (check "unlinked-p ignores the guest token - a guest is not linked"
+         (with-recording-config (:anon-token "eta_g")
+           (ephinea-ta-client::unlinked-p)))
+  (check "submission-token prefers the linked token over the guest"
+         (with-recording-config (:api-token "eta_x" :anon-token "eta_g")
+           (string= "eta_x" (ephinea-ta-client::submission-token))))
+  (check "submission-token falls back to the guest token"
+         (with-recording-config (:anon-token "eta_g")
+           (string= "eta_g" (ephinea-ta-client::submission-token))))
+  (check "queued label without any token says the queue is parked"
          (with-recording-config ()
-           (search "link" (ephinea-ta-client::run-status-label
-                           (list :status :queued)))))
-  (check "queued label with a token stays the plain queued"
-         (with-recording-config (:api-token "eta_x")
+           (search "saved on this PC"
+                   (ephinea-ta-client::run-status-label
+                    (list :status :queued)))))
+  (check "queued label with a guest token stays the plain queued"
+         (with-recording-config (:anon-token "eta_g")
            (string= "queued" (ephinea-ta-client::run-status-label
                               (list :status :queued)))))
-  (check "submit-queued! is a no-op while unlinked, leaving entries queued"
-         (with-recording-config ()
+  (check "submit-queued! parks the queue when registration is unreachable"
+         ;; Port 9 (discard) refuses immediately; the registration
+         ;; fails, no guest token is saved and the entry stays :queued.
+         (with-recording-config (:server-url "http://127.0.0.1:9")
            (with-test-store ((list :status :queued :quest-slug "q" :time-ms 1))
              (and (null (ephinea-ta-client::submit-queued!))
+                  (string= "" (ephinea-ta-client::submission-token))
                   (eq :queued (getf (first (ephinea-ta-client::queued-runs))
                                     :status))))))
   ;; Debug mode gates developer-only settings (the Server URL field).

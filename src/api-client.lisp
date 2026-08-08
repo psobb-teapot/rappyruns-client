@@ -279,6 +279,62 @@ failures and unexpected statuses."
         (t (error 'api-error
                   :message (format nil "POST /api/login -> ~a" status)))))))
 
+;;; Anonymous guest identity: measuring needs no account. Before the
+;;; first submission the client registers a guest with the server and
+;;; keeps its token in :anon-token, separate from :api-token so the GUI
+;;; still reads "not linked". Runs submitted with it are private on the
+;;; server, reachable only through their share URL; linking later
+;;; adopts them into the real account (MERGE-ANONYMOUS) and the guest
+;;; token dies server-side.
+
+(defun submission-token ()
+  "The token runs, uploads and ghost fetches go out with: the linked
+account's token when set, else the anonymous guest token, else \"\"."
+  (let ((real (normalize-token (config-value :api-token))))
+    (if (string/= real "")
+        real
+        (normalize-token (config-value :anon-token)))))
+
+(defun register-anonymous (&key label
+                                (server-url (config-value :server-url)))
+  "POST /api/register-anonymous: create a guest account and return
+\(values token username). Signals API-ERROR on refusal (rate limit) and
+transport failures."
+  (multiple-value-bind (status body)
+      (http-request "POST" (api-url server-url "/api/register-anonymous")
+                    :body (let ((object (make-hash-table :test 'equal)))
+                            (when label (setf (gethash "label" object) label))
+                            (jzon:stringify object)))
+    (let* ((payload (ignore-errors (jzon:parse body)))
+           (token (and (hash-table-p payload) (gethash "token" payload))))
+      (if (and (eql status 201) (stringp token))
+          (values token (and (hash-table-p payload)
+                             (gethash "username" payload)))
+          (error 'api-error
+                 :message (format nil "POST /api/register-anonymous -> ~a"
+                                  status))))))
+
+(defun merge-anonymous (anon-token &key (server-url (config-value :server-url))
+                                        (token (config-value :api-token)))
+  "POST /api/merge-anonymous: adopt the guest ANON-TOKEN's runs into
+TOKEN's (the linked account's) runs. Returns :ok when merged and :gone
+when the server no longer knows the guest (purged or already merged) -
+the guest token is useless either way, so the caller drops it on both.
+Signals API-ERROR on transport failures and anything else, leaving the
+guest token in place for a retry."
+  (multiple-value-bind (status body)
+      (http-request "POST" (api-url server-url "/api/merge-anonymous")
+                    :body (let ((object (make-hash-table :test 'equal)))
+                            (setf (gethash "anonymous_token" object) anon-token)
+                            (jzon:stringify object))
+                    :token token)
+    (case status
+      (200 :ok)
+      (404 :gone)
+      (t (error 'api-error
+                :message (format nil "POST /api/merge-anonymous -> ~a: ~a"
+                                 status body))))))
+
 (defun fetch-me (&key (server-url (config-value :server-url))
                       (token (config-value :api-token)))
   "Verify TOKEN against GET /api/me.
@@ -520,7 +576,7 @@ hold nested location lists that become objects."
     (jzon:stringify object)))
 
 (defun submit-run (run &key (server-url (config-value :server-url))
-                            (token (config-value :api-token)))
+                            (token (submission-token)))
   "POST a detector run as a draft.
 Returns (values outcome payload) where outcome is :created, :duplicate or
 :rejected; PAYLOAD is the parsed JSON response. Signals API-ERROR on
@@ -603,7 +659,7 @@ encodes difficulty labels like \"Very Hard\"."
 
 (defun fetch-ghost-splits (slug &key extra-slugs difficulty party-size pb
                                      (server-url (config-value :server-url))
-                                     (token (config-value :api-token)))
+                                     (token (submission-token)))
   "GET /api/quests/:slug/ghost: the reference run's room splits for a
 ghost race (the run the user chose on the site, else their own best).
 EXTRA-SLUGS carries the loaded quest's other category slugs so a race
@@ -695,7 +751,7 @@ failures."
 
 (defun upload-run-video (server-id file-path
                          &key (server-url (config-value :server-url))
-                              (token (config-value :api-token))
+                              (token (submission-token))
                               offset-ms
                               on-progress)
   "POST /api/runs/:id/video-file: stream the recording at FILE-PATH up
@@ -730,7 +786,7 @@ response. Signals API-ERROR on authentication and transport failures
 (defun upload-run-diagnostics (server-id log
                                &key version
                                     (server-url (config-value :server-url))
-                                    (token (config-value :api-token)))
+                                    (token (submission-token)))
   "POST /api/runs/:id/diagnostics: attach the capture diagnostics LOG
 \(DIAGNOSTICS-REPORT, recording.lisp) to the run so a bad recording can
 be investigated server-side. Returns T on success, NIL on any rejected

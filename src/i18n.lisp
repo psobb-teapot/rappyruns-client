@@ -58,8 +58,8 @@
     ("Token: not checked"
      "トークン: 未確認")
     :token-unlinked
-    ("Not linked - runs are timed and saved on this PC; link to submit them"
-     "未連携 - 計測結果はこの PC に保存されます。連携すると送信できます")
+    ("Not linked - runs upload privately (share by URL); link to publish them"
+     "未連携 - 記録は非公開でアップロードされます (URL で共有可)。連携すると公開できます")
     :token-checking
     ("Token: checking..."
      "トークン: 確認中...")
@@ -141,9 +141,6 @@
     :retry-button
     ("Submit pending runs"
      "未送信の記録を送信")
-    :retry-needs-link
-    ("Runs are saved on this PC. Link with the site (Settings tab) to submit them."
-     "記録はこの PC に保存されています。送信するには設定タブの「サイトと連携する」で連携してください。")
     :clear-list-tooltip
     ("Clear list"
      "一覧をクリア")
@@ -559,8 +556,8 @@
     ("queued"
      "送信待ち")
     :status-queued-unlinked
-    ("saved on this PC - link with the site to submit"
-     "この PC に保存済み - サイトと連携すると送信されます")
+    ("saved on this PC - submits once the server is reachable"
+     "この PC に保存済み - サーバーに接続できると送信されます")
     :status-draft-upload
     ("draft - use Upload to YouTube"
      "下書き - 「YouTube にアップロード」を使ってください")
