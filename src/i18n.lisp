@@ -395,9 +395,9 @@
     :ghost-overlay-label
     ("Floating in-game overlay (timer, gap and course map)"
      "ゲーム画面にオーバーレイ表示 (タイマー・タイム差・コースマップ)")
-    :ghost-video-label
-    ("Play the ghost's recording in a synced mini window (windowed mode, videoed ghosts only)"
-     "ゴーストの録画を同期した小窓で再生 (ウィンドウモード時・動画がある記録のみ)")
+    :ghost-marker-label
+    ("Show the ghost in the game view (a marker where the ghost is running)"
+     "ゴーストの姿をゲーム画面内に表示 (ゴーストの現在位置にマーカー)")
     :ghost-note
     ("vs ghost ~a"
      "ゴースト比 ~a")

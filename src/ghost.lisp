@@ -38,13 +38,13 @@
   label      ; submitter name, for toasts and run-list notes
   source     ; "target" (chosen on the site) or "pb"
   pb         ; the reference's board category, 0/1 (NIL: older server)
-  video-p    ; 1 when a watchable hosted recording backs the ghost -
-             ; the synced mini player's precondition (0/NIL otherwise)
   precision  ; :ms (room events) or :sec (frame-derived)
   rooms      ; vector of (:floor :room :nth :enter-ms), progression order
-  track)     ; vector of (ms floor map x z) rows, oldest first - the
-             ; ghost's own position timeline for the overlay's course
-             ; map (4 Hz from ghost-era references, 1 Hz from frames)
+  track)     ; vector of (ms floor map x z) or (ms floor map x z y)
+             ; rows, oldest first - the ghost's own position timeline
+             ; for the overlay's course map and in-world marker (4 Hz
+             ; from ghost-era references, 1 Hz from frames; the
+             ; trailing y height rides on y-era references only)
 
 (defstruct ghost-race
   ghost          ; attached ghost, or NIL while the fetch is in flight
@@ -56,7 +56,7 @@
   ;; position, written by the poll thread and read by the overlay
   ;; thread (freshly consed rows, so a torn read never sees a half
   ;; entry).
-  own-x own-z own-floor
+  own-x own-z own-y own-floor
   (own-track '())       ; newest first: (floor x z), sampled ~2/sec
   (own-track-count 0)
   last-own-ms)
@@ -85,33 +85,19 @@ detector enters a quest - before the ghost may have arrived - so the
 room progression is tracked from the true start whenever the fetch
 lands.")
 
+(defvar *live-camera* nil
+  "The freshest camera plist from READ-CAMERA while a quest runs, or
+NIL. Written by the poll loop at its full rate (GHOST-RACE-STEP) and
+read by the overlay thread: the in-world marker must pan with the
+camera, and the 4 Hz status-update cadence visibly lags a turn. The
+single variable swap of a freshly consed plist is atomic enough.")
+
 (defvar *ghost-fetch-ptr* nil
   "Quest-ptr a ghost fetch was started (or skipped) for, so one quest
 load asks the server exactly once. Cleared whenever no quest is loaded,
 mirroring the detector's disarm: a reload that lands on the same
 allocation address must still refetch (the target or PB may have
 changed between attempts).")
-
-;; Synced-video mini player state (drivers further down; the variables
-;; live here because GHOST-FETCH-WANTED resets the give-up marker).
-
-(defvar *ghost-video* nil
-  "(:capture FFMPEG-CAPTURE :ghost GHOST) of the running mini player,
-or NIL.")
-
-(defvar *ghost-video-starting* nil
-  "GET-INTERNAL-REAL-TIME when the link fetch / spawn thread launched,
-or NIL. A timestamp rather than a flag so a thread that dies before
-its cleanup (process-creation failure) cannot latch the mini player
-off for the whole session - a stale stamp just expires.")
-
-(defparameter +ghost-video-start-timeout-ms+ 30000
-  "How long a start attempt may stay in flight before the stamp is
-considered stale and a new attempt is allowed.")
-
-(defvar *ghost-video-given-up* nil
-  "The ghost a player start failed (or was closed) for, so one failure
-does not retry every poll tick. Reset at each quest load.")
 
 (defun parse-ghost-splits (payload)
   "GET /api/quests/:slug/ghost payload -> ghost, or NIL when malformed."
@@ -127,8 +113,6 @@ does not retry every poll tick. Reset at each quest load.")
          :source (gethash "source" payload)
          :pb (let ((pb (gethash "pb" payload)))
                (and (integerp pb) pb))
-         :video-p (let ((video (gethash "video" payload)))
-                    (and (integerp video) video))
          :precision (if (equal (gethash "precision" payload) "ms") :ms :sec)
          :rooms (map 'vector
                      (lambda (room)
@@ -138,13 +122,29 @@ does not retry every poll tick. Reset at each quest load.")
                                :nth (gethash "nth" room)
                                :enter-ms (gethash "enter_ms" room))))
                      rooms)
-         :track (let ((track (gethash "track" payload)))
+         :track (let ((track (gethash "track" payload))
+                      ;; The height column rides out-of-band in
+                      ;; "track_y" (server hunt:wire-track): rows stay
+                      ;; 5 elements on the wire so v0.51/v0.52 clients
+                      ;; keep their course map. Zip it back on here,
+                      ;; indexed against the RAW track so a dropped
+                      ;; malformed row cannot shift later heights.
+                      (heights (gethash "track_y" payload)))
                   (when (vectorp track)
                     (coerce
                      (loop :for row :across track
-                           :when (and (vectorp row) (= (length row) 5)
+                           :for i :from 0
+                           :when (and (vectorp row) (<= 5 (length row) 6)
                                       (every #'numberp row))
-                             :collect (coerce row 'list))
+                             :collect
+                             (let ((row (coerce row 'list))
+                                   (y (and (vectorp heights)
+                                           (< i (length heights))
+                                           (numberp (aref heights i))
+                                           (aref heights i))))
+                               (if (and y (= (length row) 5))
+                                   (append row (list y))
+                                   row)))
                      'vector))))))))
 
 (defun ghost-race-note-room (race floor room elapsed-ms)
@@ -191,10 +191,12 @@ detector enters a quest, attach the fetched ghost once it arrives (the
 cursor alignment tolerates a late join), and drop everything when the
 quest ends. Safe to call every frame."
   (if (not (eq (detector-state detector) :in-quest))
-      (setf *ghost-race* nil)
+      (setf *ghost-race* nil
+            *live-camera* nil)
       (let ((race (or *ghost-race*
                       (setf *ghost-race* (make-ghost-race))))
             (ghost *ghost*))
+        (setf *live-camera* (getf snapshot :camera))
         (when (and ghost
                    (not (eq (ghost-race-ghost race) ghost))
                    (ghost-matches-snapshot-p ghost snapshot))
@@ -208,14 +210,17 @@ quest ends. Safe to call every frame."
                                     elapsed)
               (ghost-race-note-position race (getf me :floor 0)
                                         (getf me :x 0.0) (getf me :z 0.0)
-                                        elapsed)))))))
+                                        elapsed :y (getf me :y 0.0))))))))
 
-(defun ghost-race-note-position (race floor x z elapsed-ms)
+(defun ghost-race-note-position (race floor x z elapsed-ms &key y)
   "Track the submitter's own position for the course map: the current
-dot every call, a breadcrumb row at most every +OWN-TRACK-INTERVAL-MS+."
+dot every call, a breadcrumb row at most every +OWN-TRACK-INTERVAL-MS+.
+Y feeds the in-world marker's height fallback for ghosts whose track
+predates the height column."
   (setf (ghost-race-own-floor race) floor
         (ghost-race-own-x race) x
-        (ghost-race-own-z race) z)
+        (ghost-race-own-z race) z
+        (ghost-race-own-y race) y)
   (let ((last (ghost-race-last-own-ms race)))
     (when (and (< (ghost-race-own-track-count race) +max-own-track-points+)
                (or (null last)
@@ -234,10 +239,12 @@ are this close; across a bigger gap (a warp, missing data) the dot
 snaps instead of gliding through walls.")
 
 (defun ghost-track-position (track elapsed-ms)
-  "(values floor map x z) of the ghost at ELAPSED-MS on TRACK (a vector
-of (ms floor map x z) rows, oldest first), linearly interpolated
-between neighboring samples on the same floor. NIL before the first
-sample or on an empty track; past the last sample the dot rests there."
+  "(values floor map x z y) of the ghost at ELAPSED-MS on TRACK (a
+vector of (ms floor map x z) or (ms floor map x z y) rows, oldest
+first), linearly interpolated between neighboring samples on the same
+floor. Y is NIL on pre-height rows (the marker then borrows the live
+player's own height). NIL before the first sample or on an empty
+track; past the last sample the dot rests there."
   (when (and (vectorp track) (plusp (length track)))
     (let* ((n (length track))
            ;; Binary search: the last row with ms <= elapsed.
@@ -248,10 +255,11 @@ sample or on an empty track; past the last sample the dot rests there."
                     (if (<= (first (aref track mid)) elapsed-ms)
                         (setf lo mid)
                         (setf hi (1- mid)))))
-        (destructuring-bind (ms floor map x z) (aref track lo)
+        (destructuring-bind (ms floor map x z &optional y) (aref track lo)
           (if (>= (1+ lo) n)
-              (values floor map x z)
-              (destructuring-bind (next-ms next-floor next-map next-x next-z)
+              (values floor map x z y)
+              (destructuring-bind (next-ms next-floor next-map next-x next-z
+                                   &optional next-y)
                   (aref track (1+ lo))
                 (declare (ignore next-map))
                 (if (and (eql next-floor floor)
@@ -261,8 +269,9 @@ sample or on an empty track; past the last sample the dot rests there."
                                 (float (- next-ms ms)))))
                       (values floor map
                               (+ x (* f (- next-x x)))
-                              (+ z (* f (- next-z z)))))
-                    (values floor map x z)))))))))
+                              (+ z (* f (- next-z z)))
+                              (and y next-y (+ y (* f (- next-y y))))))
+                    (values floor map x z y)))))))))
 
 (defun ghost-floor-track-points (track floor)
   "The (x z) points of TRACK's rows on FLOOR, in time order - the
@@ -297,6 +306,70 @@ game's north."
           (values (round (+ (/ width 2) (* scale (- x cx))))
                   (round (- (/ height 2) (* scale (- z cz))))))))))
 
+;;; In-world marker projection: the ghost's world position through the
+;;; game camera onto the client area, so the overlay can draw a marker
+;;; where the ghost actually stands. Transcribed from the DropBox
+;;; Tracker / PartyMemberTracker addons' field-verified math: a linear
+;;; projection onto the view plane, with an FOV heuristic keyed off
+;;; the camera zoom step. Pure, so the SBCL tests pin the geometry.
+
+(defparameter +camera-fov-aspect-factor+ 0.56470588
+  "768/1360: the addons' empirical constant relating the aspect ratio
+to the base field of view.")
+
+(defun camera-fov (zoom aspect)
+  "The screen FOV in radians for camera ZOOM step (0-4, clamped) at
+ASPECT ratio - the addons' heuristic, valid for aspect ratios around
+1.25-1.78."
+  (let* ((zoom (min 4 (max 0 (or zoom 1))))
+         (degrees (- (* 2 (atan (* +camera-fov-aspect-factor+ aspect))
+                        (/ 180 pi))
+                     (* (- zoom 1) 0.600)
+                     (* (min zoom 1) 0.300))))
+    (* degrees (/ pi 180))))
+
+(defun ghost-screen-position (camera width height wx wy wz)
+  "(values sx sy) of world point (WX WY WZ) on the game's WIDTH x
+HEIGHT client area, projected through CAMERA (READ-CAMERA's plist), or
+NIL when the point is behind the camera, degenerate, or CAMERA is
+missing pieces. The eye direction is a unit vector; a zeroed one
+(loading screens) fails the front-facing test and returns NIL."
+  (when (and camera (numberp width) (numberp height)
+             (plusp width) (plusp height))
+    (let ((ex (getf camera :x)) (ey (getf camera :y)) (ez (getf camera :z))
+          (dx (getf camera :dir-x)) (dy (getf camera :dir-y))
+          (dz (getf camera :dir-z)))
+      (when (and (numberp ex) (numberp ey) (numberp ez)
+                 (numberp dx) (numberp dy) (numberp dz))
+        (let* ((vx (- wx ex)) (vy (- wy ey)) (vz (- wz ez))
+               (len (sqrt (+ (* vx vx) (* vy vy) (* vz vz)))))
+          (when (> len 1e-3)
+            (setf vx (/ vx len) vy (/ vy len) vz (/ vz len))
+            (let ((fdp (+ (* dx vx) (* dy vy) (* dz vz))))
+              (when (> fdp 1e-7)
+                (let* ((aspect (/ width (float height)))
+                       (fov (camera-fov (getf camera :zoom) aspect))
+                       (determinant (/ (* aspect height)
+                                       (* 2 (tan (* 0.5 fov)))))
+                       (s (/ determinant fdp))
+                       (px (* s vx)) (py (* s vy)) (pz (* s vz))
+                       ;; right = dir x up(0,1,0); up' = right x dir.
+                       ;; Deliberately NOT normalized (their magnitude
+                       ;; is dir's horizontal component), matching the
+                       ;; addons' field-verified math verbatim: the FOV
+                       ;; heuristic above was tuned against exactly
+                       ;; this scaling, so "fixing" it here would move
+                       ;; every marker the addons place correctly.
+                       (rx (- dz)) (rz dx)
+                       (ux (- (* dx dy)))
+                       (uy (+ (* dx dx) (* dz dz)))
+                       (uz (- (* dy dz))))
+                  (values (round (+ (/ width 2)
+                                    (+ (* rx px) (* rz pz))))
+                          (round (- (/ height 2)
+                                    (+ (* ux px) (* uy py)
+                                       (* uz pz))))))))))))))
+
 (defun ghost-direction-arrow (dx dz)
   "8-way arrow from the own dot toward the ghost, in map orientation
 (up = north = -z... in game terms +z is drawn upward here, matching
@@ -309,25 +382,30 @@ MAP-PROJECTION's flipped y)."
   "Approximate distance label: PSO world units are ~10 per meter."
   (format nil "~dm" (max 1 (round (sqrt (+ (* dx dx) (* dz dz))) 10))))
 
-(defun ghost-map-data (race elapsed-ms)
+(defun ghost-map-data (race elapsed-ms &key marker)
   "Snapshot for the overlay's course map, or NIL when there is nothing
 to draw yet. All slots are plain data; the overlay thread interpolates
 the ghost dot itself from :track and :elapsed-at so it glides between
-the poll loop's 4 Hz updates:
-  (:floor F :own (x z) :own-points ((x z)...)
-   :track VECTOR :ghost-time-ms MS :elapsed-ms MS :elapsed-at TICKS)"
+the poll loop's 4 Hz updates. MARKER (the :ghost-marker setting) rides
+along so the overlay thread never touches CONFIG-VALUE:
+  (:floor F :own (x z) :own-y Y :own-points ((x z)...)
+   :track VECTOR :ghost-time-ms MS :label STRING :marker BOOL
+   :elapsed-ms MS :elapsed-at TICKS)"
   (let ((ghost (ghost-race-ghost race))
         (floor (ghost-race-own-floor race))
         (x (ghost-race-own-x race))
         (z (ghost-race-own-z race)))
     (when (and floor x z)
-      (list :floor floor
+      (list :marker (and marker t)
+            :floor floor
             :own (list x z)
+            :own-y (ghost-race-own-y race)
             :own-points (loop :for (f px pz) :in (ghost-race-own-track race)
                               :when (eql f floor)
                                 :collect (list px pz))
             :track (and ghost (ghost-track ghost))
             :ghost-time-ms (and ghost (ghost-time-ms ghost))
+            :label (and ghost (ghost-label ghost))
             :elapsed-ms elapsed-ms
             :elapsed-at (get-internal-real-time)))))
 
@@ -347,18 +425,16 @@ whenever no quest is loaded (see *GHOST-FETCH-PTR*)."
     (cond
       ((not (and ptr (plusp ptr)))
        ;; No quest loaded: forget the load AND the ghost, so a stale
-       ;; reference can neither race the next quest nor let an
-       ;; in-flight video fetch spawn its player after the run.
-       ;; (Completed runs are annotated while the quest is still
-       ;; loaded, so clearing here never robs a finish of its note.)
+       ;; reference can never race the next quest. (Completed runs are
+       ;; annotated while the quest is still loaded, so clearing here
+       ;; never robs a finish of its note.)
        (setf *ghost-fetch-ptr* nil
              *ghost* nil)
        nil)
       ((and (getf snapshot :quest-name)
             (not (eql ptr *ghost-fetch-ptr*)))
        (setf *ghost-fetch-ptr* ptr
-             *ghost* nil
-             *ghost-video-given-up* nil)
+             *ghost* nil)
        (let ((defs (find-quest-defs :number (getf snapshot :quest-number)
                                     :episode (getf snapshot :episode)
                                     :name (getf snapshot :quest-name))))
@@ -453,147 +529,6 @@ chose the target explicitly, or the ghost predates the pb field."
        (or (equal (ghost-source ghost) "target")
            (null (ghost-pb ghost))
            (eql (ghost-pb ghost) (if (getf run :pb) 1 0)))))
-
-;;; Ghost synced-video mini player: the reference run's hosted
-;;; recording in a small always-on-top ffplay window, seeked so it
-;;; shows the ghost's screen at the live run's elapsed time - the
-;;; closest thing to running alongside the ghost that read-only access
-;;; allows. One player at a time; the quest ending (or the setting
-;;; going off) kills it, closing it by hand just gives it up for the
-;;; run. (State variables live up with the fetch state.)
-
-(defun resolve-ffplay-path ()
-  "ffplay.exe next to the resolved ffmpeg (bundled or configured), or
-the bare \"ffplay.exe\" when ffmpeg itself resolved to a bare
-PATH-searched name - CreateProcess then searches the PATH the same way
-it does for ffmpeg, instead of probing the process CWD. NIL when the
-sibling is missing; the mini player is optional."
-  (let ((ffmpeg (resolve-ffmpeg-path)))
-    (when ffmpeg
-      (if (null (pathname-directory (pathname ffmpeg)))
-          "ffplay.exe"
-          (let ((ffplay (merge-pathnames
-                         "ffplay.exe"
-                         (uiop:pathname-directory-pathname
-                          (pathname ffmpeg)))))
-            (and (probe-file ffplay) (namestring ffplay)))))))
-
-#+lispworks
-(defun ghost-video-position ()
-  "(values left top) for the player: the game window's bottom-left
-corner, or NILs when the window is gone (ffplay then places itself)."
-  (let* ((hwnd (find-psobb-window))
-         (rect (and hwnd (window-rect-of hwnd))))
-    (if rect
-        (destructuring-bind (left top right bottom) rect
-          (declare (ignore right))
-          (values (+ left 16) (max top (- bottom 270 60))))
-        (values nil nil))))
-
-#+lispworks
-(defun stop-ghost-video! ()
-  "Kill the mini player if one is up. Safe from any thread."
-  (let ((playing *ghost-video*))
-    (when playing
-      (setf *ghost-video* nil)
-      (let ((capture (getf playing :capture)))
-        (ignore-errors
-          (%terminate-process (ffmpeg-capture-process-handle capture) 1))
-        (ignore-errors (close-capture-handles capture))))))
-
-#+lispworks
-(defun start-ghost-video-player (ghost telemetry detector)
-  "Fetch the ghost's video link and spawn ffplay seeked to the live
-elapsed time (video_offset_ms maps timer zero into the video). Runs on
-its own thread; every failure just gives the ghost's video up for this
-run. The quest state, the setting and the ghost's currency are all
-re-checked AFTER the fetch: a run that ended (or a toggle flipped)
-during the 1-3 s round trip must not pop a player over the results."
-  (unwind-protect
-       (handler-case
-           (multiple-value-bind (outcome url offset-ms)
-               (fetch-ghost-video-link (ghost-run-id ghost))
-             (let ((ffplay (resolve-ffplay-path)))
-               (when (and (eq outcome :ok) (stringp url) ffplay
-                          (eq *ghost* ghost)
-                          (eq (detector-state detector) :in-quest)
-                          (config-value :ghost-video))
-                 (let ((seek (/ (+ (or offset-ms 0)
-                                   (telemetry-elapsed-ms
-                                    telemetry (get-internal-real-time)))
-                                1000.0)))
-                   (multiple-value-bind (left top) (ghost-video-position)
-                     (let ((capture
-                             (spawn-process
-                              ffplay
-                              (append
-                               (list "-hide_banner" "-loglevel" "error"
-                                     "-an" "-noborder" "-alwaysontop"
-                                     "-autoexit"
-                                     "-x" "480" "-y" "270"
-                                     "-window_title" "Rappy Runs Ghost"
-                                     "-ss" (format nil "~,2f" (max 0.0 seek)))
-                               (when left
-                                 (list "-left" (princ-to-string left)
-                                       "-top" (princ-to-string top)))
-                               (list url)))))
-                       (setf *ghost-video*
-                             (list :capture capture :ghost ghost))))))))
-         (error () nil))
-    (unless (and *ghost-video*
-                 (eq (getf *ghost-video* :ghost) ghost))
-      (setf *ghost-video-given-up* ghost))
-    (setf *ghost-video-starting* nil)))
-
-#+lispworks
-(defun ghost-video-start-in-flight-p ()
-  "A start attempt is in flight and its stamp has not gone stale."
-  (let ((stamp *ghost-video-starting*))
-    (and stamp
-         (< (round (* 1000 (- (get-internal-real-time) stamp))
-                   internal-time-units-per-second)
-            +ghost-video-start-timeout-ms+))))
-
-#+lispworks
-(defun ghost-video-capture-safe-p ()
-  "The mini player may only show when the game runs windowed: windowed
-recordings capture the game window itself (WGC / gdigrab), which the
-player's window cannot pollute, while fullscreen recordings duplicate
-the whole monitor and would burn the always-on-top player into the
-submitted footage - the v0.47 write-in problem all over again."
-  (let ((hwnd (find-psobb-window)))
-    (and hwnd (not (window-covers-monitor-p hwnd)))))
-
-#+lispworks
-(defun ghost-video-step (detector)
-  "Poll-loop driver: start the mini player when a videoed ghost races
-and the setting is on, notice it dying (user closed it / hit the end),
-kill it when the quest is over. Safe to call every tick."
-  (let* ((race *ghost-race*)
-         (ghost (and race (ghost-race-ghost race)))
-         (playing *ghost-video*))
-    (cond
-      ((or (not (eq (detector-state detector) :in-quest))
-           (not (config-value :ghost-video)))
-       (stop-ghost-video!))
-      ((and playing (not (capture-alive-p (getf playing :capture))))
-       ;; Closed by hand or played out: no restart this run.
-       (setf *ghost-video-given-up* (getf playing :ghost)
-             *ghost-video* nil)
-       (ignore-errors (close-capture-handles (getf playing :capture))))
-      ((and ghost (null playing)
-            (not (ghost-video-start-in-flight-p))
-            (not (eq ghost *ghost-video-given-up*))
-            (eql (ghost-video-p ghost) 1)
-            (ghost-run-id ghost)
-            (detector-telemetry detector)
-            (ghost-video-capture-safe-p))
-       (setf *ghost-video-starting* (get-internal-real-time))
-       (let ((telemetry (detector-telemetry detector)))
-         (mp:process-run-function
-          "eta-client-ghost-video" '()
-          (lambda ()
-            (start-ghost-video-player ghost telemetry detector))))))))
 
 (defun annotate-ghost-runs (runs)
   "Stamp each completed run the current ghost covers with the final

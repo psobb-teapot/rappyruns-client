@@ -66,7 +66,7 @@
            ;; ghost race (pure parts, used by tests)
            #:parse-ghost-splits #:make-ghost #:ghost-quest-slug
            #:ghost-run-id #:ghost-time-ms #:ghost-label #:ghost-source
-           #:ghost-pb #:ghost-video-p #:ghost-precision #:ghost-rooms
+           #:ghost-pb #:ghost-precision #:ghost-rooms
            #:ghost-track
            #:make-ghost-race #:ghost-race-ghost #:ghost-race-note-room
            #:ghost-race-note-position

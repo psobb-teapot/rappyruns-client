@@ -78,6 +78,13 @@ loaded."
     (setf snapshot
           (append snapshot
                   (list :monsters (ignore-errors (read-monsters reader)))))
+    ;; The camera feeds only the overlay's in-world ghost marker
+    ;; (*LIVE-CAMERA* via GHOST-RACE-STEP), so nobody else pays its two
+    ;; ReadProcessMemory calls per poll frame.
+    (when (and (config-value :ghost-overlay) (config-value :ghost-marker))
+      (setf snapshot
+            (append snapshot
+                    (list :camera (ignore-errors (read-camera reader))))))
     (let ((now (get-internal-real-time)))
       (when (>= (- now *last-heavy-sample*) internal-time-units-per-second)
         (setf *last-heavy-sample* now)
@@ -240,7 +247,6 @@ caller forgets the reader and the previous snapshot."
   (close-reader reader)
   (setf *audio-target-pid* nil)
   (detector-step detector nil)
-  (ignore-errors (stop-ghost-video!))
   (ignore-errors
     (recorder-step recorder (detector-state detector)
                    '() nil)))
@@ -276,12 +282,10 @@ into the next iteration."
       (recorder-step recorder (detector-state detector)
                      runs (reader-window-title reader)))
     ;; Ghost race: fetch the reference splits the moment a quest
-    ;; loads (the load screen hides the round trip), feed the live
-    ;; room delta and drive the synced mini player. None of these
-    ;; ever interfere with detection.
+    ;; loads (the load screen hides the round trip) and feed the live
+    ;; room delta. Neither ever interferes with detection.
     (ignore-errors (maybe-start-ghost-fetch snapshot))
     (ignore-errors (ghost-race-step detector snapshot))
-    (ignore-errors (ghost-video-step detector))
     (when runs
       (run-completion-sounds runs)
       (refresh-runs-list interface))
@@ -380,8 +384,6 @@ are persisted incrementally, so an abrupt exit loses nothing."
   (let ((poll *poll-process*))
     (when poll (ignore-errors (mp:process-join poll :timeout 10))))
   (ignore-errors (tray-remove-icon-now))
-  ;; The mini player is a child process and would outlive ExitProcess.
-  (ignore-errors (stop-ghost-video!))
   (exit-process-now))
 
 #+lispworks

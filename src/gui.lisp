@@ -279,14 +279,14 @@ who cannot create rules, never see it."
                         :callback-type :interface
                         :font *ui-font*
                         :accessor ghost-overlay-check)
-   (ghost-video-check capi:check-button
-                      :text (tr :ghost-video-label)
-                      :selected (config-value :ghost-video)
-                      :selection-callback 'toggle-ghost-video-callback
-                      :retract-callback 'toggle-ghost-video-callback
-                      :callback-type :interface
-                      :font *ui-font*
-                      :accessor ghost-video-check)
+   (ghost-marker-check capi:check-button
+                       :text (tr :ghost-marker-label)
+                       :selected (config-value :ghost-marker)
+                       :selection-callback 'toggle-ghost-marker-callback
+                       :retract-callback 'toggle-ghost-marker-callback
+                       :callback-type :interface
+                       :font *ui-font*
+                       :accessor ghost-marker-check)
    (record-dir-display capi:title-pane
                        :text (record-dir-label)
                        :font *ui-font*
@@ -370,7 +370,7 @@ who cannot create rules, never see it."
                     :title (tr :group-recording) :title-position :frame
                     :title-font *ui-font* :adjust :left)
    (ghost-group capi:column-layout
-                '(ghost-race-check ghost-overlay-check ghost-video-check)
+                '(ghost-race-check ghost-overlay-check ghost-marker-check)
                 :title (tr :group-ghost) :title-position :frame
                 :title-font *ui-font* :adjust :left)
    (updates-group capi:column-layout
@@ -1069,11 +1069,12 @@ the next quest (or the running one, on the next status update)."
     ;; FUNCALL by name: overlay-win32.lisp loads after this file.
     (ignore-errors (funcall 'overlay-hide!))))
 
-(defun toggle-ghost-video-callback (interface)
-  "Apply the mini-player toggle immediately; turning it off kills a
-running player on the poll loop's next tick (GHOST-VIDEO-STEP)."
-  (setf (config-value :ghost-video)
-        (capi:button-selected (ghost-video-check interface)))
+(defun toggle-ghost-marker-callback (interface)
+  "Apply the in-world marker toggle immediately; the next 4 Hz status
+update rebuilds the overlay's map data with or without the :marker
+flag."
+  (setf (config-value :ghost-marker)
+        (capi:button-selected (ghost-marker-check interface)))
   (save-config!))
 
 ;; The cross-thread update helpers use the -IF-ALIVE variant: the
