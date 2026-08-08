@@ -241,7 +241,39 @@
              (multiple-value-bind (floor map x)
                  (ghost-track-position gappy 4000)
                (declare (ignore map))
-               (and (eql floor 1) (eql x 0.0))))))
+               (and (eql floor 1) (eql x 0.0)))))
+    (check "a pre-height track yields NIL y"
+           (multiple-value-bind (floor map x z y)
+               (ghost-track-position (ghost-track ghost) 500)
+             (declare (ignore floor map x z))
+             (null y))))
+  ;; Height-bearing (y-era) track rows: parsed, interpolated, and mixed
+  ;; rows degrade per-sample instead of poisoning the lerp.
+  (let ((ghost (parse-ghost-splits
+                (com.inuoe.jzon:parse
+                 "{\"run_id\":8,\"quest\":\"q\",\"time_ms\":6000,
+                   \"precision\":\"ms\",\"source\":\"pb\",\"pb\":0,
+                   \"rooms\":[],
+                   \"track\":[[0,1,10,0.0,0.0,5.0],
+                              [1000,1,10,10.0,20.0,15.0],
+                              [2000,1,10,20.0,20.0]]}"))))
+    (check "height-bearing rows parse with six elements"
+           (and ghost
+                (= (length (ghost-track ghost)) 3)
+                (every #'= (aref (ghost-track ghost) 0)
+                       '(0 1 10 0.0 0.0 5.0))))
+    (check "height interpolates between samples"
+           (multiple-value-bind (floor map x z y)
+               (ghost-track-position (ghost-track ghost) 500)
+             (declare (ignore map z))
+             (and (eql floor 1)
+                  (< (abs (- x 5.0)) 0.01)
+                  (< (abs (- y 10.0)) 0.01))))
+    (check "a lerp into a heightless row yields NIL y"
+           (multiple-value-bind (floor map x z y)
+               (ghost-track-position (ghost-track ghost) 1500)
+             (declare (ignore floor map x z))
+             (null y))))
   ;; Projection: fit, aspect, centering, flipped z.
   (let ((project (map-projection '(((0 0) (100 200))) 240 240 :pad 10)))
     (check "projection exists with points" (functionp project))
@@ -280,19 +312,59 @@
   ;; High-frequency own-position telemetry (the future ghost's track).
   (let ((telemetry (make-telemetry :start-time 0)))
     (eta-client::update-track-recording
-     telemetry '(:floor 1 :x 1.04 :z 2.06) '(:map 10) 0)
+     telemetry '(:floor 1 :x 1.04 :z 2.06 :y 5.02) '(:map 10) 0)
     (eta-client::update-track-recording
-     telemetry '(:floor 1 :x 9.0 :z 9.0) '(:map 10) 100)   ; too soon
+     telemetry '(:floor 1 :x 9.0 :z 9.0 :y 9.0) '(:map 10) 100) ; too soon
     (eta-client::update-track-recording
-     telemetry '(:floor 1 :x 3.0 :z 4.0) '(:map 10) 300)
+     telemetry '(:floor 1 :x 3.0 :z 4.0 :y 6.0) '(:map 10) 300)
     (let ((track (reverse (eta-client::telemetry-track telemetry))))
       (check "track samples decimate to 250 ms"
              (= (length track) 2))
-      (check "track rows carry ms floor map and rounded coords"
-             (equal (first track) '(0 1 10 1.0 2.1))))
+      (check "track rows carry ms floor map and rounded coords plus height"
+             (equal (first track) '(0 1 10 1.0 2.1 5.0))))
     (let* ((json (eta-client::telemetry-json
                   (eta-client:telemetry-run-data telemetry)))
            (track (gethash "track" json)))
       (check "track rides the telemetry json as compact rows"
              (and (= (length track) 2)
-                  (equalp (aref track 1) #(300 1 10 3.0 4.0)))))))
+                  (equalp (aref track 1) #(300 1 10 3.0 4.0 6.0))))))
+  ;; In-world marker projection (camera math ported from the DropBox
+  ;; Tracker / PartyMemberTracker addons).
+  (let ((camera '(:x 0.0 :y 0.0 :z 0.0
+                  :dir-x 0.0 :dir-y 0.0 :dir-z 1.0 :zoom 1)))
+    (check "a point straight ahead projects to the screen center"
+           (multiple-value-bind (sx sy)
+               (eta-client::ghost-screen-position camera 1360 768
+                                                  0.0 0.0 100.0)
+             (and (eql sx 680) (eql sy 384))))
+    (check "a point above the eye line projects above the center"
+           (multiple-value-bind (sx sy)
+               (eta-client::ghost-screen-position camera 1360 768
+                                                  0.0 10.0 100.0)
+             (and (eql sx 680) (< sy 384))))
+    (check "sideways offsets move sx off center and mirror"
+           (multiple-value-bind (sx) (eta-client::ghost-screen-position
+                                      camera 1360 768 10.0 0.0 100.0)
+             (multiple-value-bind (mx) (eta-client::ghost-screen-position
+                                        camera 1360 768 -10.0 0.0 100.0)
+               (and sx mx (/= sx 680) (= (- sx 680) (- 680 mx))))))
+    (check "a point behind the camera projects to NIL"
+           (null (eta-client::ghost-screen-position camera 1360 768
+                                                    0.0 0.0 -100.0)))
+    (check "the eye point itself projects to NIL"
+           (null (eta-client::ghost-screen-position camera 1360 768
+                                                    0.0 0.0 0.0)))
+    (check "a zeroed direction (loading screen) projects to NIL"
+           (null (eta-client::ghost-screen-position
+                  '(:x 0.0 :y 0.0 :z 0.0
+                    :dir-x 0.0 :dir-y 0.0 :dir-z 0.0 :zoom 1)
+                  1360 768 0.0 0.0 100.0)))
+    (check "a missing camera projects to NIL"
+           (null (eta-client::ghost-screen-position nil 1360 768
+                                                    0.0 0.0 100.0))))
+  (check "fov heuristic lands near 90 degrees at 16:9"
+         (let ((fov (eta-client::camera-fov 1 (/ 1360.0 768.0))))
+           (< 1.5 fov 1.65)))
+  (check "fov shrinks as the camera zooms in"
+         (> (eta-client::camera-fov 0 1.5)
+            (eta-client::camera-fov 4 1.5))))

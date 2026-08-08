@@ -44,9 +44,11 @@ psostats, excluded from frame-1 detection there too.")
   (events '())                  ; newest first: (:t sec :type "death"|"floor"|"room" ...)
   last-map
   last-floor-room               ; (floor . room) of the previous frame
-  (track '())                   ; newest first: (ms floor map x z) rows of the
+  (track '())                   ; newest first: (ms floor map x z y) rows of the
                                 ; submitter's own position, ~4 Hz - the ghost
-                                ; overlay's course map (server: telemetry-position-track)
+                                ; overlay's course map and in-world marker
+                                ; (server: telemetry-position-track; rows from
+                                ; pre-y clients have 5 elements)
   (track-count 0)
   last-track-ms
   (meseta-charged 0)
@@ -157,7 +159,9 @@ recording there instead of shipping rows that will be discarded.")
 
 (defun update-track-recording (telemetry me snapshot elapsed-ms)
   "Sample the submitter's own position into the track every
-+TRACK-INTERVAL-MS+."
++TRACK-INTERVAL-MS+. The trailing y (height) is what lets a future
+ghost's in-world marker sit at the right elevation; it rides last so
+the row stays index-compatible with the pre-y (ms floor map x z) shape."
   (let ((last (telemetry-last-track-ms telemetry)))
     (when (and (< (telemetry-track-count telemetry) +max-track-points+)
                (or (null last)
@@ -168,7 +172,8 @@ recording there instead of shipping rows that will be discarded.")
                   (getf me :floor 0)
                   (or (getf snapshot :map) 0)
                   (round1 (getf me :x 0.0))
-                  (round1 (getf me :z 0.0)))
+                  (round1 (getf me :z 0.0))
+                  (round1 (getf me :y 0.0)))
             (telemetry-track telemetry)))))
 
 (defun update-map-tracking (telemetry snapshot second)

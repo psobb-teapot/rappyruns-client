@@ -15,6 +15,14 @@
 (defconstant +current-map-address+ #x00AAFC9C) ; u16, map number (floor names)
 (defconstant +map-variation-address+ #x00AAFC98) ; u16, layout variation
 
+;; Camera (transcribed from the DropBox Tracker / PartyMemberTracker
+;; addons, which project world points onto the screen with these): eye
+;; position, unit view direction, and the zoom step (0-4) the FOV
+;; heuristic keys off (GHOST-SCREEN-POSITION in ghost.lisp).
+(defconstant +camera-position-address+ #x00A48780)  ; 3 x f32: x y z
+(defconstant +camera-direction-address+ #x00A4878C) ; 3 x f32: unit vector
+(defconstant +camera-zoom-address+ #x009ACEDC)      ; u32, 0-4
+
 ;; Ephinea fast-burst detection (psostats ephineaFastBurstEnabled):
 ;; *(u32*)+fast-burst-base+ -> a; *(u32*)(a + +fast-burst-step+) ->
 ;; slow-burst flag address; fast burst is on when that u16 is zero.
@@ -295,6 +303,20 @@ remain as a fallback for a reader that cannot serve the whole block."
         (when (and slow-burst-ptr (plusp slow-burst-ptr))
           (eql 0 (read-u16 reader slow-burst-ptr)))))))
 
+(defun read-camera (reader)
+  "The game camera as a plist (:x :y :z :dir-x :dir-y :dir-z :zoom),
+for the overlay's in-world ghost marker (GHOST-SCREEN-POSITION). The
+position and direction arrive in one block read; NIL when unreadable."
+  (let ((block (read-block reader +camera-position-address+ 24)))
+    (when block
+      (list :x (u32-float (bytes-u32 block 0))
+            :y (u32-float (bytes-u32 block 4))
+            :z (u32-float (bytes-u32 block 8))
+            :dir-x (u32-float (bytes-u32 block 12))
+            :dir-y (u32-float (bytes-u32 block 16))
+            :dir-z (u32-float (bytes-u32 block 20))
+            :zoom (or (read-u32 reader +camera-zoom-address+) 0)))))
+
 (defun read-episode (reader)
   (let ((raw (read-u16 reader +episode-address+)))
     (case (and raw (1+ raw))
@@ -318,6 +340,7 @@ so the detection state machine stays pure and testable."
                              :map (read-u16 reader +current-map-address+)
                              :map-variation (read-u16 reader +map-variation-address+)
                              :fast-burst (fast-burst-enabled-p reader)
+                             :camera (read-camera reader)
                              :quest-ptr (or quest-ptr 0))))
         (when (and quest-ptr (plusp quest-ptr))
           (let* ((data-ptr (read-u32 reader (+ quest-ptr +quest-data-offset+)))
