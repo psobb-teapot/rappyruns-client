@@ -35,25 +35,9 @@
   :calling-convention :stdcall
   :module :user32)
 
-(fli:define-c-struct win-rect
-  (left :int)
-  (top :int)
-  (right :int)
-  (bottom :int))
-
-(fli:define-foreign-function (%get-window-rect "GetWindowRect")
-    ((hwnd :pointer)
-     (rect (:pointer win-rect)))
-  :result-type (:boolean :int)
-  :calling-convention :stdcall
-  :module :user32)
-
-(fli:define-foreign-function (%get-client-rect "GetClientRect")
-    ((hwnd :pointer)
-     (rect (:pointer win-rect)))
-  :result-type (:boolean :int)
-  :calling-convention :stdcall
-  :module :user32)
+;; The WIN-RECT struct and %GET-WINDOW-RECT / %GET-CLIENT-RECT already
+;; live in ffmpeg-win32.lisp (loaded earlier); this file reuses them
+;; (WINDOW-RECT-OF for the game window's placement).
 
 ;; hWndInsertAfter is unused (SWP_NOZORDER) so :size-t 0 is fine.
 (fli:define-foreign-function (%set-window-pos "SetWindowPos")
@@ -231,6 +215,9 @@
 (defvar *overlay-process* nil)
 (defvar *overlay-class-registered* nil)
 (defvar *overlay-font* nil)
+(defvar *overlay-brush* nil
+  "The background brush, created once per overlay thread - a 4 Hz
+paint must not churn GDI objects.")
 
 (defvar *overlay-wanted* nil
   "T while the poll loop wants the overlay visible. The overlay thread's
@@ -248,15 +235,15 @@ window directly (a window belongs to its creating thread).")
 
 (defun overlay-position (hwnd game-hwnd)
   "Pin the overlay to the game window's top-right corner."
-  (fli:with-dynamic-foreign-objects ()
-    (let ((rect (fli:allocate-dynamic-foreign-object :type 'win-rect)))
-      (when (%get-window-rect game-hwnd rect)
-        (let ((x (- (fli:foreign-slot-value rect 'right)
-                    +overlay-width+ +overlay-margin-x+))
-              (y (+ (fli:foreign-slot-value rect 'top)
-                    +overlay-margin-y+)))
-          (%set-window-pos hwnd 0 x y +overlay-width+ +overlay-height+
-                           (logior +swp-nozorder+ +swp-noactivate+)))))))
+  (let ((rect (window-rect-of game-hwnd)))
+    (when rect
+      (destructuring-bind (left top right bottom) rect
+        (declare (ignore left bottom))
+        (%set-window-pos hwnd 0
+                         (- right +overlay-width+ +overlay-margin-x+)
+                         (+ top +overlay-margin-y+)
+                         +overlay-width+ +overlay-height+
+                         (logior +swp-nozorder+ +swp-noactivate+))))))
 
 (defun overlay-paint (hwnd)
   "WM_PAINT: dark pill, clock on top, ghost line below in its gap
@@ -267,27 +254,30 @@ the invalid region never clears and WM_PAINT storms."
            (hdc (%begin-paint hwnd ps)))
       (unwind-protect
            (unless (fli:null-pointer-p hdc)
-             (let ((rect (fli:allocate-dynamic-foreign-object :type 'win-rect))
-                   (brush (%create-solid-brush +overlay-bg-color+)))
-               (unwind-protect
-                    (progn
-                      (%get-client-rect hwnd rect)
-                      (%fill-rect hdc rect brush)
-                      (when *overlay-font*
-                        (%select-object hdc *overlay-font*))
-                      (%set-bk-mode hdc +bk-transparent+)
-                      (%set-text-color hdc +overlay-text-color+)
-                      (let ((line1 *overlay-line1*))
-                        (%text-out hdc 12 6 line1 (length line1)))
-                      (let ((line2 *overlay-line2*))
-                        (when line2
-                          (%set-text-color
-                           hdc (ecase *overlay-delta-state*
-                                 (:ahead +overlay-ahead-color+)
-                                 (:behind +overlay-behind-color+)
-                                 (:neutral +overlay-text-color+)))
-                          (%text-out hdc 12 32 line2 (length line2)))))
-                 (%delete-object brush))))
+             (let ((rect (fli:allocate-dynamic-foreign-object
+                          :type 'win-rect)))
+               ;; The window never resizes, so the client rect is just
+               ;; the fixed dimensions.
+               (setf (fli:foreign-slot-value rect 'left) 0
+                     (fli:foreign-slot-value rect 'top) 0
+                     (fli:foreign-slot-value rect 'right) +overlay-width+
+                     (fli:foreign-slot-value rect 'bottom) +overlay-height+)
+               (when *overlay-brush*
+                 (%fill-rect hdc rect *overlay-brush*))
+               (when *overlay-font*
+                 (%select-object hdc *overlay-font*))
+               (%set-bk-mode hdc +bk-transparent+)
+               (%set-text-color hdc +overlay-text-color+)
+               (let ((line1 *overlay-line1*))
+                 (%text-out hdc 12 6 line1 (length line1)))
+               (let ((line2 *overlay-line2*))
+                 (when line2
+                   (%set-text-color
+                    hdc (ecase *overlay-delta-state*
+                          (:ahead +overlay-ahead-color+)
+                          (:behind +overlay-behind-color+)
+                          (:neutral +overlay-text-color+)))
+                   (%text-out hdc 12 32 line2 (length line2))))))
         (%end-paint hwnd ps)))))
 
 (defun overlay-conceal (hwnd)
@@ -377,7 +367,8 @@ WM_QUIT. Created hidden; the timer shows it once wanted."
           (setf *overlay-font*
                 (%create-font 20 0 0 0 +fw-semibold+ 0 0 0
                               +default-charset+ 0 0 +cleartype-quality+ 0
-                              "Segoe UI"))
+                              "Segoe UI")
+                *overlay-brush* (%create-solid-brush +overlay-bg-color+))
           (%set-timer hwnd +overlay-timer-id+ +overlay-timer-ms+
                       fli:*null-pointer*)
           (fli:with-dynamic-foreign-objects ()
@@ -392,6 +383,9 @@ WM_QUIT. Created hidden; the timer shows it once wanted."
   (when *overlay-font*
     (ignore-errors (%delete-object *overlay-font*))
     (setf *overlay-font* nil))
+  (when *overlay-brush*
+    (ignore-errors (%delete-object *overlay-brush*))
+    (setf *overlay-brush* nil))
   (setf *overlay-hwnd* nil
         *overlay-process* nil
         *overlay-visible* nil))
@@ -425,17 +419,12 @@ Called from UPDATE-GAME-STATUS at its 4 Hz cadence."
   (if (and (config-value :ghost-overlay)
            (eq (detector-state detector) :in-quest))
       (let* ((race *ghost-race*)
-             (ghost (and race (ghost-race-ghost race)))
              (delta (and race (ghost-race-delta-ms race))))
         (overlay-show!
          (format nil "~a~:[~; REC~]"
                  (format-run-time (or (detector-elapsed-ms detector) 0))
                  recording-p)
-         (when ghost
-           (format nil "vs ~a~@[ ~a~]"
-                   (format-run-time (ghost-time-ms ghost))
-                   (and delta (format-ghost-delta
-                               delta (ghost-precision ghost)))))
+         (and race (ghost-vs-text race))
          (cond ((null delta) :neutral)
                ((minusp delta) :ahead)
                (t :behind))))

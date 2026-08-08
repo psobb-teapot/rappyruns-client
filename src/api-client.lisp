@@ -594,22 +594,31 @@ encodes difficulty labels like \"Very Hard\"."
                   (write-char char out)
                   (format out "%~2,'0X" byte)))))
 
-(defun fetch-ghost-splits (slug &key difficulty party-size
+(defun fetch-ghost-splits (slug &key extra-slugs difficulty party-size pb
                                      (server-url (config-value :server-url))
                                      (token (config-value :api-token)))
   "GET /api/quests/:slug/ghost: the reference run's room splits for a
 ghost race (the run the user chose on the site, else their own best).
-Returns (values :ok payload) on 200 and (values :none nil) on 404 - the
-server has nothing to race - so the caller can tell \"no ghost\" from
-the API-ERROR signalled on auth and transport failures."
+EXTRA-SLUGS carries the loaded quest's other category slugs so a race
+target chosen on a segment or solo category is found too; DIFFICULTY,
+PARTY-SIZE and PB (0/1) narrow the personal-best fallback to the
+session's board. Returns (values :ok payload) on 200 and (values :none
+nil) on 404 - the server has nothing to race - so the caller can tell
+\"no ghost\" from the API-ERROR signalled on auth and transport
+failures."
   (let* ((params (append
+                  (when extra-slugs
+                    ;; Slugs are slugify output ([a-z0-9-]), safe raw.
+                    (list (format nil "slugs=~{~a~^,~}" extra-slugs)))
                   (when difficulty
                     (list (format nil "difficulty=~a"
                                   (url-encode-component difficulty))))
                   (when party-size
-                    (list (format nil "party_size=~d" party-size)))))
+                    (list (format nil "party_size=~d" party-size)))
+                  (when pb
+                    (list (format nil "pb=~d" pb)))))
          (path (format nil "/api/quests/~a/ghost~@[?~{~a~^&~}~]"
-                       slug (and params params))))
+                       slug params)))
     (multiple-value-bind (status body)
         (http-request "GET" (api-url server-url path) :token token)
       (case status

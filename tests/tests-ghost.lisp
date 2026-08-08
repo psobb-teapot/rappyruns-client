@@ -1,33 +1,37 @@
-;;; Ghost race: split parsing, room matching, formatting and the
-;;; completion annotation (client/src/ghost.lisp), plus the room-event
-;;; telemetry that feeds the server's ms-precision splits.
+;;; Ghost race: split parsing, streaming room alignment, formatting and
+;;; the completion annotation (client/src/ghost.lisp), plus the
+;;; room-event telemetry that feeds the server's ms-precision splits.
 
 (in-package :ephinea-ta-client-tests)
 
 (defparameter +ghost-payload+
   "{\"run_id\":42,\"quest\":\"ep1-towards-the-future\",\"time_ms\":123456,
-    \"submitter\":\"teapot\",\"precision\":\"ms\",\"source\":\"pb\",
+    \"submitter\":\"teapot\",\"precision\":\"ms\",\"source\":\"pb\",\"pb\":0,
     \"rooms\":[{\"floor\":1,\"room\":10,\"nth\":1,\"enter_ms\":0},
                {\"floor\":1,\"room\":11,\"nth\":1,\"enter_ms\":30000},
                {\"floor\":1,\"room\":10,\"nth\":2,\"enter_ms\":60000},
                {\"floor\":2,\"room\":1,\"nth\":1,\"enter_ms\":90000}]}")
 
+(defun test-ghost ()
+  (parse-ghost-splits (com.inuoe.jzon:parse +ghost-payload+)))
+
 (defun run-ghost-tests ()
-  (let ((ghost (parse-ghost-splits (com.inuoe.jzon:parse +ghost-payload+))))
+  (let ((ghost (test-ghost)))
     (check "ghost payload parses"
            (and ghost
                 (= (ghost-time-ms ghost) 123456)
                 (equal (ghost-quest-slug ghost) "ep1-towards-the-future")
                 (equal (ghost-label ghost) "teapot")
                 (equal (ghost-source ghost) "pb")
+                (eql (ghost-pb ghost) 0)
                 (eq (ghost-precision ghost) :ms)
                 (= (length (ghost-rooms ghost)) 4)))
     (check "malformed payload parses to NIL"
            (and (null (parse-ghost-splits
                        (com.inuoe.jzon:parse "{\"rooms\":[]}")))
                 (null (parse-ghost-splits nil))))
-    ;; Live room matching: same (floor, room, nth visit) identity as
-    ;; the site's /compare alignment.
+    ;; Streaming greedy alignment: a cursor over the ghost's room list,
+    ;; the same progression-order identity /compare aligns rooms by.
     (let ((race (make-ghost-race :ghost ghost)))
       (check "start room matches at once"
              (eql (ghost-race-note-room race 1 10 800) 800))
@@ -37,10 +41,40 @@
              (eql (ghost-race-note-room race 1 11 34000) 4000))
       (check "a room the ghost never entered keeps the previous gap"
              (eql (ghost-race-note-room race 1 99 40000) 4000))
-      (check "a revisit matches the ghost's second visit"
+      (check "a revisit matches the ghost's next visit of that room"
              (eql (ghost-race-note-room race 1 10 55000) -5000))
       (check "matched-room count"
              (= (ghost-race-matched-rooms race) 3)))
+    ;; A room the GHOST passed through but the live side skips must not
+    ;; desync later matches: the cursor lookahead steps over it.
+    (let ((race (make-ghost-race :ghost ghost)))
+      (ghost-race-note-room race 1 10 500)
+      (check "skipping a ghost room still matches the one after it"
+             (eql (ghost-race-note-room race 2 1 92000) 2000)))
+    ;; A late-arriving ghost joins mid-route: the race tracked the
+    ;; progression from the start, and the cursor finds the current
+    ;; position on the next room change.
+    (let ((race (make-ghost-race)))
+      (check "no ghost yet, no gap"
+             (null (ghost-race-note-room race 1 10 800)))
+      (setf (ghost-race-ghost race) ghost)
+      (check "late-attached ghost matches from the next room on"
+             (eql (ghost-race-note-room race 1 11 31000) 1000)))
+    ;; The lookahead bound keeps a detour from consuming the whole list.
+    (let* ((rooms (coerce
+                   (append
+                    (loop :for i :from 0 :below 20
+                          :collect (list :floor 1 :room (+ 100 i)
+                                         :nth 1 :enter-ms (* 1000 i)))
+                    (list (list :floor 9 :room 9 :nth 1 :enter-ms 99000)))
+                   'vector))
+           (far (make-ghost :quest-slug "q" :time-ms 1 :precision :ms
+                            :rooms rooms))
+           (race (make-ghost-race :ghost far)))
+      (check "a match past the lookahead window is not taken"
+             (null (ghost-race-note-room race 9 9 500)))
+      (check "the unmatched entry leaves the cursor in place"
+             (eql (ghost-race-note-room race 1 100 1500) 1500)))
     ;; Status suffix.
     (let ((eta-client::*ghost-race* (make-ghost-race :ghost ghost)))
       (check "status suffix shows the target before any match"
@@ -48,6 +82,9 @@
       (setf (ghost-race-delta-ms eta-client::*ghost-race*) 4000)
       (check "status suffix shows the gap after a match"
              (equal (ghost-status-suffix) " | vs 2:03.456 +4.0s")))
+    (let ((eta-client::*ghost-race* (make-ghost-race)))
+      (check "race without an attached ghost shows nothing"
+             (null (ghost-status-suffix))))
     (let ((eta-client::*ghost-race* nil))
       (check "no race, no suffix" (null (ghost-status-suffix))))
     ;; Completion annotation.
@@ -58,7 +95,11 @@
                               (list :quest-slug "some-other-quest"
                                     :time-ms 113456)
                               (list :quest-slug "ep1-towards-the-future"
-                                    :time-ms 113456 :aborted t)))))
+                                    :time-ms 113456 :aborted t)
+                              ;; The live run discharged a Photon Blast:
+                              ;; another board, no comparison.
+                              (list :quest-slug "ep1-towards-the-future"
+                                    :time-ms 113456 :pb t)))))
         (check "beat-the-ghost delta stamped"
                (and (eql (getf (first annotated) :ghost-delta-ms) -10000)
                     (eql (getf (first annotated) :ghost-time-ms) 123456)
@@ -66,7 +107,17 @@
         (check "other quest untouched"
                (null (getf (second annotated) :ghost-delta-ms)))
         (check "aborted run untouched"
-               (null (getf (third annotated) :ghost-delta-ms)))))
+               (null (getf (third annotated) :ghost-delta-ms)))
+        (check "pb category mismatch withholds the comparison"
+               (null (getf (fourth annotated) :ghost-delta-ms)))))
+    ;; An explicitly chosen target compares across pb categories - the
+    ;; user picked it on purpose.
+    (let ((target (test-ghost)))
+      (setf (eta-client::ghost-source target) "target")
+      (check "a chosen target ignores the pb dimension"
+             (ghost-covers-run-p target
+                                 (list :quest-slug "ep1-towards-the-future"
+                                       :time-ms 1 :pb t))))
     (let ((eta-client::*ghost* nil))
       (check "no ghost leaves runs alone"
              (let ((runs (list (list :quest-slug "q" :time-ms 1))))
@@ -106,7 +157,8 @@
                   (eql (gethash "ms" event) 2345)
                   (eql (gethash "floor" event) 1)
                   (equal (gethash "type" event) "room")))))
-  ;; Fetch gating: one ask per quest load, none without the setting.
+  ;; Fetch gating: one ask per quest load, refetch after a lobby visit
+  ;; (even at the same allocation address), none without the setting.
   (let* ((def (first eta-client::*quest-defs*))
          (snapshot (list :quest-ptr 4660
                          :quest-name (first (eta-client:quest-def-names def))
@@ -119,14 +171,20 @@
                                        (copy-list eta-client::*default-config*)))
           (eta-client::*ghost-fetch-ptr* nil)
           (eta-client::*ghost* nil))
-      (multiple-value-bind (slug difficulty party-size)
+      (multiple-value-bind (slugs difficulty party-size)
           (eta-client::ghost-fetch-wanted snapshot)
         (check "fetch wanted on a fresh quest load"
-               (and (equal slug (eta-client:quest-def-slug def))
+               (and (equal (first slugs) (eta-client:quest-def-slug def))
                     (equal difficulty "Ultimate")
                     (eql party-size 1))))
       (check "same load never asks twice"
-             (null (eta-client::ghost-fetch-wanted snapshot))))
+             (null (eta-client::ghost-fetch-wanted snapshot)))
+      ;; Lobby (no quest loaded) forgets the pointer, so reloading the
+      ;; quest at the same address fetches again.
+      (eta-client::ghost-fetch-wanted (list :quest-ptr 0))
+      (check "reload after a lobby visit asks again"
+             (multiple-value-bind (slugs) (eta-client::ghost-fetch-wanted snapshot)
+               (equal (first slugs) (eta-client:quest-def-slug def)))))
     (let ((eta-client::*config* (list* :ghost-race nil :api-token "tok"
                                        (copy-list eta-client::*default-config*)))
           (eta-client::*ghost-fetch-ptr* nil)
