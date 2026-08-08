@@ -1393,7 +1393,7 @@ silent, exactly like the old silent startup check."
        (setf (capi:interface-title interface) title)))))
 
 (defun update-game-status (interface connected-p detector snapshot
-                           &optional recorder rejection)
+                           &optional recorder rejection read-failing-p)
   (let ((recording-error (and recorder (recorder-last-error recorder)))
         (recording-p (and recorder
                           (eq (recorder-state recorder) :recording)))
@@ -1403,12 +1403,17 @@ silent, exactly like the old silent startup check."
                                  (rejection
                                   (tr :game-signature-refused
                                       (signature-status-label rejection)))
+                                 ;; Attached, but ReadProcessMemory is
+                                 ;; failing (privilege mismatch is the
+                                 ;; usual cause) - say so instead of
+                                 ;; looking idle with "no active quest".
+                                 (read-failing-p (tr :game-read-failed))
                                  (connected-p (tr :game-attached))
                                  (t (tr :game-searching)))))
                      (if recording-error
                          (tr :game-status-with-error base recording-error)
                          base))
-                   (and (or rejection recording-error) :red))
+                   (and (or rejection recording-error read-failing-p) :red))
     (set-pane-text
      interface #'quest-status-pane
      (cond

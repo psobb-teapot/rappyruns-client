@@ -30,6 +30,9 @@
     :game-attached
     ("Game: attached"
      "ゲーム: 接続済み")
+    :game-read-failed
+    ("Game: attached but cannot read memory - try running the client as administrator"
+     "ゲーム: 接続済みですがメモリを読み取れません — クライアントを管理者として実行してみてください")
     :game-status-with-error
     ("~a / recording error: ~a"
      "~a / 録画エラー: ~a")

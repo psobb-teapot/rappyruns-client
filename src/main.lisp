@@ -284,7 +284,11 @@ into the next iteration."
             (maybe-start-gdigrab-probe
              (reader-window-title reader))))
         (update-game-status interface (and reader t)
-                            detector snapshot recorder)
+                            detector snapshot recorder nil
+                            ;; Attached but reads are failing: surface it
+                            ;; (privilege mismatch, anti-cheat) instead of
+                            ;; a silent "no active quest".
+                            (and reader (not (live-reader-read-ok reader))))
         (when (eq (detector-state detector) :in-quest)
           (refresh-runs-list interface))))
     (mp:process-wait-with-timeout
