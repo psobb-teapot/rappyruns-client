@@ -382,9 +382,19 @@ repaint pegged a core; the cache reduces per-paint work to the own
 breadcrumbs and two dots.")
 
 (defvar *overlay-size* nil
-  "(width . height) the overlay window was last sized to (the game's
-client area), written by the timer's reposition and read by the paint.
-NIL before the first fit; the paint then falls back to the panel size.")
+  "(width . height) the overlay window was last sized to, written by
+the timer's reposition and read by the paint. NIL before the first
+fit; the paint then falls back to the panel size.")
+
+(defvar *overlay-full-p* nil
+  "T while the window spans the game's whole client area (in-world
+marker mode); NIL while it is just the corner panel. Decides where the
+paint puts the panel origin.")
+
+(defvar *overlay-placement* nil
+  "(x y w h) last applied via SetWindowPos, so a tick with an unmoved
+game window skips the call (it would otherwise fire at the marker's
+30 Hz for nothing).")
 
 (defvar *overlay-timer-current-ms* nil
   "The interval the overlay timer is currently set to, so the tick can
@@ -398,26 +408,51 @@ ghostless run keeps the compact v0.51.0 timer pill."
          (let ((track (getf data :track)))
            (and (vectorp track) (plusp (length track)))))))
 
+(defun overlay-marker-wanted-p ()
+  "T when the in-world marker should be live: a ghost course exists AND
+the :ghost-marker setting rode in on the map data. This - not the mere
+course map - is what makes the window span the client area and repaint
+at 30 Hz; with the marker off, the overlay stays the panel-sized,
+10 Hz window it was in v0.52."
+  (let ((data *overlay-map-data*))
+    (and data (getf data :marker) (overlay-map-active-p) t)))
+
 (defun overlay-current-height ()
   (if (overlay-map-active-p) +overlay-full-height+ +overlay-compact-height+))
 
 ;;; --- Painting and geometry (overlay thread only) --------------------
 
 (defun overlay-position (hwnd game-hwnd)
-  "Fit the overlay over the game window's whole client area (the
-in-world marker can land anywhere on it; the color key keeps all but
-the panel and marker transparent). Returns T when the fit produced a
-usable size, NIL for a degenerate client rect (minimized game)."
+  "Fit the overlay against the game window's client area: the whole
+area while the in-world marker is live (it can land anywhere; the
+color key keeps all but the panel and marker transparent), just the
+top-right corner panel otherwise. Skips the SetWindowPos when the
+placement has not moved - this runs at up to 30 Hz. Returns :FIT on a
+usable placement, :DEGENERATE for a zero-sized client rect (minimized
+game), NIL when the rect queries fail outright (transient during
+display-mode switches; the caller keeps the overlay up)."
   (let ((rect (window-client-screen-rect game-hwnd)))
     (when rect
       (destructuring-bind (left top right bottom) rect
-        (let ((width (- right left))
-              (height (- bottom top)))
-          (when (and (plusp width) (plusp height))
-            (setf *overlay-size* (cons width height))
-            (%set-window-pos hwnd 0 left top width height
-                             (logior +swp-nozorder+ +swp-noactivate+))
-            t))))))
+        (let ((client-w (- right left))
+              (client-h (- bottom top)))
+          (if (or (<= client-w 0) (<= client-h 0))
+              :degenerate
+              (let* ((full (overlay-marker-wanted-p))
+                     (x (if full left (- right +overlay-width+
+                                        +overlay-margin-x+)))
+                     (y (if full top (+ top +overlay-margin-y+)))
+                     (w (if full client-w +overlay-width+))
+                     (h (if full client-h (overlay-current-height)))
+                     (placement (list x y w h)))
+                (setf *overlay-size* (cons w h)
+                      *overlay-full-p* full)
+                (unless (equal placement *overlay-placement*)
+                  (setf *overlay-placement* placement)
+                  (%set-window-pos hwnd 0 x y w h
+                                   (logior +swp-nozorder+
+                                           +swp-noactivate+)))
+                :fit)))))))
 
 (defun overlay-fill-rect (hdc left top right bottom brush)
   (fli:with-dynamic-foreign-objects ()
@@ -483,7 +518,20 @@ floor changes."
                                        (list px py)))
                                    points))))))))
 
-(defun overlay-draw-map (hdc)
+(defun overlay-ghost-position (data elapsed)
+  "(floor map x z [y]) of the ghost at ELAPSED on DATA's track, or NIL
+before its first sample or once the ghost has finished. Resolved once
+per paint and shared by the course map and the in-world marker, so
+both draw the same interpolated instant."
+  (let ((track (getf data :track))
+        (ghost-time-ms (getf data :ghost-time-ms)))
+    (when (and (vectorp track) (plusp (length track))
+               ghost-time-ms (<= elapsed ghost-time-ms))
+      (let ((vals (multiple-value-list
+                   (ghost-track-position track elapsed))))
+        (and (first vals) vals)))))
+
+(defun overlay-draw-map (hdc data ghost-pos)
   "The course map: the ghost's route on the current floor as a line,
 both runners as dots, and the footer distance line. The fit is
 anchored to the ghost's floor trace (cached per floor) so the frame
@@ -492,8 +540,7 @@ off the map - drawing is clipped to the panel, never clamped into it,
 so the dots always show true relative positions."
   (let ((left +overlay-map-left+)
         (top +overlay-map-top+)
-        (size +overlay-map-size+)
-        (data *overlay-map-data*))
+        (size +overlay-map-size+))
     (overlay-fill-rect hdc left top (+ left size) (+ top size)
                        (or *overlay-map-brush* *overlay-brush*))
     (when data
@@ -501,19 +548,10 @@ so the dots always show true relative positions."
              (own (getf data :own))
              (own-points (getf data :own-points))
              (track (getf data :track))
-             (ghost-time-ms (getf data :ghost-time-ms))
-             (elapsed (overlay-effective-elapsed data))
              (cache (and track (overlay-ghost-projection track floor)))
              (project (or (and cache (getf cache :project))
                           (map-projection (list own-points (list own))
-                                          size size)))
-             (ghost-pos
-               (and track ghost-time-ms
-                    ;; The dot vanishes once the ghost has finished.
-                    (<= elapsed ghost-time-ms)
-                    (let ((vals (multiple-value-list
-                                 (ghost-track-position track elapsed))))
-                      (and (first vals) vals)))))
+                                          size size))))
         (when project
           (let ((saved (%save-dc hdc)))
             (unwind-protect
@@ -564,58 +602,50 @@ so the dots always show true relative positions."
             (%set-text-color hdc +overlay-ghost-color+)
             (%text-out hdc 12 +overlay-footer-y+ text (length text))))))))
 
-(defun overlay-draw-ghost-marker (hdc width height)
-  "The in-world ghost marker: the ghost's current track position
-projected through the live game camera onto the client area - an
-orange dot at the ghost's feet with a name pill above it. Drawn only
-when the marker is enabled, the camera is fresh, and the ghost stands
-on the live player's floor. A ghost whose track predates the height
-column borrows the live player's own height (same floor, so usually
-the same ground)."
-  (let ((data *overlay-map-data*)
-        (camera *live-camera*))
-    (when (and data camera (getf data :marker))
-      (let ((track (getf data :track))
-            (floor (getf data :floor))
-            (ghost-time-ms (getf data :ghost-time-ms))
-            (elapsed (overlay-effective-elapsed data)))
-        (when (and (vectorp track) (plusp (length track))
-                   ghost-time-ms (<= elapsed ghost-time-ms))
-          (multiple-value-bind (gfloor gmap gx gz gy)
-              (ghost-track-position track elapsed)
-            (declare (ignore gmap))
-            (when (and gfloor (eql gfloor floor))
-              (multiple-value-bind (sx sy)
-                  (ghost-screen-position camera width height
-                                         gx (or gy (getf data :own-y) 0.0)
-                                         gz)
-                (when (and sx
-                           (< -50 sx (+ width 50))
-                           (< -50 sy (+ height 50)))
-                  (overlay-draw-dot hdc sx sy 6 *overlay-ghost-brush*)
-                  (let ((label (let ((name (getf data :label)))
-                                 (if (and (stringp name)
-                                          (string/= name ""))
-                                     name
-                                     "ghost"))))
-                    (when *overlay-small-font*
-                      (%select-object hdc *overlay-small-font*))
-                    (fli:with-dynamic-foreign-objects ((size win-text-size))
-                      (when (%get-text-extent hdc label (length label) size)
-                        (let* ((tw (fli:foreign-slot-value size 'cx))
-                               (th (fli:foreign-slot-value size 'cy))
-                               (pill-bottom (- sy 10))
-                               (pill-top (- pill-bottom th 4))
-                               (pill-left (- sx (floor tw 2) 6))
-                               (pill-right (+ sx (ceiling tw 2) 6)))
-                          ;; A solid pill under the text: ClearType must
-                          ;; never blend against the color key.
-                          (overlay-fill-rect hdc pill-left pill-top
-                                             pill-right pill-bottom
-                                             *overlay-brush*)
-                          (%set-text-color hdc +overlay-ghost-color+)
-                          (%text-out hdc (+ pill-left 6) (+ pill-top 2)
-                                     label (length label)))))))))))))))
+(defun overlay-draw-ghost-marker (hdc width height data ghost-pos)
+  "The in-world ghost marker: GHOST-POS (the paint's shared (floor map
+x z [y]) resolution) projected through the live game camera onto the
+client area - an orange dot at the ghost's feet with a name pill above
+it. Drawn only when the camera is fresh and the ghost stands on the
+live player's floor. A ghost whose track predates the height column
+borrows the live player's own height (same floor, so usually the same
+ground)."
+  (let ((camera *live-camera*))
+    (when (and camera ghost-pos
+               (eql (first ghost-pos) (getf data :floor)))
+      (destructuring-bind (gfloor gmap gx gz &optional gy) ghost-pos
+        (declare (ignore gfloor gmap))
+        (multiple-value-bind (sx sy)
+            (ghost-screen-position camera width height
+                                   gx (or gy (getf data :own-y) 0.0)
+                                   gz)
+          (when (and sx
+                     (< -50 sx (+ width 50))
+                     (< -50 sy (+ height 50)))
+            (overlay-draw-dot hdc sx sy 6 *overlay-ghost-brush*)
+            (let ((label (let ((name (getf data :label)))
+                           (if (and (stringp name)
+                                    (string/= name ""))
+                               name
+                               "ghost"))))
+              (when *overlay-small-font*
+                (%select-object hdc *overlay-small-font*))
+              (fli:with-dynamic-foreign-objects ((size win-text-size))
+                (when (%get-text-extent hdc label (length label) size)
+                  (let* ((tw (fli:foreign-slot-value size 'cx))
+                         (th (fli:foreign-slot-value size 'cy))
+                         (pill-bottom (- sy 10))
+                         (pill-top (- pill-bottom th 4))
+                         (pill-left (- sx (floor tw 2) 6))
+                         (pill-right (+ sx (ceiling tw 2) 6)))
+                    ;; A solid pill under the text: ClearType must
+                    ;; never blend against the color key.
+                    (overlay-fill-rect hdc pill-left pill-top
+                                       pill-right pill-bottom
+                                       *overlay-brush*)
+                    (%set-text-color hdc +overlay-ghost-color+)
+                    (%text-out hdc (+ pill-left 6) (+ pill-top 2)
+                               label (length label))))))))))))
 
 (defun overlay-paint (hwnd)
   "WM_PAINT: the key-color ground (transparent on screen), the dark
@@ -628,11 +658,23 @@ errors out, or the invalid region never clears and WM_PAINT storms."
       (unwind-protect
            (unless (fli:null-pointer-p hdc)
              (let* ((size *overlay-size*)
+                    (full *overlay-full-p*)
                     (width (or (car size) +overlay-width+))
                     (height (or (cdr size) (overlay-current-height)))
-                    (panel-x (max 0 (- width +overlay-width+
-                                       +overlay-margin-x+)))
-                    (panel-y +overlay-margin-y+))
+                    (panel-x (if full
+                                 (max 0 (- width +overlay-width+
+                                           +overlay-margin-x+))
+                                 0))
+                    (panel-y (if full +overlay-margin-y+ 0))
+                    (data *overlay-map-data*)
+                    (map-active (overlay-map-active-p))
+                    ;; The ghost's position is resolved ONCE per paint
+                    ;; so the map dot and the in-world marker show the
+                    ;; same interpolated instant.
+                    (ghost-pos (and data map-active
+                                    (overlay-ghost-position
+                                     data
+                                     (overlay-effective-elapsed data)))))
                (when *overlay-key-brush*
                  (overlay-fill-rect hdc 0 0 width height
                                     *overlay-key-brush*))
@@ -658,11 +700,12 @@ errors out, or the invalid region never clears and WM_PAINT storms."
                           (:behind +overlay-behind-color+)
                           (:neutral +overlay-text-color+)))
                    (%text-out hdc 12 32 line2 (length line2))))
-               (when (overlay-map-active-p)
-                 (overlay-draw-map hdc))
+               (when map-active
+                 (overlay-draw-map hdc data ghost-pos))
                (%set-viewport-org hdc 0 0 fli:*null-pointer*)
-               (when (overlay-map-active-p)
-                 (overlay-draw-ghost-marker hdc width height))))
+               (when (and full map-active)
+                 (overlay-draw-ghost-marker hdc width height
+                                            data ghost-pos))))
         (%end-paint hwnd ps)))))
 
 (defun overlay-conceal (hwnd)
@@ -673,22 +716,27 @@ errors out, or the invalid region never clears and WM_PAINT storms."
 (defun overlay-timer-tick (hwnd)
   "Follow the game window and repaint while wanted, hide otherwise
 (also when the game window is gone mid-quest, or minimized to a
-degenerate client rect). Re-arms the timer between the pill rate and
-the marker rate as a ghost course appears/disappears."
-  (let ((wanted-ms (if (overlay-map-active-p)
+degenerate client rect). A transient rect-query failure (display-mode
+switch, window recreation) keeps the overlay up at its last placement
+rather than blinking it off. Re-arms the timer between the pill rate
+and the marker rate as the in-world marker comes and goes."
+  (let ((wanted-ms (if (overlay-marker-wanted-p)
                        +overlay-marker-timer-ms+
                        +overlay-timer-ms+)))
     (unless (eql wanted-ms *overlay-timer-current-ms*)
       (setf *overlay-timer-current-ms* wanted-ms)
       (%set-timer hwnd +overlay-timer-id+ wanted-ms fli:*null-pointer*)))
-  (let ((game (and *overlay-wanted* (find-psobb-window))))
+  (let* ((game (and *overlay-wanted* (find-psobb-window)))
+         (fit (and game (overlay-position hwnd game))))
     (cond
-      ((and game (overlay-position hwnd game))
+      ((or (null game) (eq fit :degenerate))
+       (overlay-conceal hwnd))
+      ;; :FIT, or a transient NIL after at least one good fit.
+      ((or (eq fit :fit) *overlay-placement*)
        (unless *overlay-visible*
          (%show-window hwnd +sw-shownoactivate+)
          (setf *overlay-visible* t))
-       (%invalidate-rect hwnd fli:*null-pointer* nil))
-      (t (overlay-conceal hwnd)))))
+       (%invalidate-rect hwnd fli:*null-pointer* nil)))))
 
 (fli:define-foreign-callable
     ("RappyOverlayWndProc" :result-type :size-t :calling-convention :stdcall)
@@ -756,6 +804,8 @@ WM_QUIT. Created hidden; the timer shows it once wanted."
           (setf *overlay-hwnd* hwnd
                 *overlay-visible* nil
                 *overlay-size* nil
+                *overlay-full-p* nil
+                *overlay-placement* nil
                 *overlay-timer-current-ms* +overlay-timer-ms+)
           ;; Alpha blends the visible elements; the color key punches
           ;; the rest of the client-area-sized window fully out.
@@ -841,11 +891,10 @@ thread interpolates the ghost dot in between."
              (elapsed (and telemetry
                            (telemetry-elapsed-ms
                             telemetry (get-internal-real-time))))
-             (map-data (and race elapsed (ghost-map-data race elapsed))))
-        ;; The in-world marker's own toggle rides on the map data, so
-        ;; the overlay thread never touches CONFIG-VALUE.
-        (when (and map-data (config-value :ghost-marker))
-          (setf map-data (list* :marker t map-data)))
+             (map-data (and race elapsed
+                            (ghost-map-data
+                             race elapsed
+                             :marker (config-value :ghost-marker)))))
         (overlay-show!
          (format nil "~a~:[~; REC~]"
                  (format-run-time (or (detector-elapsed-ms detector) 0))

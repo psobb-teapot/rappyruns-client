@@ -247,21 +247,31 @@
                (ghost-track-position (ghost-track ghost) 500)
              (declare (ignore floor map x z))
              (null y))))
-  ;; Height-bearing (y-era) track rows: parsed, interpolated, and mixed
-  ;; rows degrade per-sample instead of poisoning the lerp.
+  ;; The height column arrives out-of-band in "track_y" (the wire keeps
+  ;; rows 5-wide for v0.51/v0.52 clients; server hunt:wire-track). It is
+  ;; zipped back on by RAW track index, so a dropped malformed row must
+  ;; not shift later heights; a heights vector shorter than the track
+  ;; leaves the tail heightless.
   (let ((ghost (parse-ghost-splits
                 (com.inuoe.jzon:parse
                  "{\"run_id\":8,\"quest\":\"q\",\"time_ms\":6000,
                    \"precision\":\"ms\",\"source\":\"pb\",\"pb\":0,
                    \"rooms\":[],
-                   \"track\":[[0,1,10,0.0,0.0,5.0],
-                              [1000,1,10,10.0,20.0,15.0],
-                              [2000,1,10,20.0,20.0]]}"))))
-    (check "height-bearing rows parse with six elements"
+                   \"track\":[[0,1,10,0.0,0.0],
+                              \"junk\",
+                              [1000,1,10,10.0,20.0],
+                              [2000,1,10,20.0,20.0]],
+                   \"track_y\":[5.0,99.0,15.0]}"))))
+    (check "out-of-band heights zip onto the rows by raw index"
            (and ghost
                 (= (length (ghost-track ghost)) 3)
                 (every #'= (aref (ghost-track ghost) 0)
-                       '(0 1 10 0.0 0.0 5.0))))
+                       '(0 1 10 0.0 0.0 5.0))
+                ;; The junk row's 99.0 is skipped with it.
+                (every #'= (aref (ghost-track ghost) 1)
+                       '(1000 1 10 10.0 20.0 15.0))
+                ;; Heights exhausted: the tail row stays 5-wide.
+                (= (length (aref (ghost-track ghost) 2)) 5)))
     (check "height interpolates between samples"
            (multiple-value-bind (floor map x z y)
                (ghost-track-position (ghost-track ghost) 500)
@@ -274,6 +284,17 @@
                (ghost-track-position (ghost-track ghost) 1500)
              (declare (ignore floor map x z))
              (null y))))
+  ;; Inline six-element rows (e.g. a future wire) still parse.
+  (let ((ghost (parse-ghost-splits
+                (com.inuoe.jzon:parse
+                 "{\"run_id\":9,\"quest\":\"q\",\"time_ms\":6000,
+                   \"precision\":\"ms\",\"source\":\"pb\",\"pb\":0,
+                   \"rooms\":[],
+                   \"track\":[[0,1,10,0.0,0.0,5.0]]}"))))
+    (check "inline height-bearing rows parse too"
+           (and ghost
+                (every #'= (aref (ghost-track ghost) 0)
+                       '(0 1 10 0.0 0.0 5.0)))))
   ;; Projection: fit, aspect, centering, flipped z.
   (let ((project (map-projection '(((0 0) (100 200))) 240 240 :pad 10)))
     (check "projection exists with points" (functionp project))

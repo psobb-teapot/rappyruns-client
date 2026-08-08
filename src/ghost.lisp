@@ -147,13 +147,29 @@ does not retry every poll tick. Reset at each quest load.")
                                :nth (gethash "nth" room)
                                :enter-ms (gethash "enter_ms" room))))
                      rooms)
-         :track (let ((track (gethash "track" payload)))
+         :track (let ((track (gethash "track" payload))
+                      ;; The height column rides out-of-band in
+                      ;; "track_y" (server hunt:wire-track): rows stay
+                      ;; 5 elements on the wire so v0.51/v0.52 clients
+                      ;; keep their course map. Zip it back on here,
+                      ;; indexed against the RAW track so a dropped
+                      ;; malformed row cannot shift later heights.
+                      (heights (gethash "track_y" payload)))
                   (when (vectorp track)
                     (coerce
                      (loop :for row :across track
+                           :for i :from 0
                            :when (and (vectorp row) (<= 5 (length row) 6)
                                       (every #'numberp row))
-                             :collect (coerce row 'list))
+                             :collect
+                             (let ((row (coerce row 'list))
+                                   (y (and (vectorp heights)
+                                           (< i (length heights))
+                                           (numberp (aref heights i))
+                                           (aref heights i))))
+                               (if (and y (= (length row) 5))
+                                   (append row (list y))
+                                   row)))
                      'vector))))))))
 
 (defun ghost-race-note-room (race floor room elapsed-ms)
@@ -264,15 +280,13 @@ track; past the last sample the dot rests there."
                     (if (<= (first (aref track mid)) elapsed-ms)
                         (setf lo mid)
                         (setf hi (1- mid)))))
-        (let* ((row (aref track lo))
-               (ms (first row)) (floor (second row)) (map (third row))
-               (x (fourth row)) (z (fifth row)) (y (sixth row)))
+        (destructuring-bind (ms floor map x z &optional y) (aref track lo)
           (if (>= (1+ lo) n)
               (values floor map x z y)
-              (let* ((next (aref track (1+ lo)))
-                     (next-ms (first next)) (next-floor (second next))
-                     (next-x (fourth next)) (next-z (fifth next))
-                     (next-y (sixth next)))
+              (destructuring-bind (next-ms next-floor next-map next-x next-z
+                                   &optional next-y)
+                  (aref track (1+ lo))
+                (declare (ignore next-map))
                 (if (and (eql next-floor floor)
                          (< (- next-ms ms) +track-lerp-max-gap-ms+)
                          (> next-ms ms))
@@ -365,6 +379,12 @@ missing pieces. The eye direction is a unit vector; a zeroed one
                        (s (/ determinant fdp))
                        (px (* s vx)) (py (* s vy)) (pz (* s vz))
                        ;; right = dir x up(0,1,0); up' = right x dir.
+                       ;; Deliberately NOT normalized (their magnitude
+                       ;; is dir's horizontal component), matching the
+                       ;; addons' field-verified math verbatim: the FOV
+                       ;; heuristic above was tuned against exactly
+                       ;; this scaling, so "fixing" it here would move
+                       ;; every marker the addons place correctly.
                        (rx (- dz)) (rz dx)
                        (ux (- (* dx dy)))
                        (uy (+ (* dx dx) (* dz dz)))
@@ -387,20 +407,22 @@ MAP-PROJECTION's flipped y)."
   "Approximate distance label: PSO world units are ~10 per meter."
   (format nil "~dm" (max 1 (round (sqrt (+ (* dx dx) (* dz dz))) 10))))
 
-(defun ghost-map-data (race elapsed-ms)
+(defun ghost-map-data (race elapsed-ms &key marker)
   "Snapshot for the overlay's course map, or NIL when there is nothing
 to draw yet. All slots are plain data; the overlay thread interpolates
 the ghost dot itself from :track and :elapsed-at so it glides between
-the poll loop's 4 Hz updates:
+the poll loop's 4 Hz updates. MARKER (the :ghost-marker setting) rides
+along so the overlay thread never touches CONFIG-VALUE:
   (:floor F :own (x z) :own-y Y :own-points ((x z)...)
-   :track VECTOR :ghost-time-ms MS :label STRING
+   :track VECTOR :ghost-time-ms MS :label STRING :marker BOOL
    :elapsed-ms MS :elapsed-at TICKS)"
   (let ((ghost (ghost-race-ghost race))
         (floor (ghost-race-own-floor race))
         (x (ghost-race-own-x race))
         (z (ghost-race-own-z race)))
     (when (and floor x z)
-      (list :floor floor
+      (list :marker (and marker t)
+            :floor floor
             :own (list x z)
             :own-y (ghost-race-own-y race)
             :own-points (loop :for (f px pz) :in (ghost-race-own-track race)

@@ -72,6 +72,13 @@ loaded."
     (setf snapshot
           (append snapshot
                   (list :monsters (ignore-errors (read-monsters reader)))))
+    ;; The camera feeds only the overlay's in-world ghost marker
+    ;; (*LIVE-CAMERA* via GHOST-RACE-STEP), so nobody else pays its two
+    ;; ReadProcessMemory calls per poll frame.
+    (when (and (config-value :ghost-overlay) (config-value :ghost-marker))
+      (setf snapshot
+            (append snapshot
+                    (list :camera (ignore-errors (read-camera reader))))))
     (let ((now (get-internal-real-time)))
       (when (>= (- now *last-heavy-sample*) internal-time-units-per-second)
         (setf *last-heavy-sample* now)

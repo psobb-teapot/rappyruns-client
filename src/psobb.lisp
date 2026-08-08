@@ -340,7 +340,6 @@ so the detection state machine stays pure and testable."
                              :map (read-u16 reader +current-map-address+)
                              :map-variation (read-u16 reader +map-variation-address+)
                              :fast-burst (fast-burst-enabled-p reader)
-                             :camera (read-camera reader)
                              :quest-ptr (or quest-ptr 0))))
         (when (and quest-ptr (plusp quest-ptr))
           (let* ((data-ptr (read-u32 reader (+ quest-ptr +quest-data-offset+)))
