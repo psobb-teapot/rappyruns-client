@@ -41,8 +41,9 @@ psostats, excluded from frame-1 detection there too.")
   (last-frame-second -1)
   (death-count 0)
   last-hp
-  (events '())                  ; newest first: (:t sec :type "death"|"floor" ...)
+  (events '())                  ; newest first: (:t sec :type "death"|"floor"|"room" ...)
   last-map
+  last-floor-room               ; (floor . room) of the previous frame
   (meseta-charged 0)
   last-meseta
   last-consumables              ; consumables plist from the last sample
@@ -121,6 +122,24 @@ psostats, excluded from frame-1 detection there too.")
           (incf (telemetry-death-count telemetry))
           (push (list :t second :type "death") (telemetry-events telemetry))))
       (setf (telemetry-last-hp telemetry) hp))))
+
+(defparameter +room-event-type+ "room"
+  "Event type for ms-precision room entries. The server's ghost-race
+splits (GET /api/quests/:slug/ghost) prefer these over the per-second
+frames; the server repo's tests/contract-tests.lisp pins the spelling
+equal on both sides.")
+
+(defun update-room-tracking (telemetry me second elapsed-ms)
+  "Record an event the moment the submitter's (floor, room) changes -
+including the starting room on the first frame. The per-second frames
+carry floor/room too, but only at second granularity; these events are
+what gives ghost-race deltas ms precision."
+  (let ((key (cons (getf me :floor 0) (getf me :room 0))))
+    (unless (equal key (telemetry-last-floor-room telemetry))
+      (setf (telemetry-last-floor-room telemetry) key)
+      (push (list :t second :type +room-event-type+
+                  :floor (car key) :room (cdr key) :ms elapsed-ms)
+            (telemetry-events telemetry)))))
 
 (defun update-map-tracking (telemetry snapshot second)
   (let ((map (getf snapshot :map)))
@@ -367,6 +386,7 @@ them; a data frame is recorded once per second."
           (setf (telemetry-illegal-shifta telemetry) t)))
       (update-state-tracking telemetry me delta-ms)
       (update-death-tracking telemetry me second)
+      (update-room-tracking telemetry me second elapsed-ms)
       (update-map-tracking telemetry snapshot second)
       (update-resource-tracking telemetry me snapshot)
       (let ((inventory (getf snapshot :inventory)))

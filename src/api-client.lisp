@@ -420,6 +420,17 @@ hold nested location lists that become objects."
                                    (when (getf event :floor)
                                      (setf (gethash "floor" entry)
                                            (getf event :floor)))
+                                   ;; Room events (ghost race): the room id
+                                   ;; and the ms-precision timestamp ride
+                                   ;; along. GETF returns the value 0 for
+                                   ;; room 0 / floor 0, which is non-NIL,
+                                   ;; so those still travel.
+                                   (when (getf event :room)
+                                     (setf (gethash "room" entry)
+                                           (getf event :room)))
+                                   (when (getf event :ms)
+                                     (setf (gethash "ms" entry)
+                                           (getf event :ms)))
                                    entry))
                   'vector))
     ;; psostats parity: per-monster records, boss HP histories, damage
@@ -570,6 +581,43 @@ API-ERROR on authentication and transport failures."
           (401 (error 'api-error :message "Invalid or revoked API token"))
           (t (error 'api-error
                     :message (format nil "POST /api/quests -> ~a: ~a" status body))))))))
+
+(defun url-encode-component (string)
+  "Percent-encode STRING for a URL query value (UTF-8; unreserved
+characters pass through). Tiny on purpose - the client only ever
+encodes difficulty labels like \"Very Hard\"."
+  (with-output-to-string (out)
+    (loop :for byte :across (string-to-utf8 string)
+          :for char := (code-char byte)
+          :do (if (or (char<= #\a char #\z) (char<= #\A char #\Z)
+                      (char<= #\0 char #\9) (find char "-_.~"))
+                  (write-char char out)
+                  (format out "%~2,'0X" byte)))))
+
+(defun fetch-ghost-splits (slug &key difficulty party-size
+                                     (server-url (config-value :server-url))
+                                     (token (config-value :api-token)))
+  "GET /api/quests/:slug/ghost: the reference run's room splits for a
+ghost race (the run the user chose on the site, else their own best).
+Returns (values :ok payload) on 200 and (values :none nil) on 404 - the
+server has nothing to race - so the caller can tell \"no ghost\" from
+the API-ERROR signalled on auth and transport failures."
+  (let* ((params (append
+                  (when difficulty
+                    (list (format nil "difficulty=~a"
+                                  (url-encode-component difficulty))))
+                  (when party-size
+                    (list (format nil "party_size=~d" party-size)))))
+         (path (format nil "/api/quests/~a/ghost~@[?~{~a~^&~}~]"
+                       slug (and params params))))
+    (multiple-value-bind (status body)
+        (http-request "GET" (api-url server-url path) :token token)
+      (case status
+        (200 (values :ok (ignore-errors (jzon:parse body))))
+        (404 (values :none nil))
+        (401 (error 'api-error :message "Invalid or revoked API token"))
+        (t (error 'api-error
+                  :message (format nil "GET ~a -> ~a" path status)))))))
 
 (defun video-file-path (server-id offset-ms)
   (format nil "/api/runs/~d/video-file~@[?offset_ms=~d~]" server-id offset-ms))

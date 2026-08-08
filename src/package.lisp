@@ -62,4 +62,11 @@
            ;; login.txt credentials (pure parts, used by tests)
            #:parse-credentials #:read-credentials #:credentials-path
            ;; store
-           #:enqueue-run! #:submit-queued! #:queued-runs))
+           #:enqueue-run! #:submit-queued! #:queued-runs
+           ;; ghost race (pure parts, used by tests)
+           #:parse-ghost-splits #:make-ghost #:ghost-quest-slug
+           #:ghost-time-ms #:ghost-label #:ghost-source #:ghost-precision
+           #:ghost-rooms #:make-ghost-race #:ghost-race-note-room
+           #:ghost-race-delta-ms #:ghost-race-matched-rooms
+           #:format-ghost-delta #:annotate-ghost-runs #:ghost-status-suffix
+           #:url-encode-component))

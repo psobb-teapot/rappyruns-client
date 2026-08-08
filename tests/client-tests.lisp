@@ -143,7 +143,8 @@ publishes the Ephinea HP table pointer + scale double."
 ;;; file, T21), loaded here in the original order; each starts with
 ;;; IN-PACKAGE :EPHINEA-TA-CLIENT-TESTS.
 (dolist (part '("tests-memory" "tests-detect" "tests-quests"
-                "tests-recorder" "tests-helpers" "tests-misc"))
+                "tests-recorder" "tests-helpers" "tests-misc"
+                "tests-ghost"))
   (load (merge-pathnames (concatenate 'string part ".lisp")
                          (or *load-truename* *default-pathname-defaults*))))
 
@@ -179,5 +180,6 @@ publishes the Ephinea HP table pointer + scale double."
   (run-ux-helper-tests)
   (run-updater-tests)
   (run-config-migration-tests)
+  (run-ghost-tests)
   (format t "~&=== client tests: ~d failure~:p ===~%" *failures*)
   *failures*)

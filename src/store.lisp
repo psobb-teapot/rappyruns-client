@@ -91,6 +91,25 @@ line alone. NIL when the server sent no standing."
             (format nil "~a · ~a" pb-part rank-part)
             pb-part)))))
 
+(defun ghost-note (entry)
+  "'vs ghost -3.21s' when ENTRY finished with a ghost comparison on
+record (ANNOTATE-GHOST-RUNS), NIL otherwise. The final gap compares the
+two runs' official times, so it shows ms precision regardless of the
+ghost's room-split precision."
+  (let ((delta (getf entry :ghost-delta-ms)))
+    (when (integerp delta)
+      (tr :ghost-note
+          (if (minusp delta)
+              (format nil "-~a" (format-improvement-ms (- delta)))
+              (format nil "+~a" (format-improvement-ms delta)))))))
+
+(defun entry-note (entry)
+  "The runs-list note: board standing and ghost comparison, joined."
+  (let ((parts (remove nil (list (run-standing-note entry)
+                                 (ghost-note entry)))))
+    (when parts
+      (format nil "~{~a~^ · ~}" parts))))
+
 (defun standing-toast (entry)
   "Title and text (VALUES title text) for the desktop toast celebrating
 a freshly submitted ENTRY's board standing, or NIL when there is nothing
@@ -128,16 +147,32 @@ not passed video review yet and the site marks unverified times."
            (values (tr :toast-first-title)
                    (tr :toast-first-text quest time))))))))
 
+(defun ghost-toast (entry)
+  "(values title text) when ENTRY beat its ghost, NIL otherwise. Fired
+only when the standing toast stayed silent, so one balloon per run."
+  (let ((delta (getf entry :ghost-delta-ms)))
+    (when (and (integerp delta) (minusp delta))
+      (values (tr :ghost-toast-title)
+              (tr :ghost-toast-text
+                  (or (getf entry :quest-name) (getf entry :quest-slug))
+                  (format-run-time (getf entry :time-ms))
+                  (format-improvement-ms (- delta)))))))
+
 (defun notify-standing-toasts (entries)
   "Desktop toast for each just-submitted entry whose standing deserves
-one (STANDING-TOAST), unless the :rank-toast setting is off. Clicking
-the balloon opens the run's page (tray-win32's balloon-click handler).
-Best-effort: NOTIFY-USER is a silent no-op without the tray."
+one (STANDING-TOAST) - or, when the standing stays quiet, whose ghost
+was beaten (GHOST-TOAST) - unless the :rank-toast setting is off.
+Clicking the balloon opens the run's page (tray-win32's balloon-click
+handler). Best-effort: NOTIFY-USER is a silent no-op without the tray."
   (when (config-value :rank-toast)
     (dolist (entry entries)
       (multiple-value-bind (title text) (standing-toast entry)
-        (when title
-          (notify-user title text :icon :info :url (getf entry :url)))))))
+        (if title
+            (notify-user title text :icon :info :url (getf entry :url))
+            (multiple-value-bind (ghost-title ghost-text) (ghost-toast entry)
+              (when ghost-title
+                (notify-user ghost-title ghost-text
+                             :icon :info :url (getf entry :url)))))))))
 
 (defun run-status-label (entry)
   (if (getf entry :video-attached)
@@ -171,7 +206,7 @@ Best-effort: NOTIFY-USER is a silent no-op without the tray."
                                             (not (getf entry :upload-given-up)))
                                        (tr :status-draft-auto-upload))
                                       (t (tr :status-draft-upload))))
-                          (note (run-standing-note entry)))
+                          (note (entry-note entry)))
                       (if note (format nil "~a · ~a" base note) base)))
         (:duplicate (tr :status-duplicate))
         (:rejected (tr :status-rejected (or (getf entry :reason) "?")))

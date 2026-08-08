@@ -86,9 +86,10 @@ loaded."
   "Queue RUNS and auto-submit; returns the submission results (updated
 entries) so the caller can react to failures, or NIL when not submitting.
 Aborted (mid-quest quit) runs are dropped when :submit-aborted is off."
-  (let ((runs (if (config-value :submit-aborted)
-                  runs
-                  (remove-if (lambda (run) (getf run :aborted)) runs))))
+  (let ((runs (annotate-ghost-runs
+               (if (config-value :submit-aborted)
+                   runs
+                   (remove-if (lambda (run) (getf run :aborted)) runs)))))
     (dolist (run runs)
       ;; The sole stamp point for tracking-only mode: flags read here
       ;; travel with the queued entry, immune to later settings changes.
@@ -253,6 +254,11 @@ into the next iteration."
     (ignore-errors
       (recorder-step recorder (detector-state detector)
                      runs (reader-window-title reader)))
+    ;; Ghost race: fetch the reference splits the moment a quest
+    ;; loads (the load screen hides the round trip) and feed the
+    ;; live room delta. Neither ever interferes with detection.
+    (ignore-errors (maybe-start-ghost-fetch snapshot))
+    (ignore-errors (ghost-race-step detector snapshot))
     (when runs
       (run-completion-sounds runs)
       (refresh-runs-list interface))

@@ -32,6 +32,8 @@
         :moderator nil      ; cached /api/me role: shows the moderator-only Rooms tab + rule button on the first frame (refreshed and re-verified by CHECK-TOKEN; server enforces the real permission)
         :close-to-tray t    ; closing the window (x) hides to the system tray instead of quitting (see CLIENT-CONFIRM-DESTROY); off = x quits
         :rank-toast t       ; desktop toast when a fresh submission lands somewhere worth celebrating - provisional #1 / top 3 / PB / board first (see STANDING-TOAST); clicking it opens the run page
+        :ghost-race t       ; ghost race: fetch a reference run's splits at quest load (the run chosen on the site, else own PB) and show the live gap in the status line (ghost.lisp)
+        :ghost-overlay nil  ; floating in-game overlay window with the timer + ghost gap while a quest runs (overlay-win32.lisp); off by default - it draws over the game
         :start-minimized nil ; launch straight to the tray with no window (also forced for a single launch by --minimized; see STARTUP-MINIMIZED-P)
         :debug nil))        ; developer knobs in the GUI (see DEBUG-MODE-P)
 

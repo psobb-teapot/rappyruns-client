@@ -261,6 +261,24 @@ who cannot create rules, never see it."
                      :callback-type :interface
                      :font *ui-font*
                      :accessor rank-toast-check)
+   ;; Ghost race: live gap against a reference run (ghost.lisp). The
+   ;; overlay sub-toggle draws it over the game (overlay-win32.lisp).
+   (ghost-race-check capi:check-button
+                     :text (tr :ghost-race-label)
+                     :selected (config-value :ghost-race)
+                     :selection-callback 'toggle-ghost-race-callback
+                     :retract-callback 'toggle-ghost-race-callback
+                     :callback-type :interface
+                     :font *ui-font*
+                     :accessor ghost-race-check)
+   (ghost-overlay-check capi:check-button
+                        :text (tr :ghost-overlay-label)
+                        :selected (config-value :ghost-overlay)
+                        :selection-callback 'toggle-ghost-overlay-callback
+                        :retract-callback 'toggle-ghost-overlay-callback
+                        :callback-type :interface
+                        :font *ui-font*
+                        :accessor ghost-overlay-check)
    (record-dir-display capi:title-pane
                        :text (record-dir-label)
                        :font *ui-font*
@@ -343,6 +361,10 @@ who cannot create rules, never see it."
                       video-retention-note auto-publish-check recording-row)
                     :title (tr :group-recording) :title-position :frame
                     :title-font *ui-font* :adjust :left)
+   (ghost-group capi:column-layout
+                '(ghost-race-check ghost-overlay-check)
+                :title (tr :group-ghost) :title-position :frame
+                :title-font *ui-font* :adjust :left)
    (updates-group capi:column-layout
                   '(update-status-pane auto-update-check
                     check-updates-button)
@@ -365,7 +387,8 @@ who cannot create rules, never see it."
                    :title-font *ui-font* :adjust :left)
    (settings-tab capi:column-layout
                  '(language-group connection-group
-                   recording-group updates-group tray-group advanced-group)
+                   recording-group ghost-group updates-group tray-group
+                   advanced-group)
                  :adjust :left)
    (rooms-tab capi:column-layout '(rooms-hint rooms-list) :adjust :left)
    (main-tabs capi:tab-layout ()
@@ -1020,6 +1043,24 @@ submission (NOTIFY-STANDING-TOASTS)."
         (capi:button-selected (rank-toast-check interface)))
   (save-config!))
 
+(defun toggle-ghost-race-callback (interface)
+  "Apply the ghost-race toggle immediately; read at each quest load
+(GHOST-FETCH-WANTED), so it takes effect from the next quest."
+  (setf (config-value :ghost-race)
+        (capi:button-selected (ghost-race-check interface)))
+  (save-config!))
+
+(defun toggle-ghost-overlay-callback (interface)
+  "Apply the overlay toggle immediately. Turning it off hides the
+window on the overlay thread's next tick; turning it on shows it with
+the next quest (or the running one, on the next status update)."
+  (setf (config-value :ghost-overlay)
+        (capi:button-selected (ghost-overlay-check interface)))
+  (save-config!)
+  (unless (config-value :ghost-overlay)
+    ;; FUNCALL by name: overlay-win32.lisp loads after this file.
+    (ignore-errors (funcall 'overlay-hide!))))
+
 ;; The cross-thread update helpers use the -IF-ALIVE variant: the
 ;; language toggle destroys and replaces the window, and the poll loop
 ;; or a background check may still hold the old one for a moment.
@@ -1414,11 +1455,12 @@ silent, exactly like the old silent startup check."
      (cond
        (in-quest-p
         (let ((extra (1- (detector-active-count detector))))
-          (format nil "~a~@[ (+~d)~] - ~a~:[~; [REC]~]"
+          (format nil "~a~@[ (+~d)~] - ~a~:[~; [REC]~]~@[~a~]"
                   (quest-def-slug (detector-active-def detector))
                   (and (plusp extra) extra)
                   (format-run-time (detector-elapsed-ms detector))
-                  recording-p)))
+                  recording-p
+                  (ghost-status-suffix))))
        ((and snapshot (getf snapshot :quest-name))
         (tr :quest-waiting (getf snapshot :quest-name)))
        (t (tr :no-active-quest))))
@@ -1426,9 +1468,13 @@ silent, exactly like the old silent startup check."
     (set-window-title
      interface
      (if in-quest-p
-         (format nil "~a~:[~; [REC]~] - Rappy Runs Client"
+         (format nil "~a~@[~a~]~:[~; [REC]~] - Rappy Runs Client"
                  (format-run-time (detector-elapsed-ms detector))
+                 (ghost-title-suffix)
                  recording-p)
          "Rappy Runs Client"))
+    ;; The floating in-game overlay follows the same 4 Hz cadence.
+    ;; FUNCALL by name: overlay-win32.lisp loads after this file.
+    (ignore-errors (funcall 'update-ghost-overlay detector recording-p))
     ;; Keep the live Rooms tab current (rebuilds only on change).
     (refresh-rooms-list interface)))

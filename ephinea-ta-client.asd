@@ -35,7 +35,13 @@
                              (:file "rule-form")
                              (:file "updater")
                              (:file "store")
+                             ;; After store (format-run-time), before gui
+                             ;; (the status-line suffix).
+                             (:file "ghost")
                              (:file "gui" :if-feature :lispworks)
                              (:file "tray-win32" :if-feature :lispworks)
+                             ;; After tray-win32: shares its window-class /
+                             ;; message-loop FLI bindings.
+                             (:file "overlay-win32" :if-feature :lispworks)
                              (:file "autostart-win32" :if-feature :lispworks)
                              (:file "main")))))

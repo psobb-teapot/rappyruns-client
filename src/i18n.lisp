@@ -381,6 +381,26 @@
     :rank-toast-label
     ("Desktop notification when a run ranks up (provisional #1 / top 3 / PB)"
      "ランクイン時にデスクトップ通知を表示 (暫定1位・トップ3・自己ベスト)")
+
+    ;; Ghost race
+    :group-ghost
+    ("Ghost race"
+     "ゴーストレース")
+    :ghost-race-label
+    ("Race a ghost: fetch a reference run at quest load and show the live gap"
+     "ゴーストと競う: クエスト開始時に基準記録を取得してタイム差を表示")
+    :ghost-overlay-label
+    ("Floating in-game overlay (timer + gap)"
+     "ゲーム画面にオーバーレイ表示 (タイマー+タイム差)")
+    :ghost-note
+    ("vs ghost ~a"
+     "ゴースト比 ~a")
+    :ghost-toast-title
+    ("Ghost beaten!"
+     "ゴーストに勝利!")
+    :ghost-toast-text
+    ("~a - ~a, ~a ahead of the ghost"
+     "~a - ~a、ゴーストより ~a 速い")
     :tray-tooltip
     ("Rappy Runs Client"
      "Rappy Runs クライアント")
