@@ -302,6 +302,13 @@ remain as a fallback for a reader that cannot serve the whole block."
       ((1 2 4) (1+ raw))
       (t nil))))
 
+(defun reader-quest-loaded-p (reader)
+  "T when a quest is loaded in READER's process. One read of the quest
+pointer - the cheap signal CHOOSE-PSOBB-READER uses to prefer the played
+instance over a shop/lobby window, without pulling a whole snapshot."
+  (let ((ptr (read-u32 reader +quest-pointer+)))
+    (and ptr (plusp ptr))))
+
 (defun read-snapshot (reader)
   "One frame of game state as a plist; NIL if the process is unreadable.
 Trigger evaluation happens on the snapshot (see SNAPSHOT-REGISTER-SET-P),

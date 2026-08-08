@@ -17,6 +17,24 @@
   :calling-convention :stdcall
   :module :kernel32)
 
+(defun win32-log (fmt &rest args)
+  "Forward to RECORDING-LOG (defined in a later-loading file) so this
+early file can log attach/read failures without a compile-time forward
+reference. A no-op until the logger is loaded (never, in practice, by
+the time the poll loop runs)."
+  (when (fboundp 'recording-log)
+    (apply 'recording-log fmt args)))
+
+(defun win32-error-label (code)
+  "Human tag for the GetLastError values the reader actually hits, so a
+log tail names the cause instead of a bare number."
+  (case code
+    (0 "no error")
+    (5 "ERROR_ACCESS_DENIED")
+    (6 "ERROR_INVALID_HANDLE")
+    (299 "ERROR_PARTIAL_COPY")
+    (t "error")))
+
 (defun utf16-buffer-string (buffer count)
   "COUNT UTF-16 code units from the foreign (:unsigned :short) BUFFER
 as a string. BMP only - no surrogate pairing, like every caller."
@@ -43,6 +61,15 @@ as a string. BMP only - no surrogate pairing, like every caller."
     ((hwnd :pointer)
      (process-id (:reference-return (:unsigned :long))))
   :result-type (:unsigned :long)
+  :calling-convention :stdcall
+  :module :user32)
+
+;; EnumWindows enumerates every top-level window so 2-window (shop + play)
+;; setups can be listed, not just the single one FindWindow returns.
+(fli:define-foreign-function (%enum-windows "EnumWindows")
+    ((callback :pointer)
+     (lparam :pointer))
+  :result-type (:boolean :int)
   :calling-convention :stdcall
   :module :user32)
 
@@ -178,7 +205,16 @@ as a string. BMP only - no surrogate pairing, like every caller."
    (window-title :initarg :window-title :initform nil
                  :reader live-reader-window-title)
    (buffer :initform nil :accessor live-reader-buffer)
-   (buffer-size :initform 0 :accessor live-reader-buffer-size)))
+   (buffer-size :initform 0 :accessor live-reader-buffer-size)
+   ;; LAST-READ-ERROR keeps the GetLastError of the most recent failed
+   ;; ReadProcessMemory (see READ-BLOCK); the poll loop logs it once reads
+   ;; have been dead for a while. UNREADABLE-FRAMES counts consecutive
+   ;; attached frames that produced no snapshot at all - the "attached but
+   ;; cannot read" signal the GUI shows - so a single transient failed
+   ;; pointer-chase mid-snapshot never trips it (that is normal during
+   ;; warps and quest reloads); only a genuinely unreadable process does.
+   (last-read-error :initform nil :accessor live-reader-last-read-error)
+   (unreadable-frames :initform 0 :accessor live-reader-unreadable-frames)))
 
 (defmethod reader-window-title ((reader live-reader))
   (live-reader-window-title reader))
@@ -201,21 +237,76 @@ an exact match - the FindWindowW candidate name is not good enough."
       (when (plusp length)
         (utf16-buffer-string buffer length)))))
 
-(defun open-psobb-reader ()
-  "Attach to a running PSOBB process; NIL when not found."
-  (let ((hwnd (find-psobb-window)))
-    (when hwnd
-      ;; :reference-return parameters take a dummy argument at call time.
+(defvar *psobb-window-scan* nil
+  "Accumulator bound by FIND-PSOBB-WINDOWS while ETA_PSOBB_ENUM_CB runs;
+each matching window is pushed as (hwnd . pid).")
+
+(fli:define-foreign-callable ("eta_psobb_enum_cb"
+                              :result-type (:boolean :int)
+                              :calling-convention :stdcall)
+    ((hwnd :pointer)
+     (lparam :pointer))
+  ;; Runs synchronously on this thread for each top-level window during
+  ;; %ENUM-WINDOWS, so the dynamic *PSOBB-WINDOW-SCAN* binding is in
+  ;; effect. Returns T to keep enumerating.
+  (declare (ignore lparam))
+  (let ((title (ignore-errors (window-title hwnd))))
+    (when (and title (member title +psobb-window-names+ :test #'string=))
       (multiple-value-bind (thread-id pid)
           (%get-window-thread-process-id hwnd 0)
         (declare (ignore thread-id))
         (when (plusp pid)
-          (let ((handle (%open-process
-                         (logior +process-vm-read+ +process-query-information+)
-                         nil pid)))
-            (unless (fli:null-pointer-p handle)
-              (make-instance 'live-reader :handle handle :pid pid
-                                          :window-title (window-title hwnd)))))))))
+          (push (cons hwnd pid) *psobb-window-scan*)))))
+  t)
+
+(defun hwnd-pid (hwnd)
+  (multiple-value-bind (thread-id pid) (%get-window-thread-process-id hwnd 0)
+    (declare (ignore thread-id))
+    (and (plusp pid) pid)))
+
+(defun find-psobb-windows ()
+  "Every top-level PSOBB window as (hwnd . pid). Guarded by a cheap
+FindWindow first: while no PSOBB window exists (the common idle case)
+this does at most two FindWindow lookups and never enumerates - so the
+once-a-second search does not decode every desktop window's title. Only
+once a window is present do we EnumWindows to catch a second (shop)
+window; EnumWindows failure falls back to that single primary window."
+  (let ((primary (find-psobb-window)))
+    (when primary
+      (or (ignore-errors
+            (let ((*psobb-window-scan* '()))
+              (%enum-windows (fli:make-pointer :symbol-name "eta_psobb_enum_cb")
+                             fli:*null-pointer*)
+              (nreverse *psobb-window-scan*)))
+          (let ((pid (hwnd-pid primary)))
+            (and pid (list (cons primary pid))))))))
+
+(defvar *open-process-last-log* nil
+  "(pid . err) of the last OpenProcess failure logged; the once-a-second
+search loop would otherwise log the same failure on every probe.")
+
+(defun maybe-log-open-failure (pid err)
+  (unless (equal *open-process-last-log* (cons pid err))
+    (setf *open-process-last-log* (cons pid err))
+    (win32-log "OpenProcess failed: pid ~d err ~d (~a)~@[ - ~a~]"
+               pid err (win32-error-label err)
+               (and (= err 5) "run the client as administrator"))))
+
+(defun open-reader-for (hwnd pid)
+  "A live-reader for PSOBB process PID (window HWND), or NIL with a
+logged reason on failure."
+  (let ((handle (%open-process
+                 (logior +process-vm-read+ +process-query-information+)
+                 nil pid)))
+    (cond ((not (fli:null-pointer-p handle))
+           (setf *open-process-last-log* nil)
+           (make-instance 'live-reader :handle handle :pid pid
+                                       :window-title (window-title hwnd)))
+          (t
+           ;; GetLastError first, before WINDOW-TITLE or anything else
+           ;; clobbers it.
+           (maybe-log-open-failure pid (%get-last-error))
+           nil))))
 
 (defun close-reader (reader)
   (when (live-reader-buffer reader)
@@ -223,6 +314,11 @@ an exact match - the FindWindowW candidate name is not good enough."
     (setf (live-reader-buffer reader) nil
           (live-reader-buffer-size reader) 0))
   (%close-handle (live-reader-handle reader)))
+
+;; CHOOSE-PSOBB-READER and OPEN-PSOBB-READER are defined at the end of
+;; this file, after the Authenticode helpers, so candidate selection can
+;; verify each window's signature (a file check, not a memory read) before
+;; any of them is read from.
 
 (defun reader-alive-p (reader)
   (multiple-value-bind (ok code)
@@ -243,14 +339,24 @@ an exact match - the FindWindowW candidate name is not good enough."
     (multiple-value-bind (ok bytes-read)
         (%read-process-memory (live-reader-handle reader)
                               address buffer size 0)
-      (when (and ok (= bytes-read size))
-        (let ((result (make-array size :element-type '(unsigned-byte 8))))
-          ;; Bulk copy. The poll loop moves tens of KB through here 30x
-          ;; a second (player blocks, monster blocks, quest registers);
-          ;; a per-byte FLI:DEREFERENCE loop made that a measurable,
-          ;; constant CPU tax next to a live game.
-          (fli:replace-foreign-array result buffer :end2 size)
-          result)))))
+      (cond
+        ((and ok (= bytes-read size))
+         (let ((result (make-array size :element-type '(unsigned-byte 8))))
+           ;; Bulk copy. The poll loop moves tens of KB through here 30x
+           ;; a second (player blocks, monster blocks, quest registers);
+           ;; a per-byte FLI:DEREFERENCE loop made that a measurable,
+           ;; constant CPU tax next to a live game.
+           (fli:replace-foreign-array result buffer :end2 size)
+           result))
+        (t
+         ;; Keep the cause for the poll loop to log if reads stay dead.
+         ;; Captured here, before any other FFI call clobbers GetLastError
+         ;; (nothing runs between the read and this point). A single failed
+         ;; read is NOT itself a "cannot read" verdict - many reads chase
+         ;; pointers that are legitimately null mid-transition - so the
+         ;; per-frame decision lives in the poll loop, not here.
+         (setf (live-reader-last-read-error reader) (%get-last-error))
+         nil)))))
 
 ;;; Authenticode verification (wintrust/crypt32). PROCESS-IMAGE-PATH
 ;;; finds the exe behind a process handle and AUTHENTICODE-VERIFY
@@ -462,3 +568,68 @@ certificate. Revocation servers are never contacted
           (setf (fli:foreign-slot-value data 'state-action)
                 +wtd-stateaction-close+)
           (%win-verify-trust fli:*null-pointer* action data))))))
+
+;;; Candidate selection (2-window play). Defined here, after the
+;;; Authenticode helpers, so a candidate's signature - a check of the exe
+;;; FILE on disk, never its process memory - is verified before any of the
+;;; candidates is read from, keeping the verify-before-read invariant the
+;;; single-window path has always had.
+
+(defun reader-signature-trusted-p (reader)
+  "T when READER's exe is the signed official Ephinea client. File-based
+Authenticode only; reads no process memory, so it is safe to call on an
+unverified candidate before deciding whether to read its memory.
+PSOBB-SIGNATURE-TRUSTED-P is FUNCALLed - it lives in psobb.lisp, which
+loads after this file."
+  (let ((path (process-image-path reader)))
+    (multiple-value-bind (status signer)
+        (if path (authenticode-verify path) (values :invalid nil))
+      (and (funcall 'psobb-signature-trusted-p status signer) t))))
+
+(defun choose-psobb-reader (readers)
+  "Pick which candidate READER to attach and close the rest. A single
+candidate is returned untouched - the poll loop trust-checks and reads it
+exactly as before. With several windows (2-window play) a signed official
+client always wins over an untrusted title-squatter, and only trusted
+candidates ever have their memory read (READER-QUEST-LOADED-P), so an
+untrusted window can neither be probed nor shadow the real client. Among
+trusted candidates the one already running a quest wins, so a shop or
+lobby second window does not hide the instance being played. When none is
+trusted the first untrusted reader is returned unread, so the poll loop's
+own trust check can still report it as \"not official\"."
+  (when readers
+    (if (null (rest readers))
+        (first readers)
+        (let ((trusted '()) (untrusted '()))
+          (dolist (r readers)
+            (if (reader-signature-trusted-p r)
+                (push r trusted)
+                (push r untrusted)))
+          (setf trusted (nreverse trusted))
+          (let ((chosen
+                  (cond
+                    ((null trusted) (first (nreverse untrusted)))
+                    ((null (rest trusted)) (first trusted))
+                    (t (or (find-if (lambda (r)
+                                      (funcall 'reader-quest-loaded-p r))
+                                    trusted)
+                           (first trusted))))))
+            (dolist (r readers)
+              (unless (eq r chosen) (close-reader r)))
+            (win32-log "selected PSOBB pid ~d of ~d windows (~d trusted)"
+                       (live-reader-pid chosen) (length readers)
+                       (length trusted))
+            chosen)))))
+
+(defun open-psobb-reader ()
+  "Attach to a running PSOBB process; NIL when none. With several PSOBB
+windows open (2-window play), a trusted instance running a quest wins."
+  (let ((candidates (find-psobb-windows)))
+    (when candidates
+      (when (rest candidates)
+        (win32-log "multiple PSOBB windows: ~d (pids ~{~d~^, ~})"
+                   (length candidates) (mapcar #'cdr candidates)))
+      (let ((readers (loop :for pair :in candidates
+                           :for r := (open-reader-for (car pair) (cdr pair))
+                           :when r :collect r)))
+        (choose-psobb-reader readers)))))

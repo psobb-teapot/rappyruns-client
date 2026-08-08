@@ -7,6 +7,12 @@
 (defparameter +search-interval+ 1)
 (defparameter +gui-update-interval+ 1/4)
 
+(defparameter +read-failure-frames+ 60
+  "Consecutive attached-but-no-snapshot poll frames (~2s at +POLL-INTERVAL+)
+before the GUI calls reads failed. A high bar so the normal transient
+unreadable frames at warps and quest reloads never trip the warning; only
+a persistently unreadable process (a privilege mismatch, say) does.")
+
 ;; *STOP-REQUESTED* is defvar'd in updater.lisp (which loads first and
 ;; sets it during a self-update handover).
 
@@ -250,6 +256,20 @@ into the next iteration."
                     reader
                     (ignore-errors (read-snapshot reader))))
          (runs (detector-step detector snapshot)))
+    ;; Per-frame read health: a snapshot means the process is readable; its
+    ;; absence while attached is the "cannot read memory" signal. Counted
+    ;; across frames so a lone failed pointer-chase mid-snapshot (normal at
+    ;; warps/reloads) never trips it - only a persistently unreadable
+    ;; process does. Log the cause once, on crossing the threshold.
+    (if snapshot
+        (setf (live-reader-unreadable-frames reader) 0)
+        (when (= (incf (live-reader-unreadable-frames reader))
+                 +read-failure-frames+)
+          (let ((err (live-reader-last-read-error reader)))
+            (win32-log "attached but memory reads failing: pid ~d err ~a (~a)~@[ - ~a~]"
+                       (live-reader-pid reader) err
+                       (and err (win32-error-label err))
+                       (and (eql err 5) "run the client as administrator")))))
     ;; Recording never interferes with detection or
     ;; submission; errors only reach the GUI label.
     (ignore-errors
@@ -293,7 +313,13 @@ into the next iteration."
             (maybe-start-gdigrab-probe
              (reader-window-title reader))))
         (update-game-status interface (and reader t)
-                            detector snapshot recorder)
+                            detector snapshot recorder nil
+                            ;; Attached but reads have been dead a while:
+                            ;; surface it (privilege mismatch, anti-cheat)
+                            ;; instead of a silent "no active quest".
+                            (and reader
+                                 (>= (live-reader-unreadable-frames reader)
+                                     +read-failure-frames+)))
         (when (eq (detector-state detector) :in-quest)
           (refresh-runs-list interface))))
     (mp:process-wait-with-timeout
