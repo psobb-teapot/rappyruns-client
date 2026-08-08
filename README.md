@@ -46,14 +46,17 @@ signatures stay valid by design.
 
 First-time setup in the GUI:
 
-1. On first launch (until a token is set) the client pairs with the
-   site: it registers a one-time code (`POST /api/pair`), opens
+0. No account is needed to measure: unlinked (no token), the client
+   still times and queues every finished run on this machine
+   (`Status: saved on this PC`), and nothing is submitted. Linking
+   later flushes the whole backlog to the site.
+1. "Link with the site" (Settings tab) starts the browser pairing:
+   the client registers a one-time code (`POST /api/pair`), opens
    `/pair?code=...` in the browser (requires site login) and polls
    `GET /api/pair/:code` until the connection is approved there. The
    token is issued and delivered over the API - nothing to copy - and
    verified immediately (`Token: OK (name)` in the status row). The
-   code expires after 10 minutes; the pairing runs again on the next
-   launch until a token is set.
+   code expires after 10 minutes; press the button again if it does.
 2. Alternatively, a `login.txt` next to `RappyRunsClient.exe` skips the
    browser entirely: set a client password on `/my/tokens` (while
    logged in via Discord), then put a UTF-8 text file with

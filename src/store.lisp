@@ -48,6 +48,13 @@ LIMIT finished ones, preserving order."
                       (> (incf finished) limit)))
                runs)))
 
+(defun unlinked-p ()
+  "True while no API token is configured - the client measures in
+local-only mode: runs queue on this machine and nothing is submitted
+until the user links with the site (pairing, login.txt or a pasted
+token)."
+  (string= (normalize-token (config-value :api-token)) ""))
+
 ;;; Display helpers for run entries. They live here rather than in the
 ;;; (LispWorks-only) GUI so the SBCL tests can cover them.
 
@@ -193,7 +200,9 @@ handler). Best-effort: NOTIFY-USER is a silent no-op without the tray."
         (t
          (tr :status-video-attached)))
       (case (getf entry :status)
-        (:queued (tr :status-queued))
+        (:queued (if (unlinked-p)
+                     (tr :status-queued-unlinked)
+                     (tr :status-queued)))
         (:submitted (let ((base (cond ((getf entry :aborted)
                                        (tr :status-draft-aborted))
                                       ;; A record-only run boards nothing, so
@@ -359,12 +368,17 @@ fresh submission also carries the board standing the server computed."
 
 (defun submit-queued! ()
   "Try to submit every :queued or :failed run. Returns the UPDATED
-entries (the pre-submission plists would show stale statuses)."
-  (let ((pending (with-runs-lock
-                   (remove-if-not (lambda (entry)
-                                    (member (getf entry :status) '(:queued :failed)))
-                                  *runs*))))
-    (mapcar #'submit-entry! pending)))
+entries (the pre-submission plists would show stale statuses). While
+the client is unlinked this is a no-op returning NIL: entries stay
+:queued on this machine instead of bouncing off the server as 401
+failures, and the flush after linking (FINISH-PAIRING / CHECK-TOKEN)
+picks them all up."
+  (unless (unlinked-p)
+    (let ((pending (with-runs-lock
+                     (remove-if-not (lambda (entry)
+                                      (member (getf entry :status) '(:queued :failed)))
+                                    *runs*))))
+      (mapcar #'submit-entry! pending))))
 
 ;;; Linking recordings to queue entries.
 ;;; UPDATE-RUN! replaces entries with copies, so identity across updates

@@ -437,8 +437,7 @@ are persisted incrementally, so an abrupt exit loses nothing."
     ;; Launch straight to the tray (autostart --minimized, or the config
     ;; toggle): the window is realized above, then hidden. A brief flash
     ;; is possible but keeping one display path is simpler than a
-    ;; never-shown window, and the token setup prompt (first run only)
-    ;; still needs a visible window.
+    ;; never-shown window.
     (when (startup-minimized-p)
       (setf (capi:top-level-interface-display-state interface) :hidden))
     (setf *poll-process*

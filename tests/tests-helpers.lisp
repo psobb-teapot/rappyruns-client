@@ -277,6 +277,29 @@
     (check "trim keeps the newest finished entries in order"
            (equal (subseq (mapcar (lambda (e) (getf e :n)) runs) 0 10)
                   (subseq (mapcar (lambda (e) (getf e :n)) trimmed) 0 10))))
+  ;; Unlinked (no API token) mode: measuring works but nothing submits -
+  ;; the queued label points at linking and SUBMIT-QUEUED! stays off the
+  ;; network entirely, so no 401 failures pile up before the user links.
+  (check "unlinked-p is true with the default (empty) token"
+         (with-recording-config ()
+           (ephinea-ta-client::unlinked-p)))
+  (check "unlinked-p is false once a token is configured"
+         (with-recording-config (:api-token "eta_x")
+           (not (ephinea-ta-client::unlinked-p))))
+  (check "queued label while unlinked points at linking with the site"
+         (with-recording-config ()
+           (search "link" (ephinea-ta-client::run-status-label
+                           (list :status :queued)))))
+  (check "queued label with a token stays the plain queued"
+         (with-recording-config (:api-token "eta_x")
+           (string= "queued" (ephinea-ta-client::run-status-label
+                              (list :status :queued)))))
+  (check "submit-queued! is a no-op while unlinked, leaving entries queued"
+         (with-recording-config ()
+           (with-test-store ((list :status :queued :quest-slug "q" :time-ms 1))
+             (and (null (ephinea-ta-client::submit-queued!))
+                  (eq :queued (getf (first (ephinea-ta-client::queued-runs))
+                                    :status))))))
   ;; Debug mode gates developer-only settings (the Server URL field).
   (check "debug mode is off by default"
          (with-recording-config ()

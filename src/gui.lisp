@@ -136,6 +136,14 @@ who cannot create rules, never see it."
                     :font *ui-font*
                     :title-font *ui-font*
                     :accessor api-token-input)
+   ;; Linking is opt-in: the client measures without an account (runs
+   ;; queue locally), and this button starts the browser pairing when
+   ;; the user decides to submit to the site.
+   (link-account-button capi:push-button
+                        :text (tr :link-account-button)
+                        :callback 'link-account-callback
+                        :callback-type :interface
+                        :font *ui-font*)
    ;; Auto-submit, submit-aborted and completion-sound are fixed
    ;; behaviors now (see +FORCED-CONFIG-KEYS+); no controls for them.
    (trigger-log-check capi:check-button
@@ -357,8 +365,9 @@ who cannot create rules, never see it."
    ;; it just stays out of the layout without --debug / :debug t.
    (connection-group capi:column-layout
                      (if (debug-mode-p)
-                         '(server-url-input api-token-input save-button)
-                         '(api-token-input save-button))
+                         '(link-account-button server-url-input
+                           api-token-input save-button)
+                         '(link-account-button api-token-input save-button))
                      :title (tr :group-connection) :title-position :frame
                      :title-font *ui-font* :adjust :left)
    (recording-row capi:row-layout '(record-dir-display record-dir-button)
@@ -544,8 +553,13 @@ and saved immediately (no Save settings needed)."
 
 (defun retry-callback (interface)
   (declare (ignore interface))
-  ;; The poll loop owns submission; just flag the queue for a retry pass.
-  (setf *retry-requested* t))
+  ;; Unlinked, a retry pass would be a silent no-op (SUBMIT-QUEUED!
+  ;; skips the server) - say what the button needs instead.
+  (if (unlinked-p)
+      (capi:display-message "~a" (tr :retry-needs-link))
+      ;; The poll loop owns submission; just flag the queue for a retry
+      ;; pass.
+      (setf *retry-requested* t)))
 
 (defun clear-list-callback (interface)
   "Clear the runs list after confirmation. Only unsent runs stay (see
@@ -629,16 +643,22 @@ on the site says which computer it belongs to."
         "Desktop client")))
 
 (defun prompt-for-token-setup (interface)
-  "First-run setup: while no API token is configured, log in from the
-login.txt next to the exe when there is one, otherwise pair with the
-site - open /pair?code=... in the browser and poll until the user
-approves the connection there; the token arrives over the API. Runs
-again on every launch until a token is set; the Settings tab's manual
-paste stays as the fallback."
-  (when (string= (normalize-token (config-value :api-token)) "")
-    (if (credentials-present-p)
-        (start-file-login-flow interface)
-        (start-pairing-flow interface))))
+  "First-run setup: no account is needed to measure - without a token
+the client runs unlinked (runs queue on this machine; SUBMIT-QUEUED!
+skips the server) and CHECK-TOKEN's status line points at the Link
+button, so no browser is forced on anyone. Only a login.txt next to
+the exe still logs in by itself: the user placed that file
+deliberately."
+  (when (and (string= (normalize-token (config-value :api-token)) "")
+             (credentials-present-p))
+    (start-file-login-flow interface)))
+
+(defun link-account-callback (interface)
+  "The \"Link with the site\" button: start the browser pairing flow -
+first-run linking and re-linking a machine whose token was revoked
+alike. A pairing already waiting for approval is left alone (the
+browser tab is open; START-PAIRING-FLOW refuses a second worker)."
+  (start-pairing-flow interface))
 
 (defun start-pairing-flow (interface)
   (unless (and *pairing-process* (mp:process-alive-p *pairing-process*))
@@ -1205,7 +1225,9 @@ itself may well be fine. NOTIFY also pops the outcome as a dialog, for
 the Save settings flow."
   (let ((token (normalize-token (config-value :api-token))))
     (if (string= token "")
-        (set-pane-text interface #'token-status-pane (tr :token-not-set))
+        ;; Unlinked is a supported state, not an error: measuring works,
+        ;; runs queue locally, and the status line says how to link.
+        (set-pane-text interface #'token-status-pane (tr :token-unlinked))
         (progn
           (set-pane-text interface #'token-status-pane (tr :token-checking))
           (mp:process-run-function
@@ -1220,6 +1242,11 @@ the Save settings flow."
                                        (tr :token-ok name))
                         (apply-moderator-role interface user)
                         (apply-auto-publish interface user)
+                        ;; A verified token flushes the local backlog:
+                        ;; runs queued while unlinked (or while the
+                        ;; server was unreachable) submit on the poll
+                        ;; loop's next pass.
+                        (setf *retry-requested* t)
                         (when notify
                           (capi:execute-with-interface-if-alive
                            interface

@@ -57,9 +57,9 @@
     :token-not-checked
     ("Token: not checked"
      "トークン: 未確認")
-    :token-not-set
-    ("Token: not set"
-     "トークン: 未設定")
+    :token-unlinked
+    ("Not linked - runs are timed and saved on this PC; link to submit them"
+     "未連携 - 計測結果はこの PC に保存されます。連携すると送信できます")
     :token-checking
     ("Token: checking..."
      "トークン: 確認中...")
@@ -141,6 +141,9 @@
     :retry-button
     ("Submit pending runs"
      "未送信の記録を送信")
+    :retry-needs-link
+    ("Runs are saved on this PC. Link with the site (Settings tab) to submit them."
+     "記録はこの PC に保存されています。送信するには設定タブの「サイトと連携する」で連携してください。")
     :clear-list-tooltip
     ("Clear list"
      "一覧をクリア")
@@ -164,6 +167,9 @@
     :api-token-label
     ("API token"
      "API トークン")
+    :link-account-button
+    ("Link with the site (approve in browser)"
+     "サイトと連携する (ブラウザで承認)")
     :save-button
     ("Save & verify"
      "保存して確認")
@@ -509,8 +515,8 @@
     ("Token: approve the connection in your browser..."
      "トークン: ブラウザで接続を承認してください...")
     :pairing-expired
-    ("Token: pairing expired - restart the client, or paste a token in Settings"
-     "トークン: 接続の有効期限が切れました。クライアントを再起動するか、設定タブでトークンを貼り付けてください")
+    ("Token: pairing expired - press \"Link with the site\" again, or paste a token"
+     "トークン: 接続の有効期限が切れました。「サイトと連携」をもう一度押すか、トークンを貼り付けてください")
     :pairing-failed
     ("Token: pairing could not start (~a)"
      "トークン: 接続を開始できません (~a)")
@@ -552,6 +558,9 @@
     :status-queued
     ("queued"
      "送信待ち")
+    :status-queued-unlinked
+    ("saved on this PC - link with the site to submit"
+     "この PC に保存済み - サイトと連携すると送信されます")
     :status-draft-upload
     ("draft - use Upload to YouTube"
      "下書き - 「YouTube にアップロード」を使ってください")
