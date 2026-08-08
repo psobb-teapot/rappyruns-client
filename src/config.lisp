@@ -35,7 +35,6 @@
         :ghost-race t       ; ghost race: fetch a reference run's splits at quest load (the run chosen on the site, else own PB) and show the live gap in the status line (ghost.lisp)
         :ghost-overlay nil  ; floating in-game overlay window with the timer + ghost gap + course map while a quest runs (overlay-win32.lisp); off by default - it draws over the game
         :ghost-marker t     ; in-world ghost marker: project the ghost's position through the game camera and draw a dot + name pill where it stands (needs :ghost-overlay; overlay-win32.lisp OVERLAY-DRAW-GHOST-MARKER)
-        :ghost-video nil    ; ghost synced-video mini player: play the reference run's hosted recording in a small always-on-top ffplay window, seeked to the live run's elapsed time (ghost.lisp); needs the bundled ffplay and a ghost with a watchable hosted video
         :start-minimized nil ; launch straight to the tray with no window (also forced for a single launch by --minimized; see STARTUP-MINIMIZED-P)
         :debug nil))        ; developer knobs in the GUI (see DEBUG-MODE-P)
 

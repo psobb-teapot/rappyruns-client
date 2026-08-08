@@ -30,13 +30,6 @@ if (Test-Path (Join-Path $ffmpegDir "ffmpeg.exe")) {
         throw "vendor\ffmpeg\ffmpeg.exe is present but LICENSE.txt is missing - a GPL ffmpeg build must ship with its license text."
     }
     Copy-Item $license (Join-Path $stage "ffmpeg")
-    # ffplay powers the ghost synced-video mini player; optional like
-    # ffmpeg itself (the client degrades to no mini player without it).
-    if (Test-Path (Join-Path $ffmpegDir "ffplay.exe")) {
-        Copy-Item (Join-Path $ffmpegDir "ffplay.exe") (Join-Path $stage "ffmpeg")
-    } else {
-        Write-Warning "vendor\ffmpeg\ffplay.exe not found - packaging WITHOUT the ghost mini player's ffplay."
-    }
 } else {
     Write-Warning "vendor\ffmpeg\ffmpeg.exe not found - packaging WITHOUT the bundled ffmpeg (recording will need a user-installed ffmpeg). See README.md 'Bundling ffmpeg'."
 }

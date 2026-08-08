@@ -38,8 +38,6 @@
   label      ; submitter name, for toasts and run-list notes
   source     ; "target" (chosen on the site) or "pb"
   pb         ; the reference's board category, 0/1 (NIL: older server)
-  video-p    ; 1 when a watchable hosted recording backs the ghost -
-             ; the synced mini player's precondition (0/NIL otherwise)
   precision  ; :ms (room events) or :sec (frame-derived)
   rooms      ; vector of (:floor :room :nth :enter-ms), progression order
   track)     ; vector of (ms floor map x z) or (ms floor map x z y)
@@ -101,27 +99,6 @@ mirroring the detector's disarm: a reload that lands on the same
 allocation address must still refetch (the target or PB may have
 changed between attempts).")
 
-;; Synced-video mini player state (drivers further down; the variables
-;; live here because GHOST-FETCH-WANTED resets the give-up marker).
-
-(defvar *ghost-video* nil
-  "(:capture FFMPEG-CAPTURE :ghost GHOST) of the running mini player,
-or NIL.")
-
-(defvar *ghost-video-starting* nil
-  "GET-INTERNAL-REAL-TIME when the link fetch / spawn thread launched,
-or NIL. A timestamp rather than a flag so a thread that dies before
-its cleanup (process-creation failure) cannot latch the mini player
-off for the whole session - a stale stamp just expires.")
-
-(defparameter +ghost-video-start-timeout-ms+ 30000
-  "How long a start attempt may stay in flight before the stamp is
-considered stale and a new attempt is allowed.")
-
-(defvar *ghost-video-given-up* nil
-  "The ghost a player start failed (or was closed) for, so one failure
-does not retry every poll tick. Reset at each quest load.")
-
 (defun parse-ghost-splits (payload)
   "GET /api/quests/:slug/ghost payload -> ghost, or NIL when malformed."
   (when (hash-table-p payload)
@@ -136,8 +113,6 @@ does not retry every poll tick. Reset at each quest load.")
          :source (gethash "source" payload)
          :pb (let ((pb (gethash "pb" payload)))
                (and (integerp pb) pb))
-         :video-p (let ((video (gethash "video" payload)))
-                    (and (integerp video) video))
          :precision (if (equal (gethash "precision" payload) "ms") :ms :sec)
          :rooms (map 'vector
                      (lambda (room)
@@ -450,18 +425,16 @@ whenever no quest is loaded (see *GHOST-FETCH-PTR*)."
     (cond
       ((not (and ptr (plusp ptr)))
        ;; No quest loaded: forget the load AND the ghost, so a stale
-       ;; reference can neither race the next quest nor let an
-       ;; in-flight video fetch spawn its player after the run.
-       ;; (Completed runs are annotated while the quest is still
-       ;; loaded, so clearing here never robs a finish of its note.)
+       ;; reference can never race the next quest. (Completed runs are
+       ;; annotated while the quest is still loaded, so clearing here
+       ;; never robs a finish of its note.)
        (setf *ghost-fetch-ptr* nil
              *ghost* nil)
        nil)
       ((and (getf snapshot :quest-name)
             (not (eql ptr *ghost-fetch-ptr*)))
        (setf *ghost-fetch-ptr* ptr
-             *ghost* nil
-             *ghost-video-given-up* nil)
+             *ghost* nil)
        (let ((defs (find-quest-defs :number (getf snapshot :quest-number)
                                     :episode (getf snapshot :episode)
                                     :name (getf snapshot :quest-name))))
@@ -556,147 +529,6 @@ chose the target explicitly, or the ghost predates the pb field."
        (or (equal (ghost-source ghost) "target")
            (null (ghost-pb ghost))
            (eql (ghost-pb ghost) (if (getf run :pb) 1 0)))))
-
-;;; Ghost synced-video mini player: the reference run's hosted
-;;; recording in a small always-on-top ffplay window, seeked so it
-;;; shows the ghost's screen at the live run's elapsed time - the
-;;; closest thing to running alongside the ghost that read-only access
-;;; allows. One player at a time; the quest ending (or the setting
-;;; going off) kills it, closing it by hand just gives it up for the
-;;; run. (State variables live up with the fetch state.)
-
-(defun resolve-ffplay-path ()
-  "ffplay.exe next to the resolved ffmpeg (bundled or configured), or
-the bare \"ffplay.exe\" when ffmpeg itself resolved to a bare
-PATH-searched name - CreateProcess then searches the PATH the same way
-it does for ffmpeg, instead of probing the process CWD. NIL when the
-sibling is missing; the mini player is optional."
-  (let ((ffmpeg (resolve-ffmpeg-path)))
-    (when ffmpeg
-      (if (null (pathname-directory (pathname ffmpeg)))
-          "ffplay.exe"
-          (let ((ffplay (merge-pathnames
-                         "ffplay.exe"
-                         (uiop:pathname-directory-pathname
-                          (pathname ffmpeg)))))
-            (and (probe-file ffplay) (namestring ffplay)))))))
-
-#+lispworks
-(defun ghost-video-position ()
-  "(values left top) for the player: the game window's bottom-left
-corner, or NILs when the window is gone (ffplay then places itself)."
-  (let* ((hwnd (find-psobb-window))
-         (rect (and hwnd (window-rect-of hwnd))))
-    (if rect
-        (destructuring-bind (left top right bottom) rect
-          (declare (ignore right))
-          (values (+ left 16) (max top (- bottom 270 60))))
-        (values nil nil))))
-
-#+lispworks
-(defun stop-ghost-video! ()
-  "Kill the mini player if one is up. Safe from any thread."
-  (let ((playing *ghost-video*))
-    (when playing
-      (setf *ghost-video* nil)
-      (let ((capture (getf playing :capture)))
-        (ignore-errors
-          (%terminate-process (ffmpeg-capture-process-handle capture) 1))
-        (ignore-errors (close-capture-handles capture))))))
-
-#+lispworks
-(defun start-ghost-video-player (ghost telemetry detector)
-  "Fetch the ghost's video link and spawn ffplay seeked to the live
-elapsed time (video_offset_ms maps timer zero into the video). Runs on
-its own thread; every failure just gives the ghost's video up for this
-run. The quest state, the setting and the ghost's currency are all
-re-checked AFTER the fetch: a run that ended (or a toggle flipped)
-during the 1-3 s round trip must not pop a player over the results."
-  (unwind-protect
-       (handler-case
-           (multiple-value-bind (outcome url offset-ms)
-               (fetch-ghost-video-link (ghost-run-id ghost))
-             (let ((ffplay (resolve-ffplay-path)))
-               (when (and (eq outcome :ok) (stringp url) ffplay
-                          (eq *ghost* ghost)
-                          (eq (detector-state detector) :in-quest)
-                          (config-value :ghost-video))
-                 (let ((seek (/ (+ (or offset-ms 0)
-                                   (telemetry-elapsed-ms
-                                    telemetry (get-internal-real-time)))
-                                1000.0)))
-                   (multiple-value-bind (left top) (ghost-video-position)
-                     (let ((capture
-                             (spawn-process
-                              ffplay
-                              (append
-                               (list "-hide_banner" "-loglevel" "error"
-                                     "-an" "-noborder" "-alwaysontop"
-                                     "-autoexit"
-                                     "-x" "480" "-y" "270"
-                                     "-window_title" "Rappy Runs Ghost"
-                                     "-ss" (format nil "~,2f" (max 0.0 seek)))
-                               (when left
-                                 (list "-left" (princ-to-string left)
-                                       "-top" (princ-to-string top)))
-                               (list url)))))
-                       (setf *ghost-video*
-                             (list :capture capture :ghost ghost))))))))
-         (error () nil))
-    (unless (and *ghost-video*
-                 (eq (getf *ghost-video* :ghost) ghost))
-      (setf *ghost-video-given-up* ghost))
-    (setf *ghost-video-starting* nil)))
-
-#+lispworks
-(defun ghost-video-start-in-flight-p ()
-  "A start attempt is in flight and its stamp has not gone stale."
-  (let ((stamp *ghost-video-starting*))
-    (and stamp
-         (< (round (* 1000 (- (get-internal-real-time) stamp))
-                   internal-time-units-per-second)
-            +ghost-video-start-timeout-ms+))))
-
-#+lispworks
-(defun ghost-video-capture-safe-p ()
-  "The mini player may only show when the game runs windowed: windowed
-recordings capture the game window itself (WGC / gdigrab), which the
-player's window cannot pollute, while fullscreen recordings duplicate
-the whole monitor and would burn the always-on-top player into the
-submitted footage - the v0.47 write-in problem all over again."
-  (let ((hwnd (find-psobb-window)))
-    (and hwnd (not (window-covers-monitor-p hwnd)))))
-
-#+lispworks
-(defun ghost-video-step (detector)
-  "Poll-loop driver: start the mini player when a videoed ghost races
-and the setting is on, notice it dying (user closed it / hit the end),
-kill it when the quest is over. Safe to call every tick."
-  (let* ((race *ghost-race*)
-         (ghost (and race (ghost-race-ghost race)))
-         (playing *ghost-video*))
-    (cond
-      ((or (not (eq (detector-state detector) :in-quest))
-           (not (config-value :ghost-video)))
-       (stop-ghost-video!))
-      ((and playing (not (capture-alive-p (getf playing :capture))))
-       ;; Closed by hand or played out: no restart this run.
-       (setf *ghost-video-given-up* (getf playing :ghost)
-             *ghost-video* nil)
-       (ignore-errors (close-capture-handles (getf playing :capture))))
-      ((and ghost (null playing)
-            (not (ghost-video-start-in-flight-p))
-            (not (eq ghost *ghost-video-given-up*))
-            (eql (ghost-video-p ghost) 1)
-            (ghost-run-id ghost)
-            (detector-telemetry detector)
-            (ghost-video-capture-safe-p))
-       (setf *ghost-video-starting* (get-internal-real-time))
-       (let ((telemetry (detector-telemetry detector)))
-         (mp:process-run-function
-          "eta-client-ghost-video" '()
-          (lambda ()
-            (start-ghost-video-player ghost telemetry detector))))))))
 
 (defun annotate-ghost-runs (runs)
   "Stamp each completed run the current ghost covers with the final

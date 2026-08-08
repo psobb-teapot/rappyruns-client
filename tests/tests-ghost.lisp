@@ -196,7 +196,7 @@
 
 (defparameter +tracked-ghost-payload+
   "{\"run_id\":7,\"quest\":\"q\",\"time_ms\":6000,\"precision\":\"ms\",
-    \"source\":\"pb\",\"pb\":0,\"video\":1,\"rooms\":[],
+    \"source\":\"pb\",\"pb\":0,\"rooms\":[],
     \"track\":[[0,1,10,0.0,0.0],[1000,1,10,10.0,20.0],
                [5000,2,11,50.0,50.0],\"junk\",[1,2]]}")
 
@@ -209,8 +209,6 @@
                 ;; jzon parses reals as doubles, so compare with =.
                 (every #'= (aref (ghost-track ghost) 1)
                        '(1000 1 10 10.0 20.0))))
-    (check "video flag parses"
-           (eql (ghost-video-p ghost) 1))
     (let ((track (ghost-track ghost)))
       (check "position before the first sample is NIL"
              (null (ghost-track-position track -1)))
