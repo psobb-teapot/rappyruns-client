@@ -44,6 +44,11 @@ psostats, excluded from frame-1 detection there too.")
   (events '())                  ; newest first: (:t sec :type "death"|"floor"|"room" ...)
   last-map
   last-floor-room               ; (floor . room) of the previous frame
+  (track '())                   ; newest first: (ms floor map x z) rows of the
+                                ; submitter's own position, ~4 Hz - the ghost
+                                ; overlay's course map (server: telemetry-position-track)
+  (track-count 0)
+  last-track-ms
   (meseta-charged 0)
   last-meseta
   last-consumables              ; consumables plist from the last sample
@@ -140,6 +145,31 @@ what gives ghost-race deltas ms precision."
       (push (list :t second :type +room-event-type+
                   :floor (car key) :room (cdr key) :ms elapsed-ms)
             (telemetry-events telemetry)))))
+
+(defparameter +track-interval-ms+ 250
+  "Own-position sampling interval for the ghost course map. 4 Hz is
+smooth enough to watch a dot run and stays a fraction of the frames'
+size (a 15-minute run is ~3600 compact rows).")
+
+(defparameter +max-track-points+ 86400
+  "Six hours at 4 Hz - the server drops an oversized track, so stop
+recording there instead of shipping rows that will be discarded.")
+
+(defun update-track-recording (telemetry me snapshot elapsed-ms)
+  "Sample the submitter's own position into the track every
++TRACK-INTERVAL-MS+."
+  (let ((last (telemetry-last-track-ms telemetry)))
+    (when (and (< (telemetry-track-count telemetry) +max-track-points+)
+               (or (null last)
+                   (>= (- elapsed-ms last) +track-interval-ms+)))
+      (setf (telemetry-last-track-ms telemetry) elapsed-ms)
+      (incf (telemetry-track-count telemetry))
+      (push (list elapsed-ms
+                  (getf me :floor 0)
+                  (or (getf snapshot :map) 0)
+                  (round1 (getf me :x 0.0))
+                  (round1 (getf me :z 0.0)))
+            (telemetry-track telemetry)))))
 
 (defun update-map-tracking (telemetry snapshot second)
   (let ((map (getf snapshot :map)))
@@ -387,6 +417,7 @@ them; a data frame is recorded once per second."
       (update-state-tracking telemetry me delta-ms)
       (update-death-tracking telemetry me second)
       (update-room-tracking telemetry me second elapsed-ms)
+      (update-track-recording telemetry me snapshot elapsed-ms)
       (update-map-tracking telemetry snapshot second)
       (update-resource-tracking telemetry me snapshot)
       (let ((inventory (getf snapshot :inventory)))
@@ -433,6 +464,7 @@ run queue. Taken at the moment a tracker finishes, so running totals
 are correct for segment categories that end before the full clear."
   (list :frames (reverse (telemetry-frames telemetry))
         :events (reverse (telemetry-events telemetry))
+        :track (reverse (telemetry-track telemetry))
         :death-count (telemetry-death-count telemetry)
         :meseta-charged (telemetry-meseta-charged telemetry)
         :kills (telemetry-kills telemetry)

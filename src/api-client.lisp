@@ -433,6 +433,13 @@ hold nested location lists that become objects."
                                            (getf event :ms)))
                                    entry))
                   'vector))
+    ;; Own-position track rows for the ghost course map, compact
+    ;; [ms, floor, map, x, z] arrays (server: telemetry-position-track).
+    (when (getf data :track)
+      (setf (gethash "track" object)
+            (coerce (mapcar (lambda (row) (coerce row 'vector))
+                            (getf data :track))
+                    'vector)))
     ;; psostats parity: per-monster records, boss HP histories, damage
     ;; and last-hit attribution, and the cheat heuristics. Absent from
     ;; runs queued by older client versions, hence the WHENs.
@@ -627,6 +634,32 @@ failures."
         (401 (error 'api-error :message "Invalid or revoked API token"))
         (t (error 'api-error
                   :message (format nil "GET ~a -> ~a" path status)))))))
+
+(defun fetch-ghost-video-link (run-id &key (server-url (config-value :server-url))
+                                           (token (config-value :api-token)))
+  "GET /api/runs/:id/video-link: a short-lived direct URL to the ghost
+run's hosted recording plus its video_offset_ms, for the synced mini
+player. Returns (values :ok url offset-ms) or (values :none nil nil)
+when there is no watchable hosted video (404); signals API-ERROR on
+auth/transport failures and the storage-error 502."
+  (multiple-value-bind (status body)
+      (http-request "GET" (api-url server-url
+                                   (format nil "/api/runs/~d/video-link"
+                                           run-id))
+                    :token token)
+    (let ((payload (ignore-errors (jzon:parse body))))
+      (case status
+        (200 (if (and (hash-table-p payload)
+                      (stringp (gethash "url" payload)))
+                 (values :ok (gethash "url" payload)
+                         (let ((offset (gethash "offset_ms" payload)))
+                           (and (integerp offset) offset)))
+                 (values :none nil nil)))
+        (404 (values :none nil nil))
+        (401 (error 'api-error :message "Invalid or revoked API token"))
+        (t (error 'api-error
+                  :message (format nil "GET /api/runs/~d/video-link -> ~a"
+                                   run-id status)))))))
 
 (defun video-file-path (server-id offset-ms)
   (format nil "/api/runs/~d/video-file~@[?offset_ms=~d~]" server-id offset-ms))

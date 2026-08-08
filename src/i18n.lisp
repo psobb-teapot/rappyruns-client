@@ -390,11 +390,20 @@
     ("Race a ghost: fetch a reference run at quest load and show the live gap"
      "ゴーストと競う: クエスト開始時に基準記録を取得してタイム差を表示")
     :ghost-overlay-label
-    ("Floating in-game overlay (timer + gap)"
-     "ゲーム画面にオーバーレイ表示 (タイマー+タイム差)")
+    ("Floating in-game overlay (timer, gap and course map)"
+     "ゲーム画面にオーバーレイ表示 (タイマー・タイム差・コースマップ)")
+    :ghost-video-label
+    ("Play the ghost's recording in a synced mini window (videoed ghosts only)"
+     "ゴーストの録画を同期した小窓で再生 (動画がある記録のみ)")
     :ghost-note
     ("vs ghost ~a"
      "ゴースト比 ~a")
+    :overlay-ghost-away
+    ("Ghost ~a ~a"
+     "ゴースト ~a ~a")
+    :overlay-ghost-in
+    ("Ghost in ~a"
+     "ゴーストは~a")
     :ghost-toast-title
     ("Ghost beaten!"
      "ゴーストに勝利!")

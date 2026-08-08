@@ -191,3 +191,108 @@
           (eta-client::*ghost* nil))
       (check "setting off never asks"
              (null (eta-client::ghost-fetch-wanted snapshot))))))
+
+;;; Course map: track parsing, interpolation, projection, direction.
+
+(defparameter +tracked-ghost-payload+
+  "{\"run_id\":7,\"quest\":\"q\",\"time_ms\":6000,\"precision\":\"ms\",
+    \"source\":\"pb\",\"pb\":0,\"video\":1,\"rooms\":[],
+    \"track\":[[0,1,10,0.0,0.0],[1000,1,10,10.0,20.0],
+               [5000,2,11,50.0,50.0],\"junk\",[1,2]]}")
+
+(defun run-ghost-map-tests ()
+  (let ((ghost (parse-ghost-splits
+                (com.inuoe.jzon:parse +tracked-ghost-payload+))))
+    (check "track parses and drops malformed rows"
+           (and ghost
+                (= (length (ghost-track ghost)) 3)
+                ;; jzon parses reals as doubles, so compare with =.
+                (every #'= (aref (ghost-track ghost) 1)
+                       '(1000 1 10 10.0 20.0))))
+    (check "video flag parses"
+           (eql (ghost-video-p ghost) 1))
+    (let ((track (ghost-track ghost)))
+      (check "position before the first sample is NIL"
+             (null (ghost-track-position track -1)))
+      (check "position interpolates on one floor"
+             (multiple-value-bind (floor map x z)
+                 (ghost-track-position track 500)
+               (and (eql floor 1) (eql map 10)
+                    (< (abs (- x 5.0)) 0.01)
+                    (< (abs (- z 10.0)) 0.01))))
+      (check "a floor change snaps instead of gliding"
+             (multiple-value-bind (floor map x z)
+                 (ghost-track-position track 3000)
+               (declare (ignore map))
+               (and (eql floor 1) (= x 10.0) (= z 20.0))))
+      (check "past the end the dot rests on the last sample"
+             (multiple-value-bind (floor map x z)
+                 (ghost-track-position track 999999)
+               (declare (ignore map))
+               (and (eql floor 2) (= x 50.0) (= z 50.0))))
+      (check "floor filter keeps time order"
+             (equalp (ghost-floor-track-points track 1)
+                     '((0.0 0.0) (10.0 20.0)))))
+    ;; A wide sample gap also snaps (warps must not glide through walls).
+    (let ((gappy (coerce (list (list 0 1 10 0.0 0.0)
+                               (list 8000 1 10 100.0 0.0))
+                         'vector)))
+      (check "a gap beyond the lerp window snaps"
+             (multiple-value-bind (floor map x)
+                 (ghost-track-position gappy 4000)
+               (declare (ignore map))
+               (and (eql floor 1) (eql x 0.0))))))
+  ;; Projection: fit, aspect, centering, flipped z.
+  (let ((project (map-projection '(((0 0) (100 200))) 240 240 :pad 10)))
+    (check "projection exists with points" (functionp project))
+    (check "projection centers the midpoint"
+           (multiple-value-bind (px py) (funcall project 50 100)
+             (and (eql px 120) (eql py 120))))
+    (check "projection preserves aspect and flips z"
+           (multiple-value-bind (px py) (funcall project 0 0)
+             (and (eql px 65) (eql py 230)))))
+  (check "projection without points is NIL"
+         (null (map-projection '(() ()) 240 240)))
+  ;; Direction and distance.
+  (check "arrow octants"
+         (and (equal (ghost-direction-arrow 10 0) "→")
+              (equal (ghost-direction-arrow 0 10) "↑")
+              (equal (ghost-direction-arrow 10 10) "↗")
+              (equal (ghost-direction-arrow -5 -5) "↙")))
+  (check "distance approximates meters"
+         (equal (format-ghost-distance 30 40) "5m"))
+  ;; Own-position sampling into the race state.
+  (let ((race (make-ghost-race)))
+    (ghost-race-note-position race 1 10.0 20.0 0)
+    (ghost-race-note-position race 1 11.0 21.0 200)   ; too soon: dot only
+    (ghost-race-note-position race 1 12.0 22.0 600)
+    (check "breadcrumbs decimate to the interval"
+           (= (length (eta-client::ghost-race-own-track race)) 2))
+    (check "the current dot always updates"
+           (and (eql (eta-client::ghost-race-own-x race) 12.0)
+                (eql (eta-client::ghost-race-own-floor race) 1)))
+    (let ((data (ghost-map-data race 600)))
+      (check "map data carries floor, dot and breadcrumbs"
+             (and (eql (getf data :floor) 1)
+                  (equal (getf data :own) '(12.0 22.0))
+                  (= (length (getf data :own-points)) 2)
+                  (null (getf data :track))))))
+  ;; High-frequency own-position telemetry (the future ghost's track).
+  (let ((telemetry (make-telemetry :start-time 0)))
+    (eta-client::update-track-recording
+     telemetry '(:floor 1 :x 1.04 :z 2.06) '(:map 10) 0)
+    (eta-client::update-track-recording
+     telemetry '(:floor 1 :x 9.0 :z 9.0) '(:map 10) 100)   ; too soon
+    (eta-client::update-track-recording
+     telemetry '(:floor 1 :x 3.0 :z 4.0) '(:map 10) 300)
+    (let ((track (reverse (eta-client::telemetry-track telemetry))))
+      (check "track samples decimate to 250 ms"
+             (= (length track) 2))
+      (check "track rows carry ms floor map and rounded coords"
+             (equal (first track) '(0 1 10 1.0 2.1))))
+    (let* ((json (eta-client::telemetry-json
+                  (eta-client:telemetry-run-data telemetry)))
+           (track (gethash "track" json)))
+      (check "track rides the telemetry json as compact rows"
+             (and (= (length track) 2)
+                  (equalp (aref track 1) #(300 1 10 3.0 4.0)))))))

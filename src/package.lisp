@@ -65,10 +65,16 @@
            #:enqueue-run! #:submit-queued! #:queued-runs
            ;; ghost race (pure parts, used by tests)
            #:parse-ghost-splits #:make-ghost #:ghost-quest-slug
-           #:ghost-time-ms #:ghost-label #:ghost-source #:ghost-pb
-           #:ghost-precision #:ghost-rooms
+           #:ghost-run-id #:ghost-time-ms #:ghost-label #:ghost-source
+           #:ghost-pb #:ghost-video-p #:ghost-precision #:ghost-rooms
+           #:ghost-track
            #:make-ghost-race #:ghost-race-ghost #:ghost-race-note-room
+           #:ghost-race-note-position
            #:ghost-race-delta-ms #:ghost-race-matched-rooms
            #:ghost-covers-run-p #:ghost-vs-text
            #:format-ghost-delta #:annotate-ghost-runs #:ghost-status-suffix
+           ;; ghost course map (pure parts, used by tests and the overlay)
+           #:ghost-track-position #:ghost-floor-track-points
+           #:map-projection #:ghost-direction-arrow #:format-ghost-distance
+           #:ghost-map-data
            #:url-encode-component))
