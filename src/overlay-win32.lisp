@@ -182,6 +182,41 @@
 
 (defconstant +null-pen+ 8)
 
+(fli:define-foreign-function (%save-dc "SaveDC")
+    ((hdc :pointer))
+  :result-type :int
+  :calling-convention :stdcall
+  :module :gdi32)
+
+(fli:define-foreign-function (%restore-dc "RestoreDC")
+    ((hdc :pointer)
+     (saved :int))
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :gdi32)
+
+(fli:define-foreign-function (%intersect-clip-rect "IntersectClipRect")
+    ((hdc :pointer)
+     (left :int) (top :int) (right :int) (bottom :int))
+  :result-type :int
+  :calling-convention :stdcall
+  :module :gdi32)
+
+;; Keeps the overlay out of EVERY screen capture (Win10 2004+): the
+;; fullscreen recording path duplicates the whole monitor (ddagrab), and
+;; a topmost overlay would otherwise be burned into the submitted run
+;; footage. Best-effort - on older Windows the call just fails and the
+;; overlay stays capturable, as it was in v0.51.0.
+(fli:define-foreign-function (%set-window-display-affinity
+                              "SetWindowDisplayAffinity")
+    ((hwnd :pointer)
+     (affinity (:unsigned :long)))
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :user32)
+
+(defconstant +wda-excludefromcapture+ #x11)
+
 (fli:define-foreign-function (%create-font "CreateFontW")
     ((height :int) (width :int) (escapement :int) (orientation :int)
      (weight :int)
@@ -225,7 +260,11 @@
 loop's updates, so the repaint rate is what makes it glide.")
 
 (defparameter +overlay-width+ 260)
-(defparameter +overlay-height+ 352
+(defparameter +overlay-compact-height+ 62
+  "The v0.51.0 timer pill: two text lines, no map. Used whenever there
+is no ghost course to draw, so a ghostless run keeps the small pill
+instead of a mostly-empty panel.")
+(defparameter +overlay-full-height+ 352
   "Header (two text lines) + course map + footer line.")
 (defparameter +overlay-map-left+ 10)
 (defparameter +overlay-map-top+ 58)
@@ -288,10 +327,29 @@ window directly (a window belongs to its creating thread).")
 interpolates the ghost dot from its :track/:elapsed-at, so the dot
 glides between the poll loop's updates.")
 
+(defvar *overlay-proj-cache* nil
+  "(:track T :floor F :project FN :ghost-points ((px py)...)): the
+ghost's floor trace projected once per (track, floor) pair. The trace
+is static for a floor, and reprojecting a long track's every row per
+10 Hz repaint pegged a core; the cache reduces per-paint work to the
+own breadcrumbs and two dots.")
+
+(defun overlay-map-active-p ()
+  "Draw the course map only when there is a ghost course to draw; a
+ghostless run keeps the compact v0.51.0 timer pill."
+  (let ((data *overlay-map-data*))
+    (and data
+         (let ((track (getf data :track)))
+           (and (vectorp track) (plusp (length track)))))))
+
+(defun overlay-current-height ()
+  (if (overlay-map-active-p) +overlay-full-height+ +overlay-compact-height+))
+
 ;;; --- Painting and geometry (overlay thread only) --------------------
 
 (defun overlay-position (hwnd game-hwnd)
-  "Pin the overlay to the game window's top-right corner."
+  "Pin the overlay to the game window's top-right corner, sized for
+the current mode (compact pill / full course-map panel)."
   (let ((rect (window-rect-of game-hwnd)))
     (when rect
       (destructuring-bind (left top right bottom) rect
@@ -299,7 +357,7 @@ glides between the poll loop's updates.")
         (%set-window-pos hwnd 0
                          (- right +overlay-width+ +overlay-margin-x+)
                          (+ top +overlay-margin-y+)
-                         +overlay-width+ +overlay-height+
+                         +overlay-width+ (overlay-current-height)
                          (logior +swp-nozorder+ +swp-noactivate+))))))
 
 (defun overlay-fill-rect (hdc left top right bottom brush)
@@ -342,15 +400,37 @@ last snapshot so the ghost dot glides at the repaint rate."
      (round (* 1000 (- (get-internal-real-time) (getf data :elapsed-at)))
             internal-time-units-per-second)))
 
-(defun overlay-clamp (value low high)
-  (max low (min high value)))
+(defun overlay-ghost-projection (track floor)
+  "The cached projection for TRACK's trace on FLOOR (see
+*OVERLAY-PROJ-CACHE*). Recomputed only when the track object or the
+floor changes."
+  (let ((cache *overlay-proj-cache*))
+    (if (and cache
+             (eq (getf cache :track) track)
+             (eql (getf cache :floor) floor))
+        cache
+        (let* ((points (ghost-floor-track-points track floor))
+               (project (map-projection (list points)
+                                        +overlay-map-size+
+                                        +overlay-map-size+)))
+          (setf *overlay-proj-cache*
+                (list :track track :floor floor :project project
+                      :ghost-points
+                      (and project
+                           (mapcar (lambda (point)
+                                     (multiple-value-bind (px py)
+                                         (funcall project (first point)
+                                                  (second point))
+                                       (list px py)))
+                                   points))))))))
 
 (defun overlay-draw-map (hdc)
-  "The course map: the ghost's route on the current floor as a dim
-line, both runners as dots, and the footer distance line. The fit is
-based on the ghost's own floor trace when there is one, so the frame
-stays stable while the player moves; without a ghost the player's
-breadcrumbs alone set the scale."
+  "The course map: the ghost's route on the current floor as a line,
+both runners as dots, and the footer distance line. The fit is
+anchored to the ghost's floor trace (cached per floor) so the frame
+stays stable while the player moves; positions outside it simply run
+off the map - drawing is clipped to the panel, never clamped into it,
+so the dots always show true relative positions."
   (let ((left +overlay-map-left+)
         (top +overlay-map-top+)
         (size +overlay-map-size+)
@@ -364,36 +444,47 @@ breadcrumbs alone set the scale."
              (track (getf data :track))
              (ghost-time-ms (getf data :ghost-time-ms))
              (elapsed (overlay-effective-elapsed data))
-             (ghost-points (and track (ghost-floor-track-points track floor)))
+             (cache (and track (overlay-ghost-projection track floor)))
+             (project (or (and cache (getf cache :project))
+                          (map-projection (list own-points (list own))
+                                          size size)))
              (ghost-pos
                (and track ghost-time-ms
                     ;; The dot vanishes once the ghost has finished.
                     (<= elapsed ghost-time-ms)
                     (let ((vals (multiple-value-list
                                  (ghost-track-position track elapsed))))
-                      (and (first vals) vals))))
-             (project (map-projection
-                       (if ghost-points
-                           (list ghost-points)
-                           (list own-points (list own)))
-                       size size)))
-        (flet ((at (point)
-                 (multiple-value-bind (px py)
-                     (funcall project (first point) (second point))
-                   (list (+ left (overlay-clamp px 2 (- size 2)))
-                         (+ top (overlay-clamp py 2 (- size 2)))))))
-          (when project
-            (overlay-draw-polyline hdc (mapcar #'at ghost-points)
-                                   *overlay-ghost-pen*)
-            (overlay-draw-polyline hdc (mapcar #'at own-points)
-                                   *overlay-own-pen*)
-            (when (and ghost-pos (first ghost-pos)
-                       (eql (first ghost-pos) floor))
-              (destructuring-bind (gx gy) (at (cddr ghost-pos))
-                (overlay-draw-dot hdc gx gy 5 *overlay-ghost-brush*)))
-            (destructuring-bind (ox oy) (at own)
-              (overlay-draw-dot hdc ox oy 4 *overlay-own-brush*))))
-        ;; Footer: where the ghost is, relative to the player.
+                      (and (first vals) vals)))))
+        (when project
+          (let ((saved (%save-dc hdc)))
+            (unwind-protect
+                 (progn
+                   (%intersect-clip-rect hdc left top
+                                         (+ left size) (+ top size))
+                   (flet ((shift (point)
+                            (list (+ left (first point))
+                                  (+ top (second point))))
+                          (at (point)
+                            (multiple-value-bind (px py)
+                                (funcall project (first point)
+                                         (second point))
+                              (list (+ left px) (+ top py)))))
+                     (when cache
+                       (overlay-draw-polyline
+                        hdc (mapcar #'shift (getf cache :ghost-points))
+                        *overlay-ghost-pen*))
+                     (overlay-draw-polyline hdc (mapcar #'at own-points)
+                                            *overlay-own-pen*)
+                     (when (and ghost-pos (eql (first ghost-pos) floor))
+                       (destructuring-bind (gx gy) (at (cddr ghost-pos))
+                         (overlay-draw-dot hdc gx gy 5
+                                           *overlay-ghost-brush*)))
+                     (destructuring-bind (ox oy) (at own)
+                       (overlay-draw-dot hdc ox oy 4 *overlay-own-brush*))))
+              (%restore-dc hdc saved))))
+        ;; Footer: where the ghost is, relative to the player. Map -1
+        ;; marks pre-map-column telemetry - the area is unknown, not
+        ;; Pioneer II (map 0).
         (let ((text
                 (cond
                   ((null ghost-pos) nil)
@@ -403,8 +494,11 @@ breadcrumbs alone set the scale."
                      (tr :overlay-ghost-away
                          (ghost-direction-arrow dx dz)
                          (format-ghost-distance dx dz))))
-                  (t (tr :overlay-ghost-in
-                         (client-map-name (second ghost-pos)))))))
+                  ((let ((gmap (second ghost-pos)))
+                     (and (integerp gmap) (>= gmap 0)))
+                   (tr :overlay-ghost-in
+                       (client-map-name (second ghost-pos))))
+                  (t (tr :overlay-ghost-elsewhere)))))
           (when text
             (when *overlay-small-font*
               (%select-object hdc *overlay-small-font*))
@@ -421,7 +515,8 @@ invalid region never clears and WM_PAINT storms."
       (unwind-protect
            (unless (fli:null-pointer-p hdc)
              (when *overlay-brush*
-               (overlay-fill-rect hdc 0 0 +overlay-width+ +overlay-height+
+               (overlay-fill-rect hdc 0 0 +overlay-width+
+                                  (overlay-current-height)
                                   *overlay-brush*))
              (when *overlay-font*
                (%select-object hdc *overlay-font*))
@@ -437,7 +532,8 @@ invalid region never clears and WM_PAINT storms."
                         (:behind +overlay-behind-color+)
                         (:neutral +overlay-text-color+)))
                  (%text-out hdc 12 32 line2 (length line2))))
-             (overlay-draw-map hdc))
+             (when (overlay-map-active-p)
+               (overlay-draw-map hdc)))
         (%end-paint hwnd ps)))))
 
 (defun overlay-conceal (hwnd)
@@ -515,7 +611,7 @@ WM_QUIT. Created hidden; the timer shows it once wanted."
                              +ws-ex-noactivate+)
                      +overlay-class-name+ "RappyRunsOverlay"
                      +ws-popup+
-                     0 0 +overlay-width+ +overlay-height+
+                     0 0 +overlay-width+ +overlay-full-height+
                      fli:*null-pointer* fli:*null-pointer*
                      (%get-module-handle fli:*null-pointer*)
                      fli:*null-pointer*)))
@@ -524,6 +620,10 @@ WM_QUIT. Created hidden; the timer shows it once wanted."
           (setf *overlay-hwnd* hwnd
                 *overlay-visible* nil)
           (%set-layered-window-attributes hwnd 0 +overlay-alpha+ +lwa-alpha+)
+          ;; Keep the overlay out of screen captures (see the FLI
+          ;; binding's comment); the submitted run footage must show
+          ;; the game, not our panel. Best-effort on older Windows.
+          (%set-window-display-affinity hwnd +wda-excludefromcapture+)
           (setf *overlay-font*
                 (%create-font 20 0 0 0 +fw-semibold+ 0 0 0
                               +default-charset+ 0 0 +cleartype-quality+ 0

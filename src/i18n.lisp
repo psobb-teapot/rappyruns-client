@@ -393,8 +393,8 @@
     ("Floating in-game overlay (timer, gap and course map)"
      "ゲーム画面にオーバーレイ表示 (タイマー・タイム差・コースマップ)")
     :ghost-video-label
-    ("Play the ghost's recording in a synced mini window (videoed ghosts only)"
-     "ゴーストの録画を同期した小窓で再生 (動画がある記録のみ)")
+    ("Play the ghost's recording in a synced mini window (windowed mode, videoed ghosts only)"
+     "ゴーストの録画を同期した小窓で再生 (ウィンドウモード時・動画がある記録のみ)")
     :ghost-note
     ("vs ghost ~a"
      "ゴースト比 ~a")
@@ -404,6 +404,9 @@
     :overlay-ghost-in
     ("Ghost in ~a"
      "ゴーストは~a")
+    :overlay-ghost-elsewhere
+    ("Ghost on another floor"
+     "ゴーストは別フロア")
     :ghost-toast-title
     ("Ghost beaten!"
      "ゴーストに勝利!")

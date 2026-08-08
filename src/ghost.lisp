@@ -100,7 +100,14 @@ changed between attempts).")
 or NIL.")
 
 (defvar *ghost-video-starting* nil
-  "T while the link fetch / spawn thread is in flight.")
+  "GET-INTERNAL-REAL-TIME when the link fetch / spawn thread launched,
+or NIL. A timestamp rather than a flag so a thread that dies before
+its cleanup (process-creation failure) cannot latch the mini player
+off for the whole session - a stale stamp just expires.")
+
+(defparameter +ghost-video-start-timeout-ms+ 30000
+  "How long a start attempt may stay in flight before the stamp is
+considered stale and a new attempt is allowed.")
 
 (defvar *ghost-video-given-up* nil
   "The ghost a player start failed (or was closed) for, so one failure
@@ -339,7 +346,13 @@ whenever no quest is loaded (see *GHOST-FETCH-PTR*)."
   (let ((ptr (and snapshot (getf snapshot :quest-ptr))))
     (cond
       ((not (and ptr (plusp ptr)))
-       (setf *ghost-fetch-ptr* nil)
+       ;; No quest loaded: forget the load AND the ghost, so a stale
+       ;; reference can neither race the next quest nor let an
+       ;; in-flight video fetch spawn its player after the run.
+       ;; (Completed runs are annotated while the quest is still
+       ;; loaded, so clearing here never robs a finish of its note.)
+       (setf *ghost-fetch-ptr* nil
+             *ghost* nil)
        nil)
       ((and (getf snapshot :quest-name)
             (not (eql ptr *ghost-fetch-ptr*)))
@@ -451,13 +464,19 @@ chose the target explicitly, or the ghost predates the pb field."
 
 (defun resolve-ffplay-path ()
   "ffplay.exe next to the resolved ffmpeg (bundled or configured), or
-NIL - the mini player is optional and absent in pre-ghost installs."
+the bare \"ffplay.exe\" when ffmpeg itself resolved to a bare
+PATH-searched name - CreateProcess then searches the PATH the same way
+it does for ffmpeg, instead of probing the process CWD. NIL when the
+sibling is missing; the mini player is optional."
   (let ((ffmpeg (resolve-ffmpeg-path)))
     (when ffmpeg
-      (let ((ffplay (merge-pathnames
-                     "ffplay.exe"
-                     (uiop:pathname-directory-pathname (pathname ffmpeg)))))
-        (and (probe-file ffplay) (namestring ffplay))))))
+      (if (null (pathname-directory (pathname ffmpeg)))
+          "ffplay.exe"
+          (let ((ffplay (merge-pathnames
+                         "ffplay.exe"
+                         (uiop:pathname-directory-pathname
+                          (pathname ffmpeg)))))
+            (and (probe-file ffplay) (namestring ffplay)))))))
 
 #+lispworks
 (defun ghost-video-position ()
@@ -483,19 +502,22 @@ corner, or NILs when the window is gone (ffplay then places itself)."
         (ignore-errors (close-capture-handles capture))))))
 
 #+lispworks
-(defun start-ghost-video-player (ghost telemetry)
+(defun start-ghost-video-player (ghost telemetry detector)
   "Fetch the ghost's video link and spawn ffplay seeked to the live
 elapsed time (video_offset_ms maps timer zero into the video). Runs on
 its own thread; every failure just gives the ghost's video up for this
-run."
+run. The quest state, the setting and the ghost's currency are all
+re-checked AFTER the fetch: a run that ended (or a toggle flipped)
+during the 1-3 s round trip must not pop a player over the results."
   (unwind-protect
        (handler-case
            (multiple-value-bind (outcome url offset-ms)
                (fetch-ghost-video-link (ghost-run-id ghost))
              (let ((ffplay (resolve-ffplay-path)))
                (when (and (eq outcome :ok) (stringp url) ffplay
-                          ;; The quest may have unloaded mid-fetch.
-                          (eq *ghost* ghost))
+                          (eq *ghost* ghost)
+                          (eq (detector-state detector) :in-quest)
+                          (config-value :ghost-video))
                  (let ((seek (/ (+ (or offset-ms 0)
                                    (telemetry-elapsed-ms
                                     telemetry (get-internal-real-time)))
@@ -524,6 +546,25 @@ run."
     (setf *ghost-video-starting* nil)))
 
 #+lispworks
+(defun ghost-video-start-in-flight-p ()
+  "A start attempt is in flight and its stamp has not gone stale."
+  (let ((stamp *ghost-video-starting*))
+    (and stamp
+         (< (round (* 1000 (- (get-internal-real-time) stamp))
+                   internal-time-units-per-second)
+            +ghost-video-start-timeout-ms+))))
+
+#+lispworks
+(defun ghost-video-capture-safe-p ()
+  "The mini player may only show when the game runs windowed: windowed
+recordings capture the game window itself (WGC / gdigrab), which the
+player's window cannot pollute, while fullscreen recordings duplicate
+the whole monitor and would burn the always-on-top player into the
+submitted footage - the v0.47 write-in problem all over again."
+  (let ((hwnd (find-psobb-window)))
+    (and hwnd (not (window-covers-monitor-p hwnd)))))
+
+#+lispworks
 (defun ghost-video-step (detector)
   "Poll-loop driver: start the mini player when a videoed ghost races
 and the setting is on, notice it dying (user closed it / hit the end),
@@ -541,16 +582,18 @@ kill it when the quest is over. Safe to call every tick."
              *ghost-video* nil)
        (ignore-errors (close-capture-handles (getf playing :capture))))
       ((and ghost (null playing)
-            (not *ghost-video-starting*)
+            (not (ghost-video-start-in-flight-p))
             (not (eq ghost *ghost-video-given-up*))
             (eql (ghost-video-p ghost) 1)
             (ghost-run-id ghost)
-            (detector-telemetry detector))
-       (setf *ghost-video-starting* t)
+            (detector-telemetry detector)
+            (ghost-video-capture-safe-p))
+       (setf *ghost-video-starting* (get-internal-real-time))
        (let ((telemetry (detector-telemetry detector)))
          (mp:process-run-function
           "eta-client-ghost-video" '()
-          (lambda () (start-ghost-video-player ghost telemetry))))))))
+          (lambda ()
+            (start-ghost-video-player ghost telemetry detector))))))))
 
 (defun annotate-ghost-runs (runs)
   "Stamp each completed run the current ghost covers with the final
