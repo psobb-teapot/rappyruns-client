@@ -237,6 +237,12 @@
   :calling-convention :stdcall
   :module :user32)
 
+(fli:define-foreign-function (%get-foreground-window "GetForegroundWindow")
+    ()
+  :result-type :pointer
+  :calling-convention :stdcall
+  :module :user32)
+
 (fli:define-foreign-function (%set-capture "SetCapture")
     ((hwnd :pointer))
   :result-type :pointer
@@ -287,6 +293,12 @@
 (defconstant +wm-lbuttondown+ #x0201)
 (defconstant +wm-lbuttonup+ #x0202)
 (defconstant +wm-capturechanged+ #x0215)
+(defconstant +wm-nchittest+ #x0084)
+(defconstant +ht-client+ 1)
+(defconstant +ht-transparent+ #xFFFFFFFFFFFFFFFF
+  "HTTRANSPARENT (-1) encoded as the window procedure's unsigned
+LRESULT: hit testing skips this window and continues to the one below,
+so the click lands on the game.")
 (defconstant +gwl-exstyle+ -20)
 (defconstant +vk-control+ #x11)
 (defconstant +bk-transparent+ 1)
@@ -691,26 +703,46 @@ clicks to the game again."
         (values (fli:foreign-slot-value point 'x)
                 (fli:foreign-slot-value point 'y))))))
 
-(defun overlay-drag-begin (hwnd)
-  "Grab the panel under the cursor (input is enabled, so Ctrl is
-held). T when the press landed on the panel; NIL otherwise, so the
-window procedure lets the click fall through."
+(defun overlay-lparam-point (lparam)
+  "(values x y) of the screen point packed into a WM_NCHITTEST lParam:
+two signed 16-bit halves (negative on monitors left of / above the
+primary)."
+  (flet ((signed16 (value)
+           (if (>= value #x8000) (- value #x10000) value)))
+    (values (signed16 (ldb (byte 16 0) lparam))
+            (signed16 (ldb (byte 16 16) lparam)))))
+
+(defun overlay-panel-screen-origin ()
+  "(values sx sy) of the panel's top-left in screen coordinates, or
+NIL before the first good fit."
   (let ((rect *overlay-game-rect*))
     (when rect
-      (multiple-value-bind (cx cy) (overlay-cursor-position)
-        (when cx
-          (destructuring-bind (left top right bottom) rect
-            (multiple-value-bind (px py)
-                (overlay-panel-position (- right left) (- bottom top))
-              (let ((sx (+ left px))
-                    (sy (+ top py)))
-                (when (and (<= sx cx (+ sx +overlay-width+))
-                           (<= sy cy (+ sy (overlay-current-height))))
-                  (setf *overlay-drag*
-                        (list :grab-dx (- cx sx) :grab-dy (- cy sy)
-                              :pos nil))
-                  (%set-capture hwnd)
-                  t)))))))))
+      (destructuring-bind (left top right bottom) rect
+        (multiple-value-bind (px py)
+            (overlay-panel-position (- right left) (- bottom top))
+          (values (+ left px) (+ top py)))))))
+
+(defun overlay-panel-hit-p (x y)
+  "Is the screen point (X Y) on the panel? Shared by the drag grab and
+WM_NCHITTEST, so what is grabbable and what swallows a click are the
+same pixels."
+  (multiple-value-bind (sx sy) (overlay-panel-screen-origin)
+    (and sx
+         (<= sx x (+ sx +overlay-width+))
+         (<= sy y (+ sy (overlay-current-height))))))
+
+(defun overlay-drag-begin (hwnd)
+  "Grab the panel under the cursor (input is enabled, so Ctrl is
+held). T when the press landed on the panel; a miss cannot normally
+reach here - WM_NCHITTEST already returned HTTRANSPARENT for it."
+  (multiple-value-bind (cx cy) (overlay-cursor-position)
+    (when (and cx (overlay-panel-hit-p cx cy))
+      (multiple-value-bind (sx sy) (overlay-panel-screen-origin)
+        (setf *overlay-drag*
+              (list :grab-dx (- cx sx) :grab-dy (- cy sy)
+                    :pos nil))
+        (%set-capture hwnd)
+        t))))
 
 (defun overlay-drag-move (hwnd)
   "Follow the cursor: the panel origin clamps inside the game's client
@@ -739,16 +771,20 @@ mode moves the window, full mode repaints the panel elsewhere)."
 
 (defun overlay-drag-end ()
   "Finish the drag: keep the drop position live (no snap-back while
-the poll loop catches up) and publish it for persistence. Also runs on
-WM_CAPTURECHANGED, including the one our own ReleaseCapture raises -
-*OVERLAY-DRAG* is already NIL by then, so the guard makes it a no-op."
+the poll loop catches up) and publish it for persistence. The publish
+(*OVERLAY-DRAGGED-POS*) is written BEFORE the local override
+(*OVERLAY-DROP-POS*): OVERLAY-SHOW! only clears the override when no
+unconsumed publish exists, and this order means it can never observe
+the override without the publish. Also runs on WM_CAPTURECHANGED,
+including the one our own ReleaseCapture raises - *OVERLAY-DRAG* is
+already NIL by then, so the guard makes it a no-op."
   (let ((drag *overlay-drag*))
     (when drag
       (setf *overlay-drag* nil)
       (let ((pos (getf drag :pos)))
         (when pos
-          (setf *overlay-drop-pos* pos
-                *overlay-dragged-pos* (copy-list pos))))
+          (setf *overlay-dragged-pos* (copy-list pos)
+                *overlay-drop-pos* pos)))
       (ignore-errors (%release-capture)))))
 
 (defun overlay-conceal (hwnd)
@@ -784,13 +820,16 @@ and the marker rate as the in-world marker comes and goes."
        (unless *overlay-visible*
          (%show-window hwnd +sw-shownoactivate+)
          (setf *overlay-visible* t))
-       ;; Ctrl arms the drag: input on while held, back to full
-       ;; click-through once released (an in-flight drag keeps input
-       ;; until its button-up).
-       (let ((ctrl (minusp (%get-async-key-state +vk-control+))))
-         (cond ((and ctrl (not *overlay-input-enabled*))
+       ;; Ctrl arms the drag - but only while the game itself is the
+       ;; foreground window, so Ctrl+clicks aimed at another app that
+       ;; overlaps the topmost panel are never eaten. Input goes back
+       ;; to full click-through once Ctrl is released (an in-flight
+       ;; drag keeps it until its button-up).
+       (let ((arm (and (minusp (%get-async-key-state +vk-control+))
+                       (fli:pointer-eq game (%get-foreground-window)))))
+         (cond ((and arm (not *overlay-input-enabled*))
                 (ignore-errors (overlay-apply-input hwnd t)))
-               ((and (not ctrl) *overlay-input-enabled*
+               ((and (not arm) *overlay-input-enabled*
                      (null *overlay-drag*))
                 (ignore-errors (overlay-apply-input hwnd nil)))))
        (%invalidate-rect hwnd fli:*null-pointer* nil)))))
@@ -808,9 +847,16 @@ and the marker rate as the in-world marker comes and goes."
     ((= msg +wm-paint+)
      (ignore-errors (overlay-paint hwnd))
      0)
-    ;; Mouse input arrives only while Ctrl has lifted WS_EX_TRANSPARENT
-    ;; (and, in full-window mode, only on opaque pixels - the color key
-    ;; passes the rest to the game).
+    ;; Hit testing runs only while Ctrl has lifted WS_EX_TRANSPARENT.
+    ;; Everything outside the panel - including the in-world marker's
+    ;; opaque pixels - reports HTTRANSPARENT so the click continues to
+    ;; the game window below; only the panel itself takes input.
+    ((= msg +wm-nchittest+)
+     (if (or *overlay-drag*
+             (multiple-value-bind (x y) (overlay-lparam-point lparam)
+               (ignore-errors (overlay-panel-hit-p x y))))
+         +ht-client+
+         +ht-transparent+))
     ((= msg +wm-lbuttondown+)
      (if (ignore-errors (overlay-drag-begin hwnd))
          0
@@ -882,6 +928,13 @@ WM_QUIT. Created hidden; the timer shows it once wanted."
                 *overlay-size* nil
                 *overlay-full-p* nil
                 *overlay-placement* nil
+                ;; Drag state must not survive a thread restart: the
+                ;; fresh window starts WS_EX_TRANSPARENT, so a stale
+                ;; *overlay-drag* could never receive its button-up
+                ;; and would pin the panel forever.
+                *overlay-drag* nil
+                *overlay-drop-pos* nil
+                *overlay-input-enabled* nil
                 *overlay-timer-current-ms* +overlay-timer-ms+)
           ;; Alpha blends the visible elements; the color key punches
           ;; the rest of the client-area-sized window fully out.
@@ -932,17 +985,20 @@ WM_QUIT. Created hidden; the timer shows it once wanted."
 the game's client area (CUSTOM-POS is the :overlay-position fractions
 read when CORNER is :custom). Starts the overlay thread lazily;
 best-effort - a failure here must never touch the poll loop. Clears
-the drop-position override: the caller consumed *OVERLAY-DRAGGED-POS*
-before building these arguments, so they already carry any dragged
-spot."
+the drop-position override only when no unconsumed drag publish
+exists: the caller consumed *OVERLAY-DRAGGED-POS* before building
+these arguments, so normally they already carry any dragged spot - but
+a drag that finished DURING this tick must keep its override until the
+next tick persists it, or the panel would snap back for ~250 ms."
   (setf *overlay-line1* (or line1 "")
         *overlay-line2* line2
         *overlay-delta-state* (or delta-state :neutral)
         *overlay-ghost-data* ghost-data
         *overlay-corner* (or corner :top-right)
         *overlay-custom-pos* custom-pos
-        *overlay-drop-pos* nil
         *overlay-wanted* t)
+  (when (null *overlay-dragged-pos*)
+    (setf *overlay-drop-pos* nil))
   (unless (and *overlay-process* (mp:process-alive-p *overlay-process*))
     (ignore-errors
       (setf *overlay-process*

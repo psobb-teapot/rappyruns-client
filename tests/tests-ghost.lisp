@@ -457,6 +457,7 @@
     (check "custom without a usable position places top-right"
            (and (equal (panel :custom nil) '(1076 16))
                 (equal (panel :custom '(0.5)) '(1076 16))
+                (equal (panel :custom '(0.5 . 0.7)) '(1076 16))
                 (equal (panel :custom "junk") '(1076 16))))
     (check "a preset corner ignores the stored custom spot"
            (equal (panel :bottom-left '(0.5 0.5)) '(24 400)))

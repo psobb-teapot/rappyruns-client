@@ -302,6 +302,8 @@ through to CORNER-ORIGIN, whose unknown-corner default places
 top-right."
   (if (and (eq corner :custom)
            (consp custom)
+           (consp (cdr custom))     ; a hand-edited dotted pair must not
+                                    ; error out of the guard
            (numberp (first custom))
            (numberp (second custom)))
       (values (round (* (min 1 (max 0 (first custom)))
