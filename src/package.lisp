@@ -73,8 +73,7 @@
            #:ghost-race-delta-ms #:ghost-race-matched-rooms
            #:ghost-covers-run-p #:ghost-vs-text
            #:format-ghost-delta #:annotate-ghost-runs #:ghost-status-suffix
-           ;; ghost course map (pure parts, used by tests and the overlay)
-           #:ghost-track-position #:ghost-floor-track-points
-           #:map-projection #:ghost-direction-arrow #:format-ghost-distance
-           #:ghost-map-data
+           ;; ghost overlay data (pure parts, used by tests and the overlay)
+           #:ghost-track-position #:format-split-clock
+           #:ghost-overlay-data
            #:url-encode-component))

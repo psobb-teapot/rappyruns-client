@@ -34,9 +34,9 @@
         :close-to-tray t    ; closing the window (x) hides to the system tray instead of quitting (see CLIENT-CONFIRM-DESTROY); off = x quits
         :rank-toast t       ; desktop toast when a fresh submission lands somewhere worth celebrating - provisional #1 / top 3 / PB / board first (see STANDING-TOAST); clicking it opens the run page
         :ghost-race t       ; ghost race: fetch a reference run's splits at quest load (the run chosen on the site, else own PB) and show the live gap in the status line (ghost.lisp)
-        :ghost-overlay nil  ; floating in-game overlay window with the timer + ghost gap + course map while a quest runs (overlay-win32.lisp); off by default - it draws over the game
+        :ghost-overlay nil  ; floating in-game overlay window with the timer + ghost gap + room splits while a quest runs (overlay-win32.lisp); off by default - it draws over the game
         :ghost-marker t     ; in-world ghost marker: project the ghost's position through the game camera and draw a dot + name pill where it stands (needs :ghost-overlay; overlay-win32.lisp OVERLAY-DRAW-GHOST-MARKER)
-        :overlay-corner :top-right ; where the overlay panel sits in the game's client area: a corner (:top-right :top-left :bottom-right :bottom-left) or an edge midpoint (:middle-right :middle-left :top-center :bottom-center) - movable because the full panel's course map covers PSO's own minimap at the top-right default
+        :overlay-corner :top-right ; where the overlay panel sits in the game's client area: a corner (:top-right :top-left :bottom-right :bottom-left) or an edge midpoint (:middle-right :middle-left :top-center :bottom-center) - movable because the tall ghost panel covers PSO's own minimap at the top-right default
         :start-minimized nil ; launch straight to the tray with no window (also forced for a single launch by --minimized; see STARTUP-MINIMIZED-P)
         :debug nil))        ; developer knobs in the GUI (see DEBUG-MODE-P)
 

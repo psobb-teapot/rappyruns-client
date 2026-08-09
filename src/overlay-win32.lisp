@@ -1,8 +1,8 @@
 (in-package :ephinea-ta-client)
 
-;;; LispWorks-only: the in-game overlay (timer + ghost gap + course map
-;;; + in-world ghost marker) drawn over the PSOBB window while a quest
-;;; runs. Same architecture as the tray (tray-win32.lisp, which loads
+;;; LispWorks-only: the in-game overlay (timer + ghost gap + room-split
+;;; rows + in-world ghost marker) drawn over the PSOBB window while a
+;;; quest runs. Same architecture as the tray (tray-win32.lisp, which loads
 ;;; first and owns the shared window-class/message-loop bindings): a
 ;;; window with our own procedure on a dedicated thread. PSOBB itself
 ;;; is never touched - this is an ordinary topmost layered window that
@@ -157,23 +157,6 @@
   :calling-convention :stdcall
   :module :gdi32)
 
-(fli:define-foreign-function (%create-pen "CreatePen")
-    ((style :int)
-     (width :int)
-     (color (:unsigned :long)))
-  :result-type :pointer
-  :calling-convention :stdcall
-  :module :gdi32)
-
-;; POINT* as a flat LONG pair buffer; POINT is two 32-bit LONGs.
-(fli:define-foreign-function (%polyline "Polyline")
-    ((hdc :pointer)
-     (points :pointer)
-     (count :int))
-  :result-type (:boolean :int)
-  :calling-convention :stdcall
-  :module :gdi32)
-
 (fli:define-foreign-function (%ellipse "Ellipse")
     ((hdc :pointer)
      (left :int) (top :int) (right :int) (bottom :int))
@@ -188,26 +171,6 @@
   :module :gdi32)
 
 (defconstant +null-pen+ 8)
-
-(fli:define-foreign-function (%save-dc "SaveDC")
-    ((hdc :pointer))
-  :result-type :int
-  :calling-convention :stdcall
-  :module :gdi32)
-
-(fli:define-foreign-function (%restore-dc "RestoreDC")
-    ((hdc :pointer)
-     (saved :int))
-  :result-type (:boolean :int)
-  :calling-convention :stdcall
-  :module :gdi32)
-
-(fli:define-foreign-function (%intersect-clip-rect "IntersectClipRect")
-    ((hdc :pointer)
-     (left :int) (top :int) (right :int) (bottom :int))
-  :result-type :int
-  :calling-convention :stdcall
-  :module :gdi32)
 
 ;; Shifts the logical origin so the corner panel's drawing code can
 ;; keep painting at (0,0) inside the now full-client-area window.
@@ -302,13 +265,14 @@ and two text runs - cheap enough for GDI at this rate.")
   "The v0.51.0 timer pill: two text lines, no map. Used whenever there
 is no ghost course to draw, so a ghostless run keeps the small pill
 instead of a mostly-empty panel.")
-(defparameter +overlay-full-height+ 352
-  "Header (two text lines) + course map + footer line.")
-(defparameter +overlay-map-left+ 10)
-(defparameter +overlay-map-top+ 58)
-(defparameter +overlay-map-size+ 240
-  "The square course-map area's side length.")
-(defparameter +overlay-footer-y+ 306)
+(defparameter +overlay-split-top+ 58
+  "Where the room-split rows start, under the two header lines.")
+(defparameter +overlay-split-row-height+ 20)
+(defparameter +overlay-ghost-height+
+  (+ +overlay-split-top+
+     (* +overlay-split-rows+ +overlay-split-row-height+)
+     6)
+  "Header (two text lines) + the reserved room-split rows.")
 (defparameter +overlay-margin-x+ 24
   "The corner panel's gap from the client area's right edge.")
 (defparameter +overlay-margin-y+ 16
@@ -322,8 +286,8 @@ now spans the client area, so no title bar to clear).")
 transparent (LWA_COLORKEY), which is what lets the window span the
 whole client area without dimming the game. Never used by any visible
 element, and GDI solid fills reproduce it exactly (no dithering /
-anti-aliasing on FillRect, Polyline, Ellipse; text always sits on a
-solid panel or pill so ClearType never blends against the key).")
+anti-aliasing on FillRect and Ellipse; text always sits on a solid
+panel or pill so ClearType never blends against the key).")
 (defparameter +overlay-bg-color+ #x201410
   "Near-black blue-tinted background.")
 (defparameter +overlay-text-color+ #xF0F0F0)
@@ -331,12 +295,8 @@ solid panel or pill so ClearType never blends against the key).")
   "Green: ahead of the ghost.")
 (defparameter +overlay-behind-color+ #x6E6EFF
   "Red: behind the ghost.")
-(defparameter +overlay-map-bg-color+ #x2A1C16
-  "The course-map panel, a step lighter than the window.")
 (defparameter +overlay-ghost-color+ #x00A8FF
-  "Orange: the ghost's course line and dot.")
-(defparameter +overlay-own-color+ #xF0F0F0
-  "White: the player's own breadcrumbs and dot.")
+  "Orange: the in-world marker's dot and name pill text.")
 
 (defparameter +overlay-class-name+ "RappyRunsOverlay")
 
@@ -347,16 +307,12 @@ solid panel or pill so ClearType never blends against the key).")
 (defvar *overlay-class-registered* nil)
 (defvar *overlay-font* nil)
 (defvar *overlay-small-font* nil
-  "Footer font (distance line), a step smaller than the clock.")
+  "Split-row and marker-pill font, a step smaller than the clock.")
 ;; GDI objects below are created once per overlay thread - a 10-30 Hz
 ;; paint must not churn them.
 (defvar *overlay-key-brush* nil)
 (defvar *overlay-brush* nil)
-(defvar *overlay-map-brush* nil)
 (defvar *overlay-ghost-brush* nil)
-(defvar *overlay-own-brush* nil)
-(defvar *overlay-ghost-pen* nil)
-(defvar *overlay-own-pen* nil)
 
 (defvar *overlay-wanted* nil
   "T while the poll loop wants the overlay visible. The overlay thread's
@@ -369,22 +325,15 @@ window directly (a window belongs to its creating thread).")
   "Second line: 'vs <ghost time> <gap>', or NIL without a ghost.")
 (defvar *overlay-delta-state* :neutral
   ":ahead / :behind / :neutral - colors the second line.")
-(defvar *overlay-map-data* nil
-  "Course-map snapshot from GHOST-MAP-DATA, or NIL. The overlay thread
-interpolates the ghost dot from its :track/:elapsed-at, so the dot
-glides between the poll loop's updates.")
+(defvar *overlay-ghost-data* nil
+  "Ghost-panel snapshot from GHOST-OVERLAY-DATA, or NIL. The overlay
+thread interpolates the in-world marker from its :track/:elapsed-at,
+so the marker glides between the poll loop's updates.")
 
 (defvar *overlay-corner* :top-right
   "Which corner of the game's client area the panel sits in - the
 :overlay-corner setting, handed over by OVERLAY-SHOW! so the overlay
 thread never touches CONFIG-VALUE.")
-
-(defvar *overlay-proj-cache* nil
-  "(:track T :floor F :project FN :ghost-points ((px py)...)): the
-ghost's floor trace projected once per (track, floor) pair. The trace
-is static for a floor, and reprojecting a long track's every row per
-repaint pegged a core; the cache reduces per-paint work to the own
-breadcrumbs and two dots.")
 
 (defvar *overlay-size* nil
   "(width . height) the overlay window was last sized to, written by
@@ -405,25 +354,26 @@ game window skips the call (it would otherwise fire at the marker's
   "The interval the overlay timer is currently set to, so the tick can
 re-arm it only when the wanted rate actually changes.")
 
-(defun overlay-map-active-p ()
-  "Draw the course map only when there is a ghost course to draw; a
-ghostless run keeps the compact v0.51.0 timer pill."
-  (let ((data *overlay-map-data*))
-    (and data
-         (let ((track (getf data :track)))
-           (and (vectorp track) (plusp (length track)))))))
+(defun overlay-ghost-active-p ()
+  "Show the ghost panel (vs header + room-split rows) only while a
+ghost is attached; a ghostless run keeps the compact v0.51.0 timer
+pill."
+  (and *overlay-ghost-data* t))
 
 (defun overlay-marker-wanted-p ()
-  "T when the in-world marker should be live: a ghost course exists AND
-the :ghost-marker setting rode in on the map data. This - not the mere
-course map - is what makes the window span the client area and repaint
-at 30 Hz; with the marker off, the overlay stays the panel-sized,
-10 Hz window it was in v0.52."
-  (let ((data *overlay-map-data*))
-    (and data (getf data :marker) (overlay-map-active-p) t)))
+  "T when the in-world marker should be live: the ghost has a track to
+interpolate AND the :ghost-marker setting rode in on the ghost data.
+This - not the mere ghost panel - is what makes the window span the
+client area and repaint at 30 Hz; with the marker off, the overlay
+stays the panel-sized, 10 Hz window it was in v0.52."
+  (let ((data *overlay-ghost-data*))
+    (and data (getf data :marker)
+         (let ((track (getf data :track)))
+           (and (vectorp track) (plusp (length track))))
+         t)))
 
 (defun overlay-current-height ()
-  (if (overlay-map-active-p) +overlay-full-height+ +overlay-compact-height+))
+  (if (overlay-ghost-active-p) +overlay-ghost-height+ +overlay-compact-height+))
 
 ;;; --- Painting and geometry (overlay thread only) --------------------
 
@@ -475,21 +425,6 @@ keeps the overlay up)."
             (fli:foreign-slot-value rect 'bottom) bottom)
       (%fill-rect hdc rect brush))))
 
-(defun overlay-draw-polyline (hdc points pen)
-  "POINTS is a list of (px py) pairs; under two points draws nothing."
-  (let ((n (length points)))
-    (when (and (>= n 2) pen)
-      (fli:with-dynamic-foreign-objects ()
-        (let ((buffer (fli:allocate-dynamic-foreign-object
-                       :type :int :nelems (* 2 n))))
-          (loop :for (px py) :in points
-                :for k :from 0 :by 2
-                :do (setf (fli:dereference buffer :index k) px
-                          (fli:dereference buffer :index (1+ k)) py))
-          (let ((old (%select-object hdc pen)))
-            (%polyline hdc buffer n)
-            (%select-object hdc old)))))))
-
 (defun overlay-draw-dot (hdc px py radius brush)
   (when brush
     (let ((old-brush (%select-object hdc brush))
@@ -506,35 +441,10 @@ last snapshot so the ghost dot glides at the repaint rate."
      (round (* 1000 (- (get-internal-real-time) (getf data :elapsed-at)))
             internal-time-units-per-second)))
 
-(defun overlay-ghost-projection (track floor)
-  "The cached projection for TRACK's trace on FLOOR (see
-*OVERLAY-PROJ-CACHE*). Recomputed only when the track object or the
-floor changes."
-  (let ((cache *overlay-proj-cache*))
-    (if (and cache
-             (eq (getf cache :track) track)
-             (eql (getf cache :floor) floor))
-        cache
-        (let* ((points (ghost-floor-track-points track floor))
-               (project (map-projection (list points)
-                                        +overlay-map-size+
-                                        +overlay-map-size+)))
-          (setf *overlay-proj-cache*
-                (list :track track :floor floor :project project
-                      :ghost-points
-                      (and project
-                           (mapcar (lambda (point)
-                                     (multiple-value-bind (px py)
-                                         (funcall project (first point)
-                                                  (second point))
-                                       (list px py)))
-                                   points))))))))
-
 (defun overlay-ghost-position (data elapsed)
   "(floor map x z [y]) of the ghost at ELAPSED on DATA's track, or NIL
-before its first sample or once the ghost has finished. Resolved once
-per paint and shared by the course map and the in-world marker, so
-both draw the same interpolated instant."
+before its first sample or once the ghost has finished - the in-world
+marker's interpolated instant."
   (let ((track (getf data :track))
         (ghost-time-ms (getf data :ghost-time-ms)))
     (when (and (vectorp track) (plusp (length track))
@@ -543,76 +453,28 @@ both draw the same interpolated instant."
                    (ghost-track-position track elapsed))))
         (and (first vals) vals)))))
 
-(defun overlay-draw-map (hdc data ghost-pos)
-  "The course map: the ghost's route on the current floor as a line,
-both runners as dots, and the footer distance line. The fit is
-anchored to the ghost's floor trace (cached per floor) so the frame
-stays stable while the player moves; positions outside it simply run
-off the map - drawing is clipped to the panel, never clamped into it,
-so the dots always show true relative positions."
-  (let ((left +overlay-map-left+)
-        (top +overlay-map-top+)
-        (size +overlay-map-size+))
-    (overlay-fill-rect hdc left top (+ left size) (+ top size)
-                       (or *overlay-map-brush* *overlay-brush*))
-    (when data
-      (let* ((floor (getf data :floor))
-             (own (getf data :own))
-             (own-points (getf data :own-points))
-             (track (getf data :track))
-             (cache (and track (overlay-ghost-projection track floor)))
-             (project (or (and cache (getf cache :project))
-                          (map-projection (list own-points (list own))
-                                          size size))))
-        (when project
-          (let ((saved (%save-dc hdc)))
-            (unwind-protect
-                 (progn
-                   (%intersect-clip-rect hdc left top
-                                         (+ left size) (+ top size))
-                   (flet ((shift (point)
-                            (list (+ left (first point))
-                                  (+ top (second point))))
-                          (at (point)
-                            (multiple-value-bind (px py)
-                                (funcall project (first point)
-                                         (second point))
-                              (list (+ left px) (+ top py)))))
-                     (when cache
-                       (overlay-draw-polyline
-                        hdc (mapcar #'shift (getf cache :ghost-points))
-                        *overlay-ghost-pen*))
-                     (overlay-draw-polyline hdc (mapcar #'at own-points)
-                                            *overlay-own-pen*)
-                     (when (and ghost-pos (eql (first ghost-pos) floor))
-                       (destructuring-bind (gx gy) (at (cddr ghost-pos))
-                         (overlay-draw-dot hdc gx gy 5
-                                           *overlay-ghost-brush*)))
-                     (destructuring-bind (ox oy) (at own)
-                       (overlay-draw-dot hdc ox oy 4 *overlay-own-brush*))))
-              (%restore-dc hdc saved))))
-        ;; Footer: where the ghost is, relative to the player. Map -1
-        ;; marks pre-map-column telemetry - the area is unknown, not
-        ;; Pioneer II (map 0).
-        (let ((text
-                (cond
-                  ((null ghost-pos) nil)
-                  ((eql (first ghost-pos) floor)
-                   (let ((dx (- (third ghost-pos) (first own)))
-                         (dz (- (fourth ghost-pos) (second own))))
-                     (tr :overlay-ghost-away
-                         (ghost-direction-arrow dx dz)
-                         (format-ghost-distance dx dz))))
-                  ((let ((gmap (second ghost-pos)))
-                     (and (integerp gmap) (>= gmap 0)))
-                   (tr :overlay-ghost-in
-                       (client-map-name (second ghost-pos))))
-                  (t (tr :overlay-ghost-elsewhere)))))
-          (when text
-            (when *overlay-small-font*
-              (%select-object hdc *overlay-small-font*))
-            (%set-text-color hdc +overlay-ghost-color+)
-            (%text-out hdc 12 +overlay-footer-y+ text (length text))))))))
+(defun overlay-draw-splits (hdc data)
+  "The room-split rows under the header: the newest matched rooms
+(oldest of them first, so the list reads downward like the run), each
+row the room label, its enter clock and the cumulative gap at that
+entry - colored like the header's gap line."
+  (let ((splits (reverse (getf data :splits)))
+        (precision (getf data :precision)))
+    (when (and splits *overlay-small-font*)
+      (%select-object hdc *overlay-small-font*)
+      (loop :for split :in splits
+            :for y :from +overlay-split-top+ :by +overlay-split-row-height+
+            :do (let ((label (tr :overlay-room (getf split :room)))
+                      (clock (format-split-clock (getf split :ms)))
+                      (delta (getf split :delta)))
+                  (%set-text-color hdc +overlay-text-color+)
+                  (%text-out hdc 12 y label (length label))
+                  (%text-out hdc 116 y clock (length clock))
+                  (let ((text (format-ghost-delta delta precision)))
+                    (%set-text-color hdc (if (minusp delta)
+                                             +overlay-ahead-color+
+                                             +overlay-behind-color+))
+                    (%text-out hdc 180 y text (length text))))))))
 
 (defun overlay-draw-ghost-marker (hdc width height data ghost-pos)
   "The in-world ghost marker: GHOST-POS (the paint's shared (floor map
@@ -661,7 +523,7 @@ ground)."
 
 (defun overlay-paint (hwnd)
   "WM_PAINT: the key-color ground (transparent on screen), the dark
-corner panel - clock, ghost gap line, course map, footer - and the
+corner panel - clock, ghost gap line, room-split rows - and the
 in-world ghost marker. BeginPaint/EndPaint must run even when drawing
 errors out, or the invalid region never clears and WM_PAINT storms."
   (fli:with-dynamic-foreign-objects ()
@@ -683,12 +545,11 @@ errors out, or the invalid region never clears and WM_PAINT storms."
                                    +overlay-margin-y+))))
                     (panel-x (if origin (first origin) 0))
                     (panel-y (if origin (second origin) 0))
-                    (data *overlay-map-data*)
-                    (map-active (overlay-map-active-p))
-                    ;; The ghost's position is resolved ONCE per paint
-                    ;; so the map dot and the in-world marker show the
-                    ;; same interpolated instant.
-                    (ghost-pos (and data map-active
+                    (data *overlay-ghost-data*)
+                    (ghost-active (overlay-ghost-active-p))
+                    ;; The marker's position: only the full-window mode
+                    ;; draws it, so skip the interpolation otherwise.
+                    (ghost-pos (and data full
                                     (overlay-ghost-position
                                      data
                                      (overlay-effective-elapsed data)))))
@@ -717,10 +578,10 @@ errors out, or the invalid region never clears and WM_PAINT storms."
                           (:behind +overlay-behind-color+)
                           (:neutral +overlay-text-color+)))
                    (%text-out hdc 12 32 line2 (length line2))))
-               (when map-active
-                 (overlay-draw-map hdc data ghost-pos))
+               (when ghost-active
+                 (overlay-draw-splits hdc data))
                (%set-viewport-org hdc 0 0 fli:*null-pointer*)
-               (when (and full map-active)
+               (when (and full ghost-active)
                  (overlay-draw-ghost-marker hdc width height
                                             data ghost-pos))))
         (%end-paint hwnd ps)))))
@@ -812,7 +673,7 @@ WM_QUIT. Created hidden; the timer shows it once wanted."
                              +ws-ex-noactivate+)
                      +overlay-class-name+ "RappyRunsOverlay"
                      +ws-popup+
-                     0 0 +overlay-width+ +overlay-full-height+
+                     0 0 +overlay-width+ +overlay-ghost-height+
                      fli:*null-pointer* fli:*null-pointer*
                      (%get-module-handle fli:*null-pointer*)
                      fli:*null-pointer*)))
@@ -844,11 +705,7 @@ WM_QUIT. Created hidden; the timer shows it once wanted."
                               "Segoe UI")
                 *overlay-key-brush* (%create-solid-brush +overlay-key-color+)
                 *overlay-brush* (%create-solid-brush +overlay-bg-color+)
-                *overlay-map-brush* (%create-solid-brush +overlay-map-bg-color+)
-                *overlay-ghost-brush* (%create-solid-brush +overlay-ghost-color+)
-                *overlay-own-brush* (%create-solid-brush +overlay-own-color+)
-                *overlay-ghost-pen* (%create-pen 0 2 +overlay-ghost-color+)
-                *overlay-own-pen* (%create-pen 0 1 #x808080))
+                *overlay-ghost-brush* (%create-solid-brush +overlay-ghost-color+))
           (%set-timer hwnd +overlay-timer-id+ +overlay-timer-ms+
                       fli:*null-pointer*)
           (fli:with-dynamic-foreign-objects ()
@@ -861,9 +718,7 @@ WM_QUIT. Created hidden; the timer shows it once wanted."
     (error (e)
       (ignore-errors (format t "~&; overlay thread error: ~a~%" e))))
   (dolist (holder '(*overlay-font* *overlay-small-font* *overlay-key-brush*
-                    *overlay-brush* *overlay-map-brush*
-                    *overlay-ghost-brush* *overlay-own-brush*
-                    *overlay-ghost-pen* *overlay-own-pen*))
+                    *overlay-brush* *overlay-ghost-brush*))
     (when (symbol-value holder)
       (ignore-errors (%delete-object (symbol-value holder)))
       (setf (symbol-value holder) nil)))
@@ -873,14 +728,14 @@ WM_QUIT. Created hidden; the timer shows it once wanted."
 
 ;;; --- Poll-loop API --------------------------------------------------
 
-(defun overlay-show! (line1 line2 delta-state map-data corner)
+(defun overlay-show! (line1 line2 delta-state ghost-data corner)
   "Want the overlay visible with this content, its panel in CORNER of
 the game's client area. Starts the overlay thread lazily; best-effort
 - a failure here must never touch the poll loop."
   (setf *overlay-line1* (or line1 "")
         *overlay-line2* line2
         *overlay-delta-state* (or delta-state :neutral)
-        *overlay-map-data* map-data
+        *overlay-ghost-data* ghost-data
         *overlay-corner* (or corner :top-right)
         *overlay-wanted* t)
   (unless (and *overlay-process* (mp:process-alive-p *overlay-process*))
@@ -894,13 +749,13 @@ the game's client area. Starts the overlay thread lazily; best-effort
 thread itself stays up - an idle timer costs nothing and the next
 quest reuses it."
   (setf *overlay-wanted* nil
-        *overlay-map-data* nil))
+        *overlay-ghost-data* nil))
 
 (defun update-ghost-overlay (detector recording-p)
   "Reflect the quest state into the overlay: timer, ghost gap and the
-course map during a quest, hidden otherwise or when the setting is
+room splits during a quest, hidden otherwise or when the setting is
 off. Called from UPDATE-GAME-STATUS at its 4 Hz cadence; the overlay
-thread interpolates the ghost dot in between."
+thread interpolates the in-world marker in between."
   (if (and (config-value :ghost-overlay)
            (eq (detector-state detector) :in-quest))
       (let* ((race *ghost-race*)
@@ -909,10 +764,10 @@ thread interpolates the ghost dot in between."
              (elapsed (and telemetry
                            (telemetry-elapsed-ms
                             telemetry (get-internal-real-time))))
-             (map-data (and race elapsed
-                            (ghost-map-data
-                             race elapsed
-                             :marker (config-value :ghost-marker)))))
+             (ghost-data (and race elapsed
+                              (ghost-overlay-data
+                               race elapsed
+                               :marker (config-value :ghost-marker)))))
         (overlay-show!
          (format nil "~a~:[~; REC~]"
                  (format-run-time (or (detector-elapsed-ms detector) 0))
@@ -921,6 +776,6 @@ thread interpolates the ghost dot in between."
          (cond ((null delta) :neutral)
                ((minusp delta) :ahead)
                (t :behind))
-         map-data
+         ghost-data
          (config-value :overlay-corner)))
       (overlay-hide!)))

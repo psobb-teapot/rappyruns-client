@@ -296,8 +296,8 @@ who cannot create rules, never see it."
                        :font *ui-font*
                        :accessor ghost-marker-check)
    ;; Which corner of the game window the overlay panel occupies: the
-   ;; top-right default sits on PSO's own minimap once the course map
-   ;; makes the panel tall, so it is movable.
+   ;; top-right default sits on PSO's own minimap once the ghost panel
+   ;; grows its room-split rows, so it is movable.
    (overlay-corner-pane capi:option-pane
                         :title (tr :overlay-corner-label)
                         :title-position :left

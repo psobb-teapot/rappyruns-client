@@ -46,9 +46,10 @@ psostats, excluded from frame-1 detection there too.")
   last-floor-room               ; (floor . room) of the previous frame
   (track '())                   ; newest first: (ms floor map x z y) rows of the
                                 ; submitter's own position, ~4 Hz - the ghost
-                                ; overlay's course map and in-world marker
-                                ; (server: telemetry-position-track; rows from
-                                ; pre-y clients have 5 elements)
+                                ; overlay's in-world marker when this run is
+                                ; someone's reference (server:
+                                ; telemetry-position-track; rows from pre-y
+                                ; clients have 5 elements)
   (track-count 0)
   last-track-ms
   (meseta-charged 0)
@@ -149,9 +150,9 @@ what gives ghost-race deltas ms precision."
             (telemetry-events telemetry)))))
 
 (defparameter +track-interval-ms+ 250
-  "Own-position sampling interval for the ghost course map. 4 Hz is
-smooth enough to watch a dot run and stays a fraction of the frames'
-size (a 15-minute run is ~3600 compact rows).")
+  "Own-position sampling interval for the ghost track. 4 Hz is smooth
+enough to watch the in-world marker run and stays a fraction of the
+frames' size (a 15-minute run is ~3600 compact rows).")
 
 (defparameter +max-track-points+ 86400
   "Six hours at 4 Hz - the server drops an oversized track, so stop

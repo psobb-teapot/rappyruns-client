@@ -181,6 +181,6 @@ publishes the Ephinea HP table pointer + scale double."
   (run-updater-tests)
   (run-config-migration-tests)
   (run-ghost-tests)
-  (run-ghost-map-tests)
+  (run-ghost-overlay-tests)
   (format t "~&=== client tests: ~d failure~:p ===~%" *failures*)
   *failures*)

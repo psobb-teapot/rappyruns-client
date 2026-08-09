@@ -42,9 +42,9 @@
   rooms      ; vector of (:floor :room :nth :enter-ms), progression order
   track)     ; vector of (ms floor map x z) or (ms floor map x z y)
              ; rows, oldest first - the ghost's own position timeline
-             ; for the overlay's course map and in-world marker (4 Hz
-             ; from ghost-era references, 1 Hz from frames; the
-             ; trailing y height rides on y-era references only)
+             ; for the overlay's in-world marker (4 Hz from ghost-era
+             ; references, 1 Hz from frames; the trailing y height
+             ; rides on y-era references only)
 
 (defstruct ghost-race
   ghost          ; attached ghost, or NIL while the fetch is in flight
@@ -52,21 +52,15 @@
   last-key       ; (floor . room) on the previous frame
   delta-ms       ; latest gap (live minus ghost); NIL before the first match
   (matched-rooms 0)
-  ;; Course-map state: the submitter's own breadcrumbs and latest
-  ;; position, written by the poll thread and read by the overlay
-  ;; thread (freshly consed rows, so a torn read never sees a half
-  ;; entry).
-  own-x own-z own-y own-floor
-  (own-track '())       ; newest first: (floor x z), sampled ~2/sec
-  (own-track-count 0)
-  last-own-ms)
-
-(defparameter +own-track-interval-ms+ 500
-  "Breadcrumb sampling interval for the live side of the course map.")
-
-(defparameter +max-own-track-points+ 4000
-  "Breadcrumb cap (about half an hour); the trace just stops growing
-past it, the current-position dot keeps moving.")
+  (splits '())   ; matched-room history for the overlay, newest first:
+                 ; (:room R :floor F :ms enter :delta cumulative-gap)
+                 ; plists, freshly consed so the overlay thread can walk
+                 ; a torn-read prefix safely
+  ;; In-world marker support, written by the poll thread and read by
+  ;; the overlay thread: the live player's floor gates the marker to
+  ;; same-floor ghosts, the height is its fallback for tracks that
+  ;; predate the height column.
+  own-y own-floor)
 
 (defparameter +ghost-match-lookahead+ 15
   "How many ghost room entries past the cursor a live room entry may
@@ -120,7 +114,14 @@ changed between attempts).")
                          (list :floor (gethash "floor" room)
                                :room (gethash "room" room)
                                :nth (gethash "nth" room)
-                               :enter-ms (gethash "enter_ms" room))))
+                               :enter-ms (gethash "enter_ms" room)
+                               ;; The reference's kills during this
+                               ;; visit, or NIL from a server that does
+                               ;; not annotate them - NIL means unknown
+                               ;; (show the split), not zero.
+                               :kills (let ((kills (gethash "kills" room)))
+                                        (and (numberp kills)
+                                             (round kills))))))
                      rooms)
          :track (let ((track (gethash "track" payload))
                       ;; The height column rides out-of-band in
@@ -150,10 +151,14 @@ changed between attempts).")
 (defun ghost-race-note-room (race floor room elapsed-ms)
   "Feed the submitter's current (floor, room) at ELAPSED-MS (on the
 quest telemetry's clock). On entry into a new room, claim the ghost's
-next visit of that room from the cursor onward (bounded lookahead) and
-update the gap to live-minus-ghost; rooms the ghost never entered - or
-entered outside the window - leave the previous gap standing, mirroring
-the compare page's one-sided rows. Returns the race's current gap."
+next visit of that room from the cursor onward (bounded lookahead),
+update the gap to live-minus-ghost and record the split for the
+overlay's room list - unless the reference killed nothing there (a
+pass-through corridor, noise among the fight rooms; an entry without
+kill data still records, unknown is not empty). Rooms the ghost never
+entered - or entered outside the window - leave the previous gap
+standing and record no split, mirroring the compare page's one-sided
+rows. Returns the race's current gap."
   (let ((key (cons floor room)))
     (unless (equal key (ghost-race-last-key race))
       (setf (ghost-race-last-key race) key)
@@ -169,11 +174,16 @@ the compare page's one-sided rows. Returns the race's current gap."
                            (eql (getf entry :floor) floor)
                            (eql (getf entry :room) room)
                            (numberp (getf entry :enter-ms)))
-                  :do (setf (ghost-race-cursor race) (1+ i)
-                            (ghost-race-delta-ms race)
-                            (- elapsed-ms (getf entry :enter-ms)))
-                      (incf (ghost-race-matched-rooms race))
-                      (return))))))
+                  :do (let ((delta (- elapsed-ms (getf entry :enter-ms)))
+                            (kills (getf entry :kills)))
+                        (setf (ghost-race-cursor race) (1+ i)
+                              (ghost-race-delta-ms race) delta)
+                        (incf (ghost-race-matched-rooms race))
+                        (when (or (null kills) (plusp kills))
+                          (push (list :room room :floor floor
+                                      :ms elapsed-ms :delta delta)
+                                (ghost-race-splits race)))
+                        (return)))))))
   (ghost-race-delta-ms race))
 
 (defun ghost-matches-snapshot-p (ghost snapshot)
@@ -209,29 +219,17 @@ quest ends. Safe to call every frame."
               (ghost-race-note-room race (getf me :floor 0) (getf me :room 0)
                                     elapsed)
               (ghost-race-note-position race (getf me :floor 0)
-                                        (getf me :x 0.0) (getf me :z 0.0)
-                                        elapsed :y (getf me :y 0.0))))))))
+                                        (getf me :y 0.0))))))))
 
-(defun ghost-race-note-position (race floor x z elapsed-ms &key y)
-  "Track the submitter's own position for the course map: the current
-dot every call, a breadcrumb row at most every +OWN-TRACK-INTERVAL-MS+.
-Y feeds the in-world marker's height fallback for ghosts whose track
-predates the height column."
+(defun ghost-race-note-position (race floor y)
+  "Track the submitter's own floor and height for the in-world marker:
+the floor gates it to same-floor ghosts, Y is its height fallback for
+ghosts whose track predates the height column."
   (setf (ghost-race-own-floor race) floor
-        (ghost-race-own-x race) x
-        (ghost-race-own-z race) z
-        (ghost-race-own-y race) y)
-  (let ((last (ghost-race-last-own-ms race)))
-    (when (and (< (ghost-race-own-track-count race) +max-own-track-points+)
-               (or (null last)
-                   (>= (- elapsed-ms last) +own-track-interval-ms+)))
-      (setf (ghost-race-last-own-ms race) elapsed-ms)
-      (incf (ghost-race-own-track-count race))
-      (push (list floor x z) (ghost-race-own-track race)))))
+        (ghost-race-own-y race) y))
 
-;;; Course map: the ghost dot's position at any elapsed time, and the
-;;; projection that fits a floor's traces into the overlay's map rect.
-;;; Pure, so the SBCL tests pin the interpolation and fitting.
+;;; In-world marker: the ghost dot's position at any elapsed time.
+;;; Pure, so the SBCL tests pin the interpolation.
 
 (defparameter +track-lerp-max-gap-ms+ 3000
   "Interpolate the ghost dot between two track samples only when they
@@ -272,39 +270,6 @@ track; past the last sample the dot rests there."
                               (+ z (* f (- next-z z)))
                               (and y next-y (+ y (* f (- next-y y))))))
                     (values floor map x z y)))))))))
-
-(defun ghost-floor-track-points (track floor)
-  "The (x z) points of TRACK's rows on FLOOR, in time order - the
-course line the ghost dot runs along."
-  (when (vectorp track)
-    (loop :for row :across track
-          :when (eql (second row) floor)
-            :collect (list (fourth row) (fifth row)))))
-
-(defun map-projection (point-groups width height &key (pad 10))
-  "A function (x z) -> (values px py) that fits every point in
-POINT-GROUPS (lists of (x z) lists) into WIDTH x HEIGHT with PAD,
-preserving aspect and centering; NIL when there are no points or the
-points span nothing. Screen y grows with -z, so 'up' on the map is the
-game's north."
-  (let ((min-x nil) (max-x nil) (min-z nil) (max-z nil))
-    (dolist (group point-groups)
-      (dolist (point group)
-        (let ((x (first point)) (z (second point)))
-          (setf min-x (if min-x (min min-x x) x)
-                max-x (if max-x (max max-x x) x)
-                min-z (if min-z (min min-z z) z)
-                max-z (if max-z (max max-z z) z)))))
-    (when min-x
-      (let* ((span-x (max 1e-3 (- max-x min-x)))
-             (span-z (max 1e-3 (- max-z min-z)))
-             (scale (min (/ (- width (* 2 pad)) span-x)
-                         (/ (- height (* 2 pad)) span-z)))
-             (cx (/ (+ min-x max-x) 2))
-             (cz (/ (+ min-z max-z) 2)))
-        (lambda (x z)
-          (values (round (+ (/ width 2) (* scale (- x cx))))
-                  (round (- (/ height 2) (* scale (- z cz))))))))))
 
 (defun overlay-corner-origin (corner area-w area-h w h margin-x margin-y)
   "Top-left (values x y) of a W x H panel at CORNER of an AREA-W x
@@ -390,42 +355,41 @@ missing pieces. The eye direction is a unit vector; a zeroed one
                                     (+ (* ux px) (* uy py)
                                        (* uz pz))))))))))))))
 
-(defun ghost-direction-arrow (dx dz)
-  "8-way arrow from the own dot toward the ghost, in map orientation
-(up = north = -z... in game terms +z is drawn upward here, matching
-MAP-PROJECTION's flipped y)."
-  (let* ((angle (atan (float dz) (float dx)))  ; radians, +z = up on the map
-         (octant (mod (round (* 4 (/ angle pi))) 8)))
-    (aref #("→" "↗" "↑" "↖" "←" "↙" "↓" "↘") octant)))
+(defparameter +overlay-split-rows+ 8
+  "How many of the newest matched-room splits ride to the overlay -
+and how many rows its panel reserves.")
 
-(defun format-ghost-distance (dx dz)
-  "Approximate distance label: PSO world units are ~10 per meter."
-  (format nil "~dm" (max 1 (round (sqrt (+ (* dx dx) (* dz dz))) 10))))
+(defun format-split-clock (ms)
+  "m:ss for a split row's enter clock; the delta column carries the
+precision, the clock only anchors the row on the run's timeline."
+  (multiple-value-bind (minutes seconds) (floor (floor ms 1000) 60)
+    (format nil "~d:~2,'0d" minutes seconds)))
 
-(defun ghost-map-data (race elapsed-ms &key marker)
-  "Snapshot for the overlay's course map, or NIL when there is nothing
-to draw yet. All slots are plain data; the overlay thread interpolates
-the ghost dot itself from :track and :elapsed-at so it glides between
-the poll loop's 4 Hz updates. MARKER (the :ghost-marker setting) rides
-along so the overlay thread never touches CONFIG-VALUE:
-  (:floor F :own (x z) :own-y Y :own-points ((x z)...)
-   :track VECTOR :ghost-time-ms MS :label STRING :marker BOOL
-   :elapsed-ms MS :elapsed-at TICKS)"
+(defun ghost-overlay-data (race elapsed-ms &key marker)
+  "Snapshot for the overlay's ghost panel (vs header, room-split rows
+and the in-world marker), or NIL until a ghost is attached and the
+player's position has been seen - the ghostless overlay stays the
+compact timer pill. All slots are plain data; the overlay thread
+interpolates the marker itself from :track and :elapsed-at so it
+glides between the poll loop's 4 Hz updates. MARKER (the
+:ghost-marker setting) rides along so the overlay thread never
+touches CONFIG-VALUE:
+  (:floor F :own-y Y :track VECTOR :ghost-time-ms MS :label STRING
+   :precision P :marker BOOL :splits (newest first, capped at
+   +OVERLAY-SPLIT-ROWS+) :elapsed-ms MS :elapsed-at TICKS)"
   (let ((ghost (ghost-race-ghost race))
-        (floor (ghost-race-own-floor race))
-        (x (ghost-race-own-x race))
-        (z (ghost-race-own-z race)))
-    (when (and floor x z)
+        (floor (ghost-race-own-floor race)))
+    (when (and ghost floor)
       (list :marker (and marker t)
             :floor floor
-            :own (list x z)
             :own-y (ghost-race-own-y race)
-            :own-points (loop :for (f px pz) :in (ghost-race-own-track race)
-                              :when (eql f floor)
-                                :collect (list px pz))
-            :track (and ghost (ghost-track ghost))
-            :ghost-time-ms (and ghost (ghost-time-ms ghost))
-            :label (and ghost (ghost-label ghost))
+            :track (ghost-track ghost)
+            :ghost-time-ms (ghost-time-ms ghost)
+            :label (ghost-label ghost)
+            :precision (ghost-precision ghost)
+            :splits (loop :for split :in (ghost-race-splits race)
+                          :repeat +overlay-split-rows+
+                          :collect split)
             :elapsed-ms elapsed-ms
             :elapsed-at (get-internal-real-time)))))
 

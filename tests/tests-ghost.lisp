@@ -192,7 +192,8 @@
       (check "setting off never asks"
              (null (eta-client::ghost-fetch-wanted snapshot))))))
 
-;;; Course map: track parsing, interpolation, projection, direction.
+;;; Ghost overlay data: track parsing and interpolation (the in-world
+;;; marker), the room-split history and the panel snapshot.
 
 (defparameter +tracked-ghost-payload+
   "{\"run_id\":7,\"quest\":\"q\",\"time_ms\":6000,\"precision\":\"ms\",
@@ -200,7 +201,7 @@
     \"track\":[[0,1,10,0.0,0.0],[1000,1,10,10.0,20.0],
                [5000,2,11,50.0,50.0],\"junk\",[1,2]]}")
 
-(defun run-ghost-map-tests ()
+(defun run-ghost-overlay-tests ()
   (let ((ghost (parse-ghost-splits
                 (com.inuoe.jzon:parse +tracked-ghost-payload+))))
     (check "track parses and drops malformed rows"
@@ -227,10 +228,7 @@
              (multiple-value-bind (floor map x z)
                  (ghost-track-position track 999999)
                (declare (ignore map))
-               (and (eql floor 2) (= x 50.0) (= z 50.0))))
-      (check "floor filter keeps time order"
-             (equalp (ghost-floor-track-points track 1)
-                     '((0.0 0.0) (10.0 20.0)))))
+               (and (eql floor 2) (= x 50.0) (= z 50.0)))))
     ;; A wide sample gap also snaps (warps must not glide through walls).
     (let ((gappy (coerce (list (list 0 1 10 0.0 0.0)
                                (list 8000 1 10 100.0 0.0))
@@ -293,41 +291,74 @@
            (and ghost
                 (every #'= (aref (ghost-track ghost) 0)
                        '(0 1 10 0.0 0.0 5.0)))))
-  ;; Projection: fit, aspect, centering, flipped z.
-  (let ((project (map-projection '(((0 0) (100 200))) 240 240 :pad 10)))
-    (check "projection exists with points" (functionp project))
-    (check "projection centers the midpoint"
-           (multiple-value-bind (px py) (funcall project 50 100)
-             (and (eql px 120) (eql py 120))))
-    (check "projection preserves aspect and flips z"
-           (multiple-value-bind (px py) (funcall project 0 0)
-             (and (eql px 65) (eql py 230)))))
-  (check "projection without points is NIL"
-         (null (map-projection '(() ()) 240 240)))
-  ;; Direction and distance.
-  (check "arrow octants"
-         (and (equal (ghost-direction-arrow 10 0) "→")
-              (equal (ghost-direction-arrow 0 10) "↑")
-              (equal (ghost-direction-arrow 10 10) "↗")
-              (equal (ghost-direction-arrow -5 -5) "↙")))
-  (check "distance approximates meters"
-         (equal (format-ghost-distance 30 40) "5m"))
-  ;; Own-position sampling into the race state.
+  ;; Own-position sampling into the race state (marker support), and
+  ;; the split history behind the overlay's room rows.
   (let ((race (make-ghost-race)))
-    (ghost-race-note-position race 1 10.0 20.0 0)
-    (ghost-race-note-position race 1 11.0 21.0 200)   ; too soon: dot only
-    (ghost-race-note-position race 1 12.0 22.0 600)
-    (check "breadcrumbs decimate to the interval"
-           (= (length (eta-client::ghost-race-own-track race)) 2))
-    (check "the current dot always updates"
-           (and (eql (eta-client::ghost-race-own-x race) 12.0)
-                (eql (eta-client::ghost-race-own-floor race) 1)))
-    (let ((data (ghost-map-data race 600)))
-      (check "map data carries floor, dot and breadcrumbs"
+    (ghost-race-note-position race 1 5.0)
+    (check "own floor and height update"
+           (and (eql (eta-client::ghost-race-own-floor race) 1)
+                (eql (eta-client::ghost-race-own-y race) 5.0)))
+    (check "no ghost, no overlay data"
+           (null (ghost-overlay-data race 600))))
+  (let ((race (make-ghost-race :ghost (test-ghost))))
+    (check "no position seen yet, no overlay data"
+           (null (ghost-overlay-data race 600)))
+    (ghost-race-note-position race 1 5.0)
+    (ghost-race-note-room race 1 10 800)
+    (ghost-race-note-room race 1 11 34000)
+    (ghost-race-note-room race 1 99 40000)  ; ghost never went: no split
+    (let ((splits (eta-client::ghost-race-splits race)))
+      (check "matched rooms record splits newest first"
+             (and (= (length splits) 2)
+                  (eql (getf (first splits) :room) 11)
+                  (eql (getf (first splits) :delta) 4000)
+                  (eql (getf (second splits) :room) 10)
+                  (eql (getf (second splits) :ms) 800)
+                  (eql (getf (second splits) :delta) 800))))
+    (let ((data (ghost-overlay-data race 40000 :marker t)))
+      (check "overlay data carries splits, precision and marker"
              (and (eql (getf data :floor) 1)
-                  (equal (getf data :own) '(12.0 22.0))
-                  (= (length (getf data :own-points)) 2)
-                  (null (getf data :track))))))
+                  (eql (getf data :own-y) 5.0)
+                  (eq (getf data :precision) :ms)
+                  (getf data :marker)
+                  (= (length (getf data :splits)) 2)
+                  (eql (getf (first (getf data :splits)) :room) 11))))
+    (setf (eta-client::ghost-race-splits race)
+          (loop :for i :from 20 :downto 1
+                :collect (list :room i :floor 1 :ms (* i 1000) :delta 0)))
+    (check "overlay data caps the split rows"
+           (= (length (getf (ghost-overlay-data race 0) :splits))
+              eta-client::+overlay-split-rows+)))
+  ;; A room where the reference killed nothing is matched (the gap
+  ;; still moves) but records no split row; kills absent from the wire
+  ;; (an older server) means unknown, so those rooms keep their rows -
+  ;; the +ghost-payload+ tests above cover that path.
+  (let* ((ghost (parse-ghost-splits
+                 (com.inuoe.jzon:parse
+                  "{\"run_id\":10,\"quest\":\"q\",\"time_ms\":99000,
+                    \"precision\":\"ms\",\"source\":\"pb\",\"pb\":0,
+                    \"rooms\":[{\"floor\":1,\"room\":10,\"nth\":1,
+                                \"enter_ms\":0,\"kills\":3},
+                               {\"floor\":1,\"room\":11,\"nth\":1,
+                                \"enter_ms\":30000,\"kills\":0},
+                               {\"floor\":1,\"room\":12,\"nth\":1,
+                                \"enter_ms\":60000,\"kills\":5}]}")))
+         (race (make-ghost-race :ghost ghost)))
+    (ghost-race-note-room race 1 10 500)
+    (ghost-race-note-room race 1 11 34000)
+    (check "the zero-kill room still moves the gap"
+           (eql (ghost-race-delta-ms race) 4000))
+    (ghost-race-note-room race 1 12 61000)
+    (check "a zero-kill room records no split row"
+           (and (= (eta-client::ghost-race-matched-rooms race) 3)
+                (equal (mapcar (lambda (split) (getf split :room))
+                               (eta-client::ghost-race-splits race))
+                       '(12 10)))))
+  ;; Split-row clock.
+  (check "split clock formats m:ss"
+         (equal (format-split-clock 754321) "12:34"))
+  (check "split clock zero-pads seconds"
+         (equal (format-split-clock 61000) "1:01"))
   ;; High-frequency own-position telemetry (the future ghost's track).
   (let ((telemetry (make-telemetry :start-time 0)))
     (eta-client::update-track-recording
@@ -389,7 +420,7 @@
             (eta-client::camera-fov 4 1.5)))
   ;; Panel placement: the :overlay-corner setting picks which corner of
   ;; the client area the overlay panel occupies (the top-right default
-  ;; sat on PSO's own minimap once the course map made the panel tall).
+  ;; sat on PSO's own minimap once the ghost panel grew tall).
   (flet ((origin (corner &optional (area-w 1360) (area-h 768))
            (multiple-value-list
             (eta-client::overlay-corner-origin corner area-w area-h

@@ -489,7 +489,7 @@ hold nested location lists that become objects."
                                            (getf event :ms)))
                                    entry))
                   'vector))
-    ;; Own-position track rows for the ghost course map, compact
+    ;; Own-position track rows for the ghost's in-world marker, compact
     ;; [ms, floor, map, x, z] arrays (server: telemetry-position-track).
     (when (getf data :track)
       (setf (gethash "track" object)
