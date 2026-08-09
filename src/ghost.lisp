@@ -291,6 +291,25 @@ rather than a negative origin."
             ((:middle-left :middle-right) (max 0 (floor (- area-h h) 2)))
             (t margin-y))))
 
+(defun overlay-panel-origin (corner custom area-w area-h w h
+                             margin-x margin-y)
+  "Top-left (values x y) of the panel: the dragged CUSTOM position
+when CORNER is :custom - (x-frac y-frac), each axis the 0..1 fraction
+of the area's slack (area minus panel), so a window resize keeps the
+panel proportionally placed and always inside - else the CORNER anchor
+via OVERLAY-CORNER-ORIGIN. :custom without a usable position falls
+through to CORNER-ORIGIN, whose unknown-corner default places
+top-right."
+  (if (and (eq corner :custom)
+           (consp custom)
+           (numberp (first custom))
+           (numberp (second custom)))
+      (values (round (* (min 1 (max 0 (first custom)))
+                        (max 0 (- area-w w))))
+              (round (* (min 1 (max 0 (second custom)))
+                        (max 0 (- area-h h)))))
+      (overlay-corner-origin corner area-w area-h w h margin-x margin-y)))
+
 ;;; In-world marker projection: the ghost's world position through the
 ;;; game camera onto the client area, so the overlay can draw a marker
 ;;; where the ghost actually stands. Transcribed from the DropBox

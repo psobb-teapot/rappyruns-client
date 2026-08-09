@@ -1109,7 +1109,8 @@ flag."
 
 (defun overlay-corner-items ()
   "Option-pane items for the overlay-position choice: (label . corner),
-in reading order over the position grid."
+in reading order over the position grid, plus the Ctrl+drag custom
+spot."
   (list (cons (tr :corner-top-right) :top-right)
         (cons (tr :corner-top-center) :top-center)
         (cons (tr :corner-top-left) :top-left)
@@ -1117,7 +1118,8 @@ in reading order over the position grid."
         (cons (tr :corner-middle-left) :middle-left)
         (cons (tr :corner-bottom-right) :bottom-right)
         (cons (tr :corner-bottom-center) :bottom-center)
-        (cons (tr :corner-bottom-left) :bottom-left)))
+        (cons (tr :corner-bottom-left) :bottom-left)
+        (cons (tr :corner-custom) :custom)))
 
 (defun overlay-corner-selection ()
   "Index of the configured corner in OVERLAY-CORNER-ITEMS; a
@@ -1129,11 +1131,24 @@ hand-edited unknown value selects the top-right default."
 (defun overlay-corner-changed-callback (interface)
   "Apply the overlay-position choice immediately; the poll loop's next
 4 Hz status update hands the corner to the overlay thread
-(UPDATE-GHOST-OVERLAY), which repositions on its next tick."
+(UPDATE-GHOST-OVERLAY), which repositions on its next tick. Picking
+:custom reuses the last dragged spot (top-right until one exists)."
   (let ((item (capi:choice-selected-item (overlay-corner-pane interface))))
     (when (consp item)
       (setf (config-value :overlay-corner) (cdr item))
       (save-config!))))
+
+(defun refresh-overlay-corner-pane ()
+  "Reflect a Ctrl+dragged custom position into the settings dropdown.
+Called from the poll loop right after it persists the drag
+(UPDATE-GHOST-OVERLAY in overlay-win32.lisp)."
+  (let ((interface *interface*))
+    (when interface
+      (capi:execute-with-interface-if-alive
+       interface
+       (lambda ()
+         (setf (capi:choice-selection (overlay-corner-pane interface))
+               (overlay-corner-selection)))))))
 
 ;; The cross-thread update helpers use the -IF-ALIVE variant: the
 ;; language toggle destroys and replaces the window, and the poll loop

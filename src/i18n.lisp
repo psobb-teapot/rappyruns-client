@@ -428,6 +428,9 @@
     :corner-bottom-left
     ("Bottom left"
      "左下")
+    :corner-custom
+    ("Custom (Ctrl+drag the overlay)"
+     "カスタム (Ctrl+ドラッグで移動)")
     :ghost-note
     ("vs ghost ~a"
      "ゴースト比 ~a")

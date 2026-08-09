@@ -444,4 +444,21 @@
     (check "an unknown corner places like top-right"
            (equal (origin :center) '(1076 16)))
     (check "an area smaller than the panel clamps to the edges"
-           (equal (origin :bottom-right 200 200) '(0 0)))))
+           (equal (origin :bottom-right 200 200) '(0 0))))
+  ;; The Ctrl+dragged custom spot: fractions of the area's slack.
+  (flet ((panel (corner custom &optional (area-w 1360) (area-h 768))
+           (multiple-value-list
+            (eta-client::overlay-panel-origin corner custom area-w area-h
+                                              260 352 24 16))))
+    (check "custom origin scales by the slack"
+           (equal (panel :custom '(0.5 1.0)) '(550 416)))
+    (check "custom origin clamps out-of-range fractions"
+           (equal (panel :custom '(-0.5 1.5)) '(0 416)))
+    (check "custom without a usable position places top-right"
+           (and (equal (panel :custom nil) '(1076 16))
+                (equal (panel :custom '(0.5)) '(1076 16))
+                (equal (panel :custom "junk") '(1076 16))))
+    (check "a preset corner ignores the stored custom spot"
+           (equal (panel :bottom-left '(0.5 0.5)) '(24 400)))
+    (check "custom in an area smaller than the panel pins to 0"
+           (equal (panel :custom '(0.7 0.7) 200 200) '(0 0)))))

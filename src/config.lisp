@@ -36,7 +36,8 @@
         :ghost-race t       ; ghost race: fetch a reference run's splits at quest load (the run chosen on the site, else own PB) and show the live gap in the status line (ghost.lisp)
         :ghost-overlay nil  ; floating in-game overlay window with the timer + ghost gap + room splits while a quest runs (overlay-win32.lisp); off by default - it draws over the game
         :ghost-marker t     ; in-world ghost marker: project the ghost's position through the game camera and draw a dot + name pill where it stands (needs :ghost-overlay; overlay-win32.lisp OVERLAY-DRAW-GHOST-MARKER)
-        :overlay-corner :top-right ; where the overlay panel sits in the game's client area: a corner (:top-right :top-left :bottom-right :bottom-left) or an edge midpoint (:middle-right :middle-left :top-center :bottom-center) - movable because the tall ghost panel covers PSO's own minimap at the top-right default
+        :overlay-corner :top-right ; where the overlay panel sits in the game's client area: a corner (:top-right :top-left :bottom-right :bottom-left), an edge midpoint (:middle-right :middle-left :top-center :bottom-center), or :custom (a Ctrl+dragged spot, see :overlay-position) - movable because the tall ghost panel covers PSO's own minimap at the top-right default
+        :overlay-position nil ; the Ctrl+dragged panel spot as (x-frac y-frac), each axis the 0..1 fraction of the client area's slack; only read while :overlay-corner is :custom (overlay-panel-origin)
         :start-minimized nil ; launch straight to the tray with no window (also forced for a single launch by --minimized; see STARTUP-MINIMIZED-P)
         :debug nil))        ; developer knobs in the GUI (see DEBUG-MODE-P)
 
