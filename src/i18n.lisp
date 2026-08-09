@@ -401,6 +401,33 @@
     :ghost-marker-label
     ("Show the ghost in the game view (a marker where the ghost is running)"
      "ゴーストの姿をゲーム画面内に表示 (ゴーストの現在位置にマーカー)")
+    :overlay-corner-label
+    ("Overlay position"
+     "オーバーレイの表示位置")
+    :corner-top-right
+    ("Top right"
+     "右上")
+    :corner-top-center
+    ("Top center"
+     "上中央")
+    :corner-top-left
+    ("Top left"
+     "左上")
+    :corner-middle-right
+    ("Middle right"
+     "右中央")
+    :corner-middle-left
+    ("Middle left"
+     "左中央")
+    :corner-bottom-right
+    ("Bottom right"
+     "右下")
+    :corner-bottom-center
+    ("Bottom center"
+     "下中央")
+    :corner-bottom-left
+    ("Bottom left"
+     "左下")
     :ghost-note
     ("vs ghost ~a"
      "ゴースト比 ~a")

@@ -386,4 +386,31 @@
            (< 1.5 fov 1.65)))
   (check "fov shrinks as the camera zooms in"
          (> (eta-client::camera-fov 0 1.5)
-            (eta-client::camera-fov 4 1.5))))
+            (eta-client::camera-fov 4 1.5)))
+  ;; Panel placement: the :overlay-corner setting picks which corner of
+  ;; the client area the overlay panel occupies (the top-right default
+  ;; sat on PSO's own minimap once the course map made the panel tall).
+  (flet ((origin (corner &optional (area-w 1360) (area-h 768))
+           (multiple-value-list
+            (eta-client::overlay-corner-origin corner area-w area-h
+                                               260 352 24 16))))
+    (check "top-right origin keeps the old geometry"
+           (equal (origin :top-right) '(1076 16)))
+    (check "top-left origin"
+           (equal (origin :top-left) '(24 16)))
+    (check "bottom-right origin"
+           (equal (origin :bottom-right) '(1076 400)))
+    (check "bottom-left origin"
+           (equal (origin :bottom-left) '(24 400)))
+    (check "middle-right centers vertically without a margin"
+           (equal (origin :middle-right) '(1076 208)))
+    (check "middle-left origin"
+           (equal (origin :middle-left) '(24 208)))
+    (check "top-center centers horizontally without a margin"
+           (equal (origin :top-center) '(550 16)))
+    (check "bottom-center origin"
+           (equal (origin :bottom-center) '(550 400)))
+    (check "an unknown corner places like top-right"
+           (equal (origin :center) '(1076 16)))
+    (check "an area smaller than the panel clamps to the edges"
+           (equal (origin :bottom-right 200 200) '(0 0)))))

@@ -295,6 +295,19 @@ who cannot create rules, never see it."
                        :callback-type :interface
                        :font *ui-font*
                        :accessor ghost-marker-check)
+   ;; Which corner of the game window the overlay panel occupies: the
+   ;; top-right default sits on PSO's own minimap once the course map
+   ;; makes the panel tall, so it is movable.
+   (overlay-corner-pane capi:option-pane
+                        :title (tr :overlay-corner-label)
+                        :title-position :left
+                        :items (overlay-corner-items)
+                        :selection (overlay-corner-selection)
+                        :print-function 'car
+                        :selection-callback 'overlay-corner-changed-callback
+                        :callback-type :interface
+                        :font *ui-font* :title-font *ui-font*
+                        :accessor overlay-corner-pane)
    (record-dir-display capi:title-pane
                        :text (record-dir-label)
                        :font *ui-font*
@@ -379,7 +392,8 @@ who cannot create rules, never see it."
                     :title (tr :group-recording) :title-position :frame
                     :title-font *ui-font* :adjust :left)
    (ghost-group capi:column-layout
-                '(ghost-race-check ghost-overlay-check ghost-marker-check)
+                '(ghost-race-check ghost-overlay-check ghost-marker-check
+                  overlay-corner-pane)
                 :title (tr :group-ghost) :title-position :frame
                 :title-font *ui-font* :adjust :left)
    (updates-group capi:column-layout
@@ -1092,6 +1106,34 @@ flag."
   (setf (config-value :ghost-marker)
         (capi:button-selected (ghost-marker-check interface)))
   (save-config!))
+
+(defun overlay-corner-items ()
+  "Option-pane items for the overlay-position choice: (label . corner),
+in reading order over the position grid."
+  (list (cons (tr :corner-top-right) :top-right)
+        (cons (tr :corner-top-center) :top-center)
+        (cons (tr :corner-top-left) :top-left)
+        (cons (tr :corner-middle-right) :middle-right)
+        (cons (tr :corner-middle-left) :middle-left)
+        (cons (tr :corner-bottom-right) :bottom-right)
+        (cons (tr :corner-bottom-center) :bottom-center)
+        (cons (tr :corner-bottom-left) :bottom-left)))
+
+(defun overlay-corner-selection ()
+  "Index of the configured corner in OVERLAY-CORNER-ITEMS; a
+hand-edited unknown value selects the top-right default."
+  (or (position (config-value :overlay-corner) (overlay-corner-items)
+                :key 'cdr)
+      0))
+
+(defun overlay-corner-changed-callback (interface)
+  "Apply the overlay-position choice immediately; the poll loop's next
+4 Hz status update hands the corner to the overlay thread
+(UPDATE-GHOST-OVERLAY), which repositions on its next tick."
+  (let ((item (capi:choice-selected-item (overlay-corner-pane interface))))
+    (when (consp item)
+      (setf (config-value :overlay-corner) (cdr item))
+      (save-config!))))
 
 ;; The cross-thread update helpers use the -IF-ALIVE variant: the
 ;; language toggle destroys and replaces the window, and the poll loop

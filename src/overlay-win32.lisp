@@ -374,6 +374,11 @@ window directly (a window belongs to its creating thread).")
 interpolates the ghost dot from its :track/:elapsed-at, so the dot
 glides between the poll loop's updates.")
 
+(defvar *overlay-corner* :top-right
+  "Which corner of the game's client area the panel sits in - the
+:overlay-corner setting, handed over by OVERLAY-SHOW! so the overlay
+thread never touches CONFIG-VALUE.")
+
 (defvar *overlay-proj-cache* nil
   "(:track T :floor F :project FN :ghost-points ((px py)...)): the
 ghost's floor trace projected once per (track, floor) pair. The trace
@@ -426,11 +431,12 @@ at 30 Hz; with the marker off, the overlay stays the panel-sized,
   "Fit the overlay against the game window's client area: the whole
 area while the in-world marker is live (it can land anywhere; the
 color key keeps all but the panel and marker transparent), just the
-top-right corner panel otherwise. Skips the SetWindowPos when the
-placement has not moved - this runs at up to 30 Hz. Returns :FIT on a
-usable placement, :DEGENERATE for a zero-sized client rect (minimized
-game), NIL when the rect queries fail outright (transient during
-display-mode switches; the caller keeps the overlay up)."
+corner panel (at the :overlay-corner corner) otherwise. Skips the
+SetWindowPos when the placement has not moved - this runs at up to
+30 Hz. Returns :FIT on a usable placement, :DEGENERATE for a
+zero-sized client rect (minimized game), NIL when the rect queries
+fail outright (transient during display-mode switches; the caller
+keeps the overlay up)."
   (let ((rect (window-client-screen-rect game-hwnd)))
     (when rect
       (destructuring-bind (left top right bottom) rect
@@ -438,21 +444,27 @@ display-mode switches; the caller keeps the overlay up)."
               (client-h (- bottom top)))
           (if (or (<= client-w 0) (<= client-h 0))
               :degenerate
-              (let* ((full (overlay-marker-wanted-p))
-                     (x (if full left (- right +overlay-width+
-                                        +overlay-margin-x+)))
-                     (y (if full top (+ top +overlay-margin-y+)))
-                     (w (if full client-w +overlay-width+))
-                     (h (if full client-h (overlay-current-height)))
-                     (placement (list x y w h)))
-                (setf *overlay-size* (cons w h)
-                      *overlay-full-p* full)
-                (unless (equal placement *overlay-placement*)
-                  (setf *overlay-placement* placement)
-                  (%set-window-pos hwnd 0 x y w h
-                                   (logior +swp-nozorder+
-                                           +swp-noactivate+)))
-                :fit)))))))
+              (multiple-value-bind (panel-x panel-y)
+                  (overlay-corner-origin *overlay-corner*
+                                         client-w client-h
+                                         +overlay-width+
+                                         (overlay-current-height)
+                                         +overlay-margin-x+
+                                         +overlay-margin-y+)
+                (let* ((full (overlay-marker-wanted-p))
+                       (x (if full left (+ left panel-x)))
+                       (y (if full top (+ top panel-y)))
+                       (w (if full client-w +overlay-width+))
+                       (h (if full client-h (overlay-current-height)))
+                       (placement (list x y w h)))
+                  (setf *overlay-size* (cons w h)
+                        *overlay-full-p* full)
+                  (unless (equal placement *overlay-placement*)
+                    (setf *overlay-placement* placement)
+                    (%set-window-pos hwnd 0 x y w h
+                                     (logior +swp-nozorder+
+                                             +swp-noactivate+)))
+                  :fit))))))))
 
 (defun overlay-fill-rect (hdc left top right bottom brush)
   (fli:with-dynamic-foreign-objects ()
@@ -661,11 +673,16 @@ errors out, or the invalid region never clears and WM_PAINT storms."
                     (full *overlay-full-p*)
                     (width (or (car size) +overlay-width+))
                     (height (or (cdr size) (overlay-current-height)))
-                    (panel-x (if full
-                                 (max 0 (- width +overlay-width+
-                                           +overlay-margin-x+))
-                                 0))
-                    (panel-y (if full +overlay-margin-y+ 0))
+                    (origin (and full
+                                 (multiple-value-list
+                                  (overlay-corner-origin
+                                   *overlay-corner* width height
+                                   +overlay-width+
+                                   (overlay-current-height)
+                                   +overlay-margin-x+
+                                   +overlay-margin-y+))))
+                    (panel-x (if origin (first origin) 0))
+                    (panel-y (if origin (second origin) 0))
                     (data *overlay-map-data*)
                     (map-active (overlay-map-active-p))
                     ;; The ghost's position is resolved ONCE per paint
@@ -856,14 +873,15 @@ WM_QUIT. Created hidden; the timer shows it once wanted."
 
 ;;; --- Poll-loop API --------------------------------------------------
 
-(defun overlay-show! (line1 line2 delta-state map-data)
-  "Want the overlay visible with this content. Starts the overlay
-thread lazily; best-effort - a failure here must never touch the poll
-loop."
+(defun overlay-show! (line1 line2 delta-state map-data corner)
+  "Want the overlay visible with this content, its panel in CORNER of
+the game's client area. Starts the overlay thread lazily; best-effort
+- a failure here must never touch the poll loop."
   (setf *overlay-line1* (or line1 "")
         *overlay-line2* line2
         *overlay-delta-state* (or delta-state :neutral)
         *overlay-map-data* map-data
+        *overlay-corner* (or corner :top-right)
         *overlay-wanted* t)
   (unless (and *overlay-process* (mp:process-alive-p *overlay-process*))
     (ignore-errors
@@ -903,5 +921,6 @@ thread interpolates the ghost dot in between."
          (cond ((null delta) :neutral)
                ((minusp delta) :ahead)
                (t :behind))
-         map-data))
+         map-data
+         (config-value :overlay-corner)))
       (overlay-hide!)))

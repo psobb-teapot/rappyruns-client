@@ -306,6 +306,26 @@ game's north."
           (values (round (+ (/ width 2) (* scale (- x cx))))
                   (round (- (/ height 2) (* scale (- z cz))))))))))
 
+(defun overlay-corner-origin (corner area-w area-h w h margin-x margin-y)
+  "Top-left (values x y) of a W x H panel at CORNER of an AREA-W x
+AREA-H area, MARGIN-X/-Y in from the nearest edges (centered axes take
+no margin). CORNER combines a vertical position (top / middle /
+bottom) with a horizontal one (left / center / right): the four
+corners :top-right :top-left :bottom-right :bottom-left, the edge
+midpoints :middle-right :middle-left :top-center :bottom-center;
+anything else (a hand-edited config) places like :top-right. Origins
+clamp at 0 so an area smaller than the panel degrades to flush edges
+rather than a negative origin."
+  (values (case corner
+            ((:top-left :middle-left :bottom-left) margin-x)
+            ((:top-center :bottom-center) (max 0 (floor (- area-w w) 2)))
+            (t (max 0 (- area-w w margin-x))))
+          (case corner
+            ((:bottom-left :bottom-center :bottom-right)
+             (max 0 (- area-h h margin-y)))
+            ((:middle-left :middle-right) (max 0 (floor (- area-h h) 2)))
+            (t margin-y))))
+
 ;;; In-world marker projection: the ghost's world position through the
 ;;; game camera onto the client area, so the overlay can draw a marker
 ;;; where the ghost actually stands. Transcribed from the DropBox
