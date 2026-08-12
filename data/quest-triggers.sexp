@@ -102,6 +102,13 @@
  (:slug "ep1-maximum-attack-e-forest" :episode 1
   :names ("Maximum Attack E:森")
   :start (:floor-switch 2 0) :end (:register 50))
+ ;; Third area variant. This one Ephinea did translate, so the name is
+ ;; ASCII. Register 50 over 254 is not just about the 3-7 second lag
+ ;; here: of 46 cleared runs in the trigger log, one left the quest
+ ;; inside that window and never set 254 at all.
+ (:slug "ep1-maximum-attack-e-mine" :episode 1
+  :names ("Maximum Attack E: Mine")
+  :start (:floor-switch 6 0) :end (:register 50))
  (:slug "ep1-random-attack-xrd-stage" :episode 1 :number 1303
   :names ("Random Attack Xrd Stage") :start (:warp-in) :end (:register 254))
  (:slug "ep1-random-attack-xrd-rev-1" :episode 1 :number 1801
