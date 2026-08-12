@@ -95,6 +95,13 @@
  (:slug "ep1-maximum-attack-e-episode-1" :episode 1 :number 942
   :names ("Maximum Attack E: Episode 1")
   :start (:floor-switch 2 0) :end (:register 254))
+ ;; Area variant of the above, same event opening as the desert one, and
+ ;; likewise named in Japanese only. It shares Episode 1's start switch,
+ ;; so the name is what separates the two - and it ends on register 50
+ ;; for the same reason the desert entry does (254 lags by 5-9 seconds).
+ (:slug "ep1-maximum-attack-e-forest" :episode 1
+  :names ("Maximum Attack E:森")
+  :start (:floor-switch 2 0) :end (:register 50))
  (:slug "ep1-random-attack-xrd-stage" :episode 1 :number 1303
   :names ("Random Attack Xrd Stage") :start (:warp-in) :end (:register 254))
  (:slug "ep1-random-attack-xrd-rev-1" :episode 1 :number 1801
