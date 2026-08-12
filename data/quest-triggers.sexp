@@ -110,6 +110,14 @@
  (:slug "ep1-maximum-attack-e-mine" :episode 1 :number 932
   :names ("Maximum Attack E: Mine" "Maximum Attack E: Mines")
   :start (:floor-switch 6 0) :end (:register 50))
+ ;; The variants below have not been logged here yet, so everything comes
+ ;; from psostats and the names are its English ones. Should the game
+ ;; hand out a Japanese name the way it does for 森 / 洞窟 / 地下砂漠, the
+ ;; number is what will match; put the observed name first when one shows
+ ;; up in a trigger log.
+ (:slug "ep1-maximum-attack-e-ruins" :episode 1 :number 933
+  :names ("Maximum Attack E: Ruins")
+  :start (:floor-switch 10 0) :end (:register 50))
  (:slug "ep1-random-attack-xrd-stage" :episode 1 :number 1303
   :names ("Random Attack Xrd Stage") :start (:warp-in) :end (:register 254))
  (:slug "ep1-random-attack-xrd-rev-1" :episode 1 :number 1801
@@ -210,6 +218,23 @@
  (:slug "ep2-maximum-attack-e-gal-da-val" :episode 2 :number 944
   :names ("Maximum Attack E: GDV" "Maximum Attack E: Gal Da Val")
   :start (:floor-switch 5 0) :end (:register 254))
+ ;; Area variants, from psostats - see the Episode 1 block for the
+ ;; caveats about their names.
+ (:slug "ep2-maximum-attack-e-temple" :episode 2 :number 934
+  :names ("Maximum Attack E: Temple")
+  :start (:floor-switch 1 0) :end (:register 50))
+ (:slug "ep2-maximum-attack-e-spaceship" :episode 2 :number 935
+  :names ("Maximum Attack E: Spaceship" "Maximum Attack E: Space")
+  :start (:floor-switch 3 0) :end (:register 50))
+ (:slug "ep2-maximum-attack-e-cca" :episode 2 :number 936
+  :names ("Maximum Attack E: CCA")
+  :start (:floor-switch 5 0) :end (:register 50))
+ (:slug "ep2-maximum-attack-e-seabed" :episode 2 :number 937
+  :names ("Maximum Attack E: Seabed")
+  :start (:floor-switch 10 0) :end (:register 50))
+ (:slug "ep2-maximum-attack-e-tower" :episode 2 :number 938
+  :names ("Maximum Attack E: Tower")
+  :start (:floor-switch 17 0) :end (:register 50))
  (:slug "ep2-random-attack-xrd-rev-2" :episode 2 :number 1802
   :names ("Random Attack Xrd REV 2") :start (:warp-in) :end (:register 254))
  ;; ------------------------------------------------ Episode 2 - Retrieval
@@ -309,7 +334,10 @@
  (:slug "ep4-maximum-attack-e-episode-4" :episode 4 :number 945
   :names ("Maximum Attack E: Episode 4")
   :start (:floor-switch 2 0) :end (:register 254))
- ;; Area variant - see the Episode 1 ones for why these end on 50.
+ ;; Area variants - see the Episode 1 ones for why these end on 50.
+ (:slug "ep4-maximum-attack-e-crater" :episode 4 :number 939
+  :names ("Maximum Attack E: Crater")
+  :start (:floor-switch 2 0) :end (:register 50))
  (:slug "ep4-maximum-attack-e-desert" :episode 4 :number 940
   :names ("Maximum Attack E:地下砂漠" "Maximum Attack E: Desert")
   :start (:floor-switch 8 0) :end (:register 50))
