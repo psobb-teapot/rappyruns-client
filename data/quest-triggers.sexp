@@ -294,7 +294,8 @@
  (:slug "ep4-maximum-attack-e-episode-4" :episode 4 :number 945
   :names ("Maximum Attack E: Episode 4")
   :start (:floor-switch 2 0) :end (:register 254))
- ;; Sandbox-only sibling of MAE Episode 4. Ephinea leaves its name
+ ;; Area variant of MAE Episode 4, run on the normal server since the
+ ;; 11th Anniversary event (2026-08-12). Ephinea leaves its name
  ;; untranslated, so the Japanese string below is the whole match key: no
  ;; quest number appears in the trigger log, and a second (English) name
  ;; would be dead weight - seed.lisp mirrors only the first name onto the
