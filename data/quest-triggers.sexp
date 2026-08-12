@@ -95,26 +95,20 @@
  (:slug "ep1-maximum-attack-e-episode-1" :episode 1 :number 942
   :names ("Maximum Attack E: Episode 1")
   :start (:floor-switch 2 0) :end (:register 254))
- ;; Area variant of the above, same event opening as the desert one, and
- ;; likewise named in Japanese only. It shares Episode 1's start switch,
- ;; so the name is what separates the two - and it ends on register 50
- ;; for the same reason the desert entry does (254 lags by 5-9 seconds).
- (:slug "ep1-maximum-attack-e-forest" :episode 1
-  :names ("Maximum Attack E:森")
+ ;; The area variants (930-940) are event-opened quests whose names the
+ ;; game gives in Japanese unless noted. They end on register 50, not the
+ ;; 254 the full-episode MAE entries use: 254 fires 3-22 seconds after
+ ;; the clear, and one logged Mine clear left the quest inside that
+ ;; window and never set it at all. Numbers are from psostats, whose
+ ;; triggers match what the trigger log shows for the four below.
+ (:slug "ep1-maximum-attack-e-forest" :episode 1 :number 930
+  :names ("Maximum Attack E:森" "Maximum Attack E: Forest")
   :start (:floor-switch 2 0) :end (:register 50))
- ;; Only one logged run so far, but it pins both triggers: register 99
- ;; (the quest's own timer) started a second after the floor switch and
- ;; stopped on register 50 at 430, matching the elapsed time exactly.
- ;; Register 254 came 22 seconds later - the longest lag of the variants.
- (:slug "ep1-maximum-attack-e-cave" :episode 1
-  :names ("Maximum Attack E:洞窟")
+ (:slug "ep1-maximum-attack-e-cave" :episode 1 :number 931
+  :names ("Maximum Attack E:洞窟" "Maximum Attack E: Caves")
   :start (:floor-switch 4 0) :end (:register 50))
- ;; This one Ephinea did translate, so the name is ASCII. Register 50
- ;; over 254 is not just about the lag here: of 46 cleared runs in the
- ;; trigger log, one left the quest inside that window and never set 254
- ;; at all.
- (:slug "ep1-maximum-attack-e-mine" :episode 1
-  :names ("Maximum Attack E: Mine")
+ (:slug "ep1-maximum-attack-e-mine" :episode 1 :number 932
+  :names ("Maximum Attack E: Mine" "Maximum Attack E: Mines")
   :start (:floor-switch 6 0) :end (:register 50))
  (:slug "ep1-random-attack-xrd-stage" :episode 1 :number 1303
   :names ("Random Attack Xrd Stage") :start (:warp-in) :end (:register 254))
@@ -315,16 +309,9 @@
  (:slug "ep4-maximum-attack-e-episode-4" :episode 4 :number 945
   :names ("Maximum Attack E: Episode 4")
   :start (:floor-switch 2 0) :end (:register 254))
- ;; Area variant of MAE Episode 4, run on the normal server since the
- ;; 11th Anniversary event (2026-08-12). Ephinea leaves its name
- ;; untranslated, so the Japanese string below is the whole match key: no
- ;; quest number appears in the trigger log, and a second (English) name
- ;; would be dead weight - seed.lisp mirrors only the first name onto the
- ;; server, whose def then replaces this one on slug collision. Ends on
- ;; register 50 - where the quest's own timer stops - rather than the 254
- ;; the other MAE entries use: here 254 lags the clear by 4-13 seconds.
- (:slug "ep4-maximum-attack-e-desert" :episode 4
-  :names ("Maximum Attack E:地下砂漠")
+ ;; Area variant - see the Episode 1 ones for why these end on 50.
+ (:slug "ep4-maximum-attack-e-desert" :episode 4 :number 940
+  :names ("Maximum Attack E:地下砂漠" "Maximum Attack E: Desert")
   :start (:floor-switch 8 0) :end (:register 50))
  (:slug "ep4-random-attack-xrd-rev-4" :episode 4 :number 1803
   :names ("Random Attack Xrd REV 4") :start (:warp-in) :end (:register 254))
