@@ -102,10 +102,17 @@
  (:slug "ep1-maximum-attack-e-forest" :episode 1
   :names ("Maximum Attack E:森")
   :start (:floor-switch 2 0) :end (:register 50))
- ;; Third area variant. This one Ephinea did translate, so the name is
- ;; ASCII. Register 50 over 254 is not just about the 3-7 second lag
- ;; here: of 46 cleared runs in the trigger log, one left the quest
- ;; inside that window and never set 254 at all.
+ ;; Only one logged run so far, but it pins both triggers: register 99
+ ;; (the quest's own timer) started a second after the floor switch and
+ ;; stopped on register 50 at 430, matching the elapsed time exactly.
+ ;; Register 254 came 22 seconds later - the longest lag of the variants.
+ (:slug "ep1-maximum-attack-e-cave" :episode 1
+  :names ("Maximum Attack E:洞窟")
+  :start (:floor-switch 4 0) :end (:register 50))
+ ;; This one Ephinea did translate, so the name is ASCII. Register 50
+ ;; over 254 is not just about the lag here: of 46 cleared runs in the
+ ;; trigger log, one left the quest inside that window and never set 254
+ ;; at all.
  (:slug "ep1-maximum-attack-e-mine" :episode 1
   :names ("Maximum Attack E: Mine")
   :start (:floor-switch 6 0) :end (:register 50))
