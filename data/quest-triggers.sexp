@@ -294,6 +294,13 @@
  (:slug "ep4-maximum-attack-e-episode-4" :episode 4 :number 945
   :names ("Maximum Attack E: Episode 4")
   :start (:floor-switch 2 0) :end (:register 254))
+ ;; Sandbox-only sibling of MAE Episode 4; its in-game name is
+ ;; untranslated, hence the Japanese first name. Ends on register 50 -
+ ;; where the quest's own timer stops - rather than the 254 the other MAE
+ ;; entries use: here 254 lags the clear by 4-13 seconds.
+ (:slug "ep4-maximum-attack-e-desert" :episode 4
+  :names ("Maximum Attack E:地下砂漠" "Maximum Attack E: Desert")
+  :start (:floor-switch 8 0) :end (:register 50))
  (:slug "ep4-random-attack-xrd-rev-4" :episode 4 :number 1803
   :names ("Random Attack Xrd REV 4") :start (:warp-in) :end (:register 254))
  ;; ------------------------------------------------ Episode 4 - VR
