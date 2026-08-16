@@ -156,6 +156,22 @@
 
 (defconstant +srccopy+ #x00CC0020)
 
+;; The back buffer is a long-lived DC, so per-frame state (viewport
+;; origin, selected font) must be bracketed - a fresh BeginPaint DC
+;; used to reset it for free.
+(fli:define-foreign-function (%save-dc "SaveDC")
+    ((hdc :pointer))
+  :result-type :int
+  :calling-convention :stdcall
+  :module :gdi32)
+
+(fli:define-foreign-function (%restore-dc "RestoreDC")
+    ((hdc :pointer)
+     (saved :int))
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :gdi32)
+
 (fli:define-foreign-function (%delete-object "DeleteObject")
     ((object :pointer))
   :result-type (:boolean :int)
@@ -324,6 +340,7 @@
 (defconstant +swp-nozorder+ #x4)
 (defconstant +swp-noactivate+ #x10)
 (defconstant +swp-framechanged+ #x20)
+(defconstant +wm-erasebkgnd+ #x0014)
 (defconstant +wm-paint+ #x000F)
 (defconstant +wm-timer+ #x0113)
 (defconstant +wm-mousemove+ #x0200)
@@ -412,10 +429,13 @@ panel or pill so ClearType never blends against the key).")
 ;; client-area-sized bitmap either). Overlay thread only.
 (defvar *overlay-memdc* nil)
 (defvar *overlay-membitmap* nil)
-(defvar *overlay-mem-old-bitmap* nil
-  "The 1x1 stock bitmap displaced by ours, restored before deletion.")
 (defvar *overlay-mem-size* nil
   "(width . height) the back buffer was created at.")
+(defvar *overlay-mem-failed-size* nil
+  "(width . height) the last failed back-buffer creation asked for, so
+a 30 Hz paint does not hammer an already-exhausted GDI with a full
+create/delete cycle every frame; retried once the wanted size
+changes (or the overlay is next concealed).")
 
 (defvar *overlay-wanted* nil
   "T while the poll loop wants the overlay visible. The overlay thread's
@@ -667,7 +687,18 @@ ground)."
 (defun overlay-draw-frame (hdc width height)
   "Compose one frame into HDC: the key-color ground (transparent on
 screen), the dark corner panel - clock, ghost gap line, room-split
-rows - and the in-world ghost marker."
+rows - and the in-world ghost marker. HDC is normally the cached back
+buffer, so DC state must not leak across frames: a drawing error that
+left the viewport origin shifted would misplace the NEXT frame's key
+fill, blitting stale opaque pixels over the game until a resize -
+hence SaveDC/RestoreDC around the whole compose."
+  (let ((saved (%save-dc hdc)))
+    (unwind-protect
+         (overlay-draw-frame-1 hdc width height)
+      (when (plusp saved)
+        (%restore-dc hdc -1)))))
+
+(defun overlay-draw-frame-1 (hdc width height)
   (let* ((full *overlay-full-p*)
          (origin (and full
                       (multiple-value-list
@@ -715,36 +746,48 @@ rows - and the in-world ghost marker."
                                  data ghost-pos))))
 
 (defun overlay-release-backbuffer ()
+  ;; DeleteDC deselects our bitmap on destruction, so no stock-bitmap
+  ;; restore is needed before the DeleteObject.
   (when *overlay-memdc*
-    (when *overlay-mem-old-bitmap*
-      (ignore-errors (%select-object *overlay-memdc*
-                                     *overlay-mem-old-bitmap*)))
     (ignore-errors (%delete-dc *overlay-memdc*)))
   (when *overlay-membitmap*
     (ignore-errors (%delete-object *overlay-membitmap*)))
   (setf *overlay-memdc* nil
         *overlay-membitmap* nil
-        *overlay-mem-old-bitmap* nil
-        *overlay-mem-size* nil))
+        *overlay-mem-size* nil
+        *overlay-mem-failed-size* nil))
 
 (defun overlay-backbuffer (hdc width height)
   "The cached memory DC holding a WIDTHxHEIGHT bitmap compatible with
-HDC, (re)created when the window size changes. NIL when creation
-fails - the caller then paints straight to the window (flicker over no
-overlay)."
-  (unless (and *overlay-memdc*
-               (equal *overlay-mem-size* (cons width height)))
-    (overlay-release-backbuffer)
-    (let ((memdc (%create-compatible-dc hdc)))
-      (unless (fli:null-pointer-p memdc)
-        (let ((bitmap (%create-compatible-bitmap hdc width height)))
-          (if (fli:null-pointer-p bitmap)
-              (ignore-errors (%delete-dc memdc))
-              (setf *overlay-mem-old-bitmap* (%select-object memdc bitmap)
-                    *overlay-memdc* memdc
-                    *overlay-membitmap* bitmap
-                    *overlay-mem-size* (cons width height)))))))
-  *overlay-memdc*)
+HDC, (re)created when the window size changes. The working buffer is
+kept until its replacement exists - creation fails exactly when GDI is
+short, the worst moment to have destroyed a good buffer first. NIL
+when creation fails; the caller then paints straight to the window
+(flicker over no overlay), and the failed size is remembered so the
+30 Hz paint does not retry every frame."
+  (let ((size (cons width height)))
+    (cond ((and *overlay-memdc* (equal *overlay-mem-size* size))
+           *overlay-memdc*)
+          ((equal *overlay-mem-failed-size* size)
+           nil)
+          (t
+           (let ((memdc (%create-compatible-dc hdc))
+                 (bitmap nil))
+             (unless (fli:null-pointer-p memdc)
+               (setf bitmap (%create-compatible-bitmap hdc width height))
+               (when (fli:null-pointer-p bitmap)
+                 (ignore-errors (%delete-dc memdc))
+                 (setf bitmap nil)))
+             (cond (bitmap
+                    (%select-object memdc bitmap)
+                    (overlay-release-backbuffer)
+                    (setf *overlay-memdc* memdc
+                          *overlay-membitmap* bitmap
+                          *overlay-mem-size* size)
+                    memdc)
+                   (t
+                    (setf *overlay-mem-failed-size* size)
+                    nil)))))))
 
 (defun overlay-paint (hwnd)
   "WM_PAINT: compose the frame into the back buffer and blit it to the
@@ -761,11 +804,17 @@ errors out, or the invalid region never clears and WM_PAINT storms."
                     (width (or (car size) +overlay-width+))
                     (height (or (cdr size) (overlay-current-height)))
                     (memdc (overlay-backbuffer hdc width height)))
-               (cond (memdc
-                      (overlay-draw-frame memdc width height)
-                      (%bit-blt hdc 0 0 width height memdc 0 0 +srccopy+))
-                     (t
-                      (overlay-draw-frame hdc width height)))))
+               ;; The blit runs even when the compose errors out
+               ;; (swallowed by the wndproc): a partial frame still
+               ;; carries the ground fill and the clock, so a
+               ;; persistent draw error degrades to the old
+               ;; direct-draw behavior instead of freezing the screen
+               ;; at the last good frame.
+               (unwind-protect
+                    (overlay-draw-frame (or memdc hdc) width height)
+                 (when memdc
+                   (%bit-blt hdc 0 0 width height memdc 0 0
+                             +srccopy+)))))
         (%end-paint hwnd ps)))))
 
 ;;; --- Ctrl+drag (overlay thread only) --------------------------------
@@ -885,7 +934,13 @@ already NIL by then, so the guard makes it a no-op."
     (ignore-errors (overlay-apply-input hwnd nil)))
   (when *overlay-visible*
     (%show-window hwnd +sw-hide+)
-    (setf *overlay-visible* nil)))
+    (setf *overlay-visible* nil))
+  ;; The back buffer can be a client-area-sized 32bpp bitmap (tens of
+  ;; MB at 4K); do not pin it through the idle stretches between
+  ;; quests - the next paint recreates it, the one-time cost the
+  ;; size-change path already pays routinely. Also clears the
+  ;; failed-size memo so the next quest retries a failed creation.
+  (ignore-errors (overlay-release-backbuffer)))
 
 (defun overlay-timer-tick (hwnd)
   "Follow the game window and repaint while wanted, hide otherwise
@@ -938,6 +993,21 @@ and the marker rate as the in-world marker comes and goes."
     ((= msg +wm-paint+)
      (ignore-errors (overlay-paint hwnd))
      0)
+    ;; Regions exposed by a grow (compact panel -> full client area,
+    ;; game-window resize) are otherwise undefined - usually black,
+    ;; which the key does not match, so DWM could flash them opaquely
+    ;; over the game until the next WM_PAINT. Erasing to the key color
+    ;; is invisible by construction. wParam is the DC to erase into.
+    ((= msg +wm-erasebkgnd+)
+     (when *overlay-key-brush*
+       (let ((size *overlay-size*))
+         (ignore-errors
+           (overlay-fill-rect (fli:make-pointer :address wparam)
+                              0 0
+                              (or (car size) +overlay-width+)
+                              (or (cdr size) +overlay-ghost-height+)
+                              *overlay-key-brush*))))
+     1)
     ;; Hit testing runs only while Ctrl has lifted WS_EX_TRANSPARENT.
     ;; Everything outside the panel - including the in-world marker's
     ;; opaque pixels - reports HTTRANSPARENT so the click continues to
@@ -998,10 +1068,14 @@ and the marker rate as the in-world marker comes and goes."
 
 (defun overlay-thread-main ()
   "Create the overlay window on THIS thread and pump its messages until
-WM_QUIT. Created hidden; the timer shows it once wanted."
-  (handler-case
-      (progn
-        (overlay-register-class)
+WM_QUIT. Created hidden; the timer shows it once wanted. The GDI
+cleanup runs under unwind-protect: a storage-condition or a process
+kill would slip past the handler-case (it traps only CL:ERROR) and
+must still not leak the fonts, brushes and back buffer."
+  (unwind-protect
+      (handler-case
+          (progn
+            (overlay-register-class)
         (let ((hwnd (%create-window-ex
                      (logior +ws-ex-layered+ +ws-ex-topmost+
                              +ws-ex-transparent+ +ws-ex-toolwindow+
@@ -1014,6 +1088,9 @@ WM_QUIT. Created hidden; the timer shows it once wanted."
                      fli:*null-pointer*)))
           (when (fli:null-pointer-p hwnd)
             (return-from overlay-thread-main))
+          ;; A killed predecessor thread can leave stale (but
+          ;; process-owned, still deletable) back-buffer handles.
+          (ignore-errors (overlay-release-backbuffer))
           (setf *overlay-hwnd* hwnd
                 *overlay-visible* nil
                 *overlay-size* nil
@@ -1057,17 +1134,19 @@ WM_QUIT. Created hidden; the timer shows it once wanted."
                   (when (<= r 0) (return))
                   (%translate-message msg)
                   (%dispatch-message msg)))))))
-    (error (e)
-      (ignore-errors (format t "~&; overlay thread error: ~a~%" e))))
-  (ignore-errors (overlay-release-backbuffer))
-  (dolist (holder '(*overlay-font* *overlay-small-font* *overlay-key-brush*
-                    *overlay-brush* *overlay-ghost-brush*))
-    (when (symbol-value holder)
-      (ignore-errors (%delete-object (symbol-value holder)))
-      (setf (symbol-value holder) nil)))
-  (setf *overlay-hwnd* nil
-        *overlay-process* nil
-        *overlay-visible* nil))
+        (error (e)
+          (ignore-errors (format t "~&; overlay thread error: ~a~%" e))))
+    (progn
+      (ignore-errors (overlay-release-backbuffer))
+      (dolist (holder '(*overlay-font* *overlay-small-font*
+                        *overlay-key-brush* *overlay-brush*
+                        *overlay-ghost-brush*))
+        (when (symbol-value holder)
+          (ignore-errors (%delete-object (symbol-value holder)))
+          (setf (symbol-value holder) nil)))
+      (setf *overlay-hwnd* nil
+            *overlay-process* nil
+            *overlay-visible* nil))))
 
 ;;; --- Poll-loop API --------------------------------------------------
 
