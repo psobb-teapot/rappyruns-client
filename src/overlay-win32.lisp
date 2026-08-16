@@ -119,6 +119,43 @@
   :calling-convention :stdcall
   :module :gdi32)
 
+;; Back-buffer plumbing: the paint composes each frame off-screen and
+;; blits it in one go, so the key-color ground fill never flashes
+;; through on screen (the visible flicker at the marker's 30 Hz).
+(fli:define-foreign-function (%create-compatible-dc "CreateCompatibleDC")
+    ((hdc :pointer))
+  :result-type :pointer
+  :calling-convention :stdcall
+  :module :gdi32)
+
+(fli:define-foreign-function (%create-compatible-bitmap
+                              "CreateCompatibleBitmap")
+    ((hdc :pointer)
+     (width :int)
+     (height :int))
+  :result-type :pointer
+  :calling-convention :stdcall
+  :module :gdi32)
+
+(fli:define-foreign-function (%delete-dc "DeleteDC")
+    ((hdc :pointer))
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :gdi32)
+
+(fli:define-foreign-function (%bit-blt "BitBlt")
+    ((dest :pointer)
+     (x :int) (y :int)
+     (width :int) (height :int)
+     (src :pointer)
+     (src-x :int) (src-y :int)
+     (rop (:unsigned :long)))
+  :result-type (:boolean :int)
+  :calling-convention :stdcall
+  :module :gdi32)
+
+(defconstant +srccopy+ #x00CC0020)
+
 (fli:define-foreign-function (%delete-object "DeleteObject")
     ((object :pointer))
   :result-type (:boolean :int)
@@ -370,6 +407,16 @@ panel or pill so ClearType never blends against the key).")
 (defvar *overlay-brush* nil)
 (defvar *overlay-ghost-brush* nil)
 
+;; The paint's back buffer (cached across frames, recreated only when
+;; the window size changes - a 30 Hz paint must not churn a
+;; client-area-sized bitmap either). Overlay thread only.
+(defvar *overlay-memdc* nil)
+(defvar *overlay-membitmap* nil)
+(defvar *overlay-mem-old-bitmap* nil
+  "The 1x1 stock bitmap displaced by ours, restored before deletion.")
+(defvar *overlay-mem-size* nil
+  "(width . height) the back buffer was created at.")
+
 (defvar *overlay-wanted* nil
   "T while the poll loop wants the overlay visible. The overlay thread's
 timer reads it and shows/hides accordingly; writers never touch the
@@ -617,10 +664,93 @@ ground)."
                     (%text-out hdc (+ pill-left 6) (+ pill-top 2)
                                label (length label))))))))))))
 
+(defun overlay-draw-frame (hdc width height)
+  "Compose one frame into HDC: the key-color ground (transparent on
+screen), the dark corner panel - clock, ghost gap line, room-split
+rows - and the in-world ghost marker."
+  (let* ((full *overlay-full-p*)
+         (origin (and full
+                      (multiple-value-list
+                       (overlay-panel-position width height))))
+         (panel-x (if origin (first origin) 0))
+         (panel-y (if origin (second origin) 0))
+         (data *overlay-ghost-data*)
+         (ghost-active (overlay-ghost-active-p))
+         ;; The marker's position: only the full-window mode
+         ;; draws it, so skip the interpolation otherwise.
+         (ghost-pos (and data full
+                         (overlay-ghost-position
+                          data
+                          (overlay-effective-elapsed data)))))
+    (when *overlay-key-brush*
+      (overlay-fill-rect hdc 0 0 width height
+                         *overlay-key-brush*))
+    ;; The corner panel paints in its own coordinates via a
+    ;; shifted viewport origin, exactly as it did when the
+    ;; window WAS the panel.
+    (%set-viewport-org hdc panel-x panel-y fli:*null-pointer*)
+    (when *overlay-brush*
+      (overlay-fill-rect hdc 0 0 +overlay-width+
+                         (overlay-current-height)
+                         *overlay-brush*))
+    (when *overlay-font*
+      (%select-object hdc *overlay-font*))
+    (%set-bk-mode hdc +bk-transparent+)
+    (%set-text-color hdc +overlay-text-color+)
+    (let ((line1 *overlay-line1*))
+      (%text-out hdc 12 6 line1 (length line1)))
+    (let ((line2 *overlay-line2*))
+      (when line2
+        (%set-text-color
+         hdc (ecase *overlay-delta-state*
+               (:ahead +overlay-ahead-color+)
+               (:behind +overlay-behind-color+)
+               (:neutral +overlay-text-color+)))
+        (%text-out hdc 12 32 line2 (length line2))))
+    (when ghost-active
+      (overlay-draw-splits hdc data))
+    (%set-viewport-org hdc 0 0 fli:*null-pointer*)
+    (when (and full ghost-active)
+      (overlay-draw-ghost-marker hdc width height
+                                 data ghost-pos))))
+
+(defun overlay-release-backbuffer ()
+  (when *overlay-memdc*
+    (when *overlay-mem-old-bitmap*
+      (ignore-errors (%select-object *overlay-memdc*
+                                     *overlay-mem-old-bitmap*)))
+    (ignore-errors (%delete-dc *overlay-memdc*)))
+  (when *overlay-membitmap*
+    (ignore-errors (%delete-object *overlay-membitmap*)))
+  (setf *overlay-memdc* nil
+        *overlay-membitmap* nil
+        *overlay-mem-old-bitmap* nil
+        *overlay-mem-size* nil))
+
+(defun overlay-backbuffer (hdc width height)
+  "The cached memory DC holding a WIDTHxHEIGHT bitmap compatible with
+HDC, (re)created when the window size changes. NIL when creation
+fails - the caller then paints straight to the window (flicker over no
+overlay)."
+  (unless (and *overlay-memdc*
+               (equal *overlay-mem-size* (cons width height)))
+    (overlay-release-backbuffer)
+    (let ((memdc (%create-compatible-dc hdc)))
+      (unless (fli:null-pointer-p memdc)
+        (let ((bitmap (%create-compatible-bitmap hdc width height)))
+          (if (fli:null-pointer-p bitmap)
+              (ignore-errors (%delete-dc memdc))
+              (setf *overlay-mem-old-bitmap* (%select-object memdc bitmap)
+                    *overlay-memdc* memdc
+                    *overlay-membitmap* bitmap
+                    *overlay-mem-size* (cons width height)))))))
+  *overlay-memdc*)
+
 (defun overlay-paint (hwnd)
-  "WM_PAINT: the key-color ground (transparent on screen), the dark
-corner panel - clock, ghost gap line, room-split rows - and the
-in-world ghost marker. BeginPaint/EndPaint must run even when drawing
+  "WM_PAINT: compose the frame into the back buffer and blit it to the
+window in one BitBlt - painting straight to the window would flash the
+key-color ground fill through the panel every frame (visible flicker
+at the marker's 30 Hz). BeginPaint/EndPaint must run even when drawing
 errors out, or the invalid region never clears and WM_PAINT storms."
   (fli:with-dynamic-foreign-objects ()
     (let* ((ps (fli:allocate-dynamic-foreign-object :type 'win-paintstruct))
@@ -628,53 +758,14 @@ errors out, or the invalid region never clears and WM_PAINT storms."
       (unwind-protect
            (unless (fli:null-pointer-p hdc)
              (let* ((size *overlay-size*)
-                    (full *overlay-full-p*)
                     (width (or (car size) +overlay-width+))
                     (height (or (cdr size) (overlay-current-height)))
-                    (origin (and full
-                                 (multiple-value-list
-                                  (overlay-panel-position width height))))
-                    (panel-x (if origin (first origin) 0))
-                    (panel-y (if origin (second origin) 0))
-                    (data *overlay-ghost-data*)
-                    (ghost-active (overlay-ghost-active-p))
-                    ;; The marker's position: only the full-window mode
-                    ;; draws it, so skip the interpolation otherwise.
-                    (ghost-pos (and data full
-                                    (overlay-ghost-position
-                                     data
-                                     (overlay-effective-elapsed data)))))
-               (when *overlay-key-brush*
-                 (overlay-fill-rect hdc 0 0 width height
-                                    *overlay-key-brush*))
-               ;; The corner panel paints in its own coordinates via a
-               ;; shifted viewport origin, exactly as it did when the
-               ;; window WAS the panel.
-               (%set-viewport-org hdc panel-x panel-y fli:*null-pointer*)
-               (when *overlay-brush*
-                 (overlay-fill-rect hdc 0 0 +overlay-width+
-                                    (overlay-current-height)
-                                    *overlay-brush*))
-               (when *overlay-font*
-                 (%select-object hdc *overlay-font*))
-               (%set-bk-mode hdc +bk-transparent+)
-               (%set-text-color hdc +overlay-text-color+)
-               (let ((line1 *overlay-line1*))
-                 (%text-out hdc 12 6 line1 (length line1)))
-               (let ((line2 *overlay-line2*))
-                 (when line2
-                   (%set-text-color
-                    hdc (ecase *overlay-delta-state*
-                          (:ahead +overlay-ahead-color+)
-                          (:behind +overlay-behind-color+)
-                          (:neutral +overlay-text-color+)))
-                   (%text-out hdc 12 32 line2 (length line2))))
-               (when ghost-active
-                 (overlay-draw-splits hdc data))
-               (%set-viewport-org hdc 0 0 fli:*null-pointer*)
-               (when (and full ghost-active)
-                 (overlay-draw-ghost-marker hdc width height
-                                            data ghost-pos))))
+                    (memdc (overlay-backbuffer hdc width height)))
+               (cond (memdc
+                      (overlay-draw-frame memdc width height)
+                      (%bit-blt hdc 0 0 width height memdc 0 0 +srccopy+))
+                     (t
+                      (overlay-draw-frame hdc width height)))))
         (%end-paint hwnd ps)))))
 
 ;;; --- Ctrl+drag (overlay thread only) --------------------------------
@@ -968,6 +1059,7 @@ WM_QUIT. Created hidden; the timer shows it once wanted."
                   (%dispatch-message msg)))))))
     (error (e)
       (ignore-errors (format t "~&; overlay thread error: ~a~%" e))))
+  (ignore-errors (overlay-release-backbuffer))
   (dolist (holder '(*overlay-font* *overlay-small-font* *overlay-key-brush*
                     *overlay-brush* *overlay-ghost-brush*))
     (when (symbol-value holder)
