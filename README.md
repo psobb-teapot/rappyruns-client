@@ -169,13 +169,19 @@ the remux fails the fragmented original is kept (playable, but quiet
 when the mixer volume is low).
 
 The remux also trims: `-t` caps the output two seconds past the point
-where the capture's last run ended (`session-video-duration-ms`, from
-the same `video_offset_ms` stamps the site seeks telemetry with). ffmpeg
+where the capture's last run ended (`session-video-duration-ms`). ffmpeg
 keeps recording until it has drained and exited, and on a monitor
 capture those extra frames are the desktop — a player who alt-tabs on
-the clear used to publish whatever was behind the game. A capture whose
-runs carry no offset is copied whole rather than cut at a guess, and so
-is one that reaches the fragmented-original fallback above.
+the clear used to publish whatever was behind the game.
+
+The cut is measured off the capture's own elapsed clock, stamped by
+`note-run-video-timing` whenever a run completes — deliberately *not*
+reconstructed from `video_offset_ms`. That stamp is skipped when it
+would be negative, and it always is for the run a capture is made for:
+the detector starts the tracker one poll step before the recorder spawns
+ffmpeg, so the run's timer predates video time 0. A recording that
+reaches the fragmented-original fallback above is still untrimmed, and
+says so through `recorder-last-error`.
 
 Known limits: capture starts a few hundred ms after the start trigger
 (ffmpeg spin-up), gdigrab can't capture a minimized window, and the

@@ -977,6 +977,7 @@ known once the audio session is activated)."
   capture-start-real   ; internal real time when the capture started
   tmp-path             ; file ffmpeg is writing (namestring)
   session-runs         ; runs completed during this capture
+  run-end-ms           ; capture elapsed when the last of them completed
   (last-detector-state :idle)
   stop-deadline        ; internal real time to give up on "q" and kill
   pending-keep-p       ; decided when the stop begins
@@ -1091,52 +1092,65 @@ by a click on the balloon (celebration toasts point at the run page)."
                                    :notify-capture-blocked-text
                                    :notify-capture-failed-text)))))))))
 
-(defun annotate-video-offsets (recorder runs)
-  "Stamp each of RUNS (completed this poll frame) with :VIDEO-OFFSET-MS,
-the video timestamp where the run's timer started: capture elapsed at
-completion minus the run's own duration. The site's telemetry timeline
-seeks the hosted video with this (video_offset_ms); without it a death
-at quest time T seeks to video time T, missing by however long the
-capture ran before the start trigger. NCONC, not (SETF GETF): the run
-plist is shared with the submission queue, which must see the key.
-Accuracy is ~the ffmpeg spin-up (a few hundred ms, video time 0 is the
-first grabbed frame); the run page's manual sync form can refine it."
+(defun note-run-video-timing (recorder runs)
+  "One reading of the capture's elapsed wall clock, used twice.
+
+RECORDER's RUN-END-MS moves to that reading. RUNS are completing right
+now, so it is where the last of them sits in the video, and the remux
+keeps +KEEP-TAIL-SECONDS+ past it (SESSION-VIDEO-DURATION-MS). Every
+completion moves it, aborted ones included: that footage is still the
+player's game, and only what comes after the last of them is the
+desktop the trim exists to drop.
+
+Each of RUNS is also stamped with :VIDEO-OFFSET-MS, the video timestamp
+where that run's timer STARTED - the same reading minus the run's own
+duration. The site's telemetry timeline seeks the hosted video with it
+\(video_offset_ms); without it a death at quest time T seeks to video
+time T, missing by however long the capture ran before the start
+trigger. NCONC, not (SETF GETF): the run plist is shared with the
+submission queue, which must see the key. Accuracy is ~the ffmpeg
+spin-up (video time 0 is the first grabbed frame); the run page's
+manual sync form can refine it.
+
+A negative offset is not stamped, and that is exactly why the trim
+tracks the end directly instead of reconstructing it as offset plus
+duration: the run that STARTS a capture always lands there. Its timer
+starts inside DETECTOR-STEP, and the RECORDER-STEP after it spawns
+ffmpeg, so its start predates video time 0 and it is never stamped -
+a reconstruction would find nothing to cut from on the one run every
+capture is made for."
   (let ((start (recorder-capture-start-real recorder)))
     (when start
       (let ((elapsed-ms (round (* 1000 (- (get-internal-real-time) start))
                                internal-time-units-per-second)))
+        (when (or (null (recorder-run-end-ms recorder))
+                  (> elapsed-ms (recorder-run-end-ms recorder)))
+          (setf (recorder-run-end-ms recorder) elapsed-ms))
         (dolist (run runs)
           (let ((offset (- elapsed-ms (getf run :time-ms 0))))
             (when (and (>= offset 0)
                        (null (getf run :video-offset-ms)))
               (nconc run (list :video-offset-ms offset)))))))))
 
-(defun session-video-duration-ms (runs)
-  "How much of the capture is worth keeping: the video timestamp where
-the last of RUNS ended, plus +KEEP-TAIL-SECONDS+. The remux caps the
-output there, so the desktop frames ffmpeg records between the quest
-ending and its own exit never reach the file. NIL when no run carries a
-:VIDEO-OFFSET-MS - an untrimmed recording beats one cut at a guessed
-place - and the remux then copies everything, as it always did.
+(defun session-video-duration-ms (run-end-ms)
+  "How much of the capture is worth keeping: +KEEP-TAIL-SECONDS+ past
+RUN-END-MS, the capture elapsed when its last run completed
+\(NOTE-RUN-VIDEO-TIMING). The remux caps the output there, so the
+desktop frames ffmpeg records between the quest ending and its own exit
+never reach the file. NIL when nothing ever completed - such a capture
+is deleted rather than remuxed, so there is nothing to cut.
 
-The LAST run, not the best one: the file holds the whole capture, and a
-segment that finished after the clear it was cut from is still the
-player's own footage.
+The LAST run to end, not the best one: the file holds the whole
+capture, and a segment that finished after the clear it was cut from is
+still the player's own footage.
 
-Every input is a wall clock elapsed (ANNOTATE-VIDEO-OFFSETS), which
-runs AHEAD of the video timestamp by the ffmpeg spin-up - video time 0
-is the first grabbed frame, a few hundred ms after the spawn - and a
-capture that cannot keep up falls further behind still. Both errors
-push the cut later than the run's real end, never into it."
-  (let ((end nil))
-    (dolist (run runs)
-      (let ((offset (getf run :video-offset-ms)))
-        (when offset
-          (let ((run-end (+ offset (getf run :time-ms 0))))
-            (when (or (null end) (> run-end end))
-              (setf end run-end))))))
-    (when end
-      (+ end (* 1000 +keep-tail-seconds+)))))
+RUN-END-MS is wall clock measured from the ffmpeg spawn, which runs
+AHEAD of the video's own timestamps - video time 0 is the first grabbed
+frame, a few hundred ms later - and a capture that cannot keep up falls
+further behind still. Both errors push the cut past the run's real end
+rather than into it."
+  (when run-end-ms
+    (+ run-end-ms (* 1000 +keep-tail-seconds+))))
 
 (defun begin-stop (recorder)
   "Ask ffmpeg to finish and decide the file's fate: keep it under the
@@ -1161,6 +1175,7 @@ best completed run's name, or delete it when nothing completed."
         (recorder-capture-start-real recorder) nil
         (recorder-tmp-path recorder) nil
         (recorder-session-runs recorder) '()
+        (recorder-run-end-ms recorder) nil
         (recorder-pending-keep-p recorder) nil
         (recorder-pending-run recorder) nil
         (recorder-final-path recorder) nil
@@ -1186,8 +1201,7 @@ file (or delete an abandoned one)."
 FINAL-PATH, trimmed to the last run plus its tail; SAVE-RECORDING runs
 once it exits. When ffmpeg cannot even start, keep the fragmented
 original rather than lose the recording - untrimmed, since the trim
-lives in the remux, so a recording that reaches the fallback still
-needs its tail checked before it is shared.
+lives in the remux (SAVE-RECORDING says so on the recorder).
 
 The duration is read here, not decided at BEGIN-STOP with the file's
 name and fate: RECORDER-STEP goes on crediting runs to the capture
@@ -1200,7 +1214,7 @@ fixed before it arrived."
                             (recorder-tmp-path recorder)
                             (recorder-final-path recorder)
                             :duration-ms (session-video-duration-ms
-                                          (recorder-session-runs recorder))))
+                                          (recorder-run-end-ms recorder))))
     (declare (ignore error))
     (if capture
         (setf (recorder-remux-capture recorder) capture
@@ -1235,6 +1249,13 @@ tmp is renamed onto it - and hand it to ON-KEEP."
             (backend-rename-file (recorder-backend recorder)
                                  (recorder-tmp-path recorder)
                                  (recorder-final-path recorder)))
+        ;; The trim rides in the remux, so the fragmented fallback keeps
+        ;; whatever ffmpeg recorded after the quest ended - the desktop,
+        ;; on a monitor capture. Say so where the GUI shows it: the file
+        ;; is fine to keep, but not to upload unwatched.
+        (unless remuxed
+          (setf (recorder-last-error recorder)
+                "remux failed; recording kept whole - its tail is untrimmed"))
         (when (recorder-on-keep recorder)
           (ignore-errors
             (funcall (recorder-on-keep recorder)
@@ -1268,7 +1289,7 @@ to :idle on the very frame the full clear completes."
              (member (recorder-state recorder) '(:recording :stopping)))
     ;; The poll loop enqueues these same plists right after this call,
     ;; so the offsets stamped here travel with the submission.
-    (annotate-video-offsets recorder completed-runs)
+    (note-run-video-timing recorder completed-runs)
     (setf (recorder-session-runs recorder)
           (append (recorder-session-runs recorder) completed-runs)))
   (ecase (recorder-state recorder)

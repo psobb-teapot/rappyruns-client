@@ -131,11 +131,12 @@ over the defaults. Restores the global config afterwards (it is bound)."
                (and remux
                     (search "ep1-test-quest 9'59.123 (2026-07-04 2130).mp4"
                             (first (last (third remux))))))
-        ;; This capture's run is longer than the capture has been
-        ;; running, so no offset could be stamped and there is nothing
-        ;; to measure the cut from: the recording is copied whole.
-        (check "a capture with no usable offset is copied whole"
-               (and remux (not (member "-t" (third remux) :test #'equal)))))
+        ;; The field case, and the one an offset-based trim missed
+        ;; completely: this run's timer started before the capture, so
+        ;; :VIDEO-OFFSET-MS is never stamped on it - yet the cut still
+        ;; has to be measured (run 5348).
+        (check "the trim engages without a stamped offset"
+               (and remux (member "-t" (third remux) :test #'equal))))
       (recorder-step rec :idle '() "Ephinea PSOBB")
       (check "successful remux deletes the tmp and skips the rename"
              (let ((delete (first (events-of backend :delete))))
@@ -166,9 +167,9 @@ over the defaults. Restores the global config afterwards (it is bound)."
         (recorder-step rec :in-quest (list run) "Ephinea PSOBB")
         (check "an existing video offset is left alone"
                (eql 42 (getf run :video-offset-ms)))))
-    ;; The same offsets cut the recording off shortly after the last run
-    ;; ended, so the frames ffmpeg goes on recording until it exits -
-    ;; the desktop, once the player alt-tabs (run 5348) - stay out.
+    ;; The recording is cut off shortly after the last run ended, so the
+    ;; frames ffmpeg goes on recording until it exits - the desktop, once
+    ;; the player alt-tabs (run 5348) - stay out.
     (multiple-value-bind (rec backend) (make-test-recorder)
       (recorder-step rec :in-quest '() "Ephinea PSOBB")
       (setf (ephinea-ta-client::recorder-capture-start-real rec)
@@ -187,6 +188,28 @@ over the defaults. Restores the global config afterwards (it is bound)."
                     (<= 702 (read-from-string (nth (1+ at) args)) 703)))
         (check "the trim caps the output rather than seeking the input"
                (and at (> at (position "-i" args :test #'equal))))))
+    ;; The regression the review caught: a run whose timer started before
+    ;; ffmpeg was spawned gets no :VIDEO-OFFSET-MS, and that is EVERY
+    ;; capture's own run - the detector starts the tracker one step
+    ;; before the recorder spawns anything. A trim derived from the
+    ;; offset would therefore never fire in the field, which is how
+    ;; run 5348 shipped with its desktop on the end.
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (let ((run (make-test-run :time-ms 599123)))
+        ;; Capture 5 s old, run claims 599 s: offset would be negative.
+        (setf (ephinea-ta-client::recorder-capture-start-real rec)
+              (- (get-internal-real-time)
+                 (* 5 internal-time-units-per-second)))
+        (recorder-step rec :idle (list run) "Ephinea PSOBB")
+        (setf (mock-alive backend) nil)
+        (recorder-step rec :idle '() "Ephinea PSOBB")
+        (check "a run older than its capture carries no offset"
+               (null (getf run :video-offset-ms)))
+        (let* ((args (third (first (events-of backend :remux))))
+               (at (position "-t" args :test #'equal)))
+          (check "the tail is trimmed anyway, off the capture's own clock"
+                 (and at (<= 7 (read-from-string (nth (1+ at) args)) 8))))))
     ;; Abandoned quest: no completed runs, file deleted.
     (multiple-value-bind (rec backend) (make-test-recorder)
       (recorder-step rec :in-quest '() "Ephinea PSOBB")
@@ -403,30 +426,9 @@ over the defaults. Restores the global config afterwards (it is bound)."
                                (list :quest-slug "ab2" :time-ms 20 :aborted t)))
                         :quest-slug)))
   (check "the trim keeps the run plus its tail"
-         (eql 701123
-              (session-video-duration-ms
-               (list (list :time-ms 599123 :video-offset-ms 100000)))))
-  ;; The file holds the whole capture, so the cut follows whatever
-  ;; finished LAST - here an aborted retry after the clear that names
-  ;; the file, which BEST-SESSION-RUN would have picked instead.
-  (check "the trim follows the last run to end, not the longest"
-         (eql 642000
-              (session-video-duration-ms
-               (list (list :time-ms 600000 :video-offset-ms 0)
-                     (list :time-ms 30000 :video-offset-ms 610000
-                           :aborted t)))))
-  (check "the trim ignores runs that carry no offset"
-         (eql 122500
-              (session-video-duration-ms
-               (list (list :time-ms 120500 :video-offset-ms 0)
-                     (list :time-ms 599123)))))
-  ;; No offset anywhere: cutting at a guessed place could lose the run
-  ;; itself, so the remux copies the recording whole instead.
-  (check "an unstampable capture is not trimmed"
-         (null (session-video-duration-ms
-                (list (list :time-ms 599123)))))
-  (check "an empty session is not trimmed"
-         (null (session-video-duration-ms '())))
+         (eql 701123 (session-video-duration-ms 699123)))
+  (check "a capture with nothing completed is not trimmed"
+         (null (session-video-duration-ms nil)))
   (let ((args (build-ffmpeg-args :window-title "T" :output-path "out.mp4")))
     (check "ffmpeg args use fragmented mp4"
            (member "+frag_keyframe+empty_moov" args :test #'equal))
