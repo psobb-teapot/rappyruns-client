@@ -1054,6 +1054,13 @@ by a click on the balloon (celebration toasts point at the run page)."
                   (recorder-capture-start-real recorder) (get-internal-real-time)
                   (recorder-tmp-path recorder) output
                   (recorder-session-runs recorder) '()
+                  ;; Cleared with the runs it belongs to. RESET-RECORDER
+                  ;; already does it on every route back to :idle, but a
+                  ;; mark inherited from the previous capture would cut
+                  ;; this one down to the old run's length instead of
+                  ;; merely failing to trim - too sharp an edge to leave
+                  ;; resting on that.
+                  (recorder-run-end-ms recorder) nil
                   (recorder-last-error recorder) nil
                   (recorder-state recorder) :recording
                   *capture-failure-notified* nil)
@@ -1251,11 +1258,16 @@ tmp is renamed onto it - and hand it to ON-KEEP."
                                  (recorder-final-path recorder)))
         ;; The trim rides in the remux, so the fragmented fallback keeps
         ;; whatever ffmpeg recorded after the quest ended - the desktop,
-        ;; on a monitor capture. Say so where the GUI shows it: the file
-        ;; is fine to keep, but not to upload unwatched.
+        ;; on a monitor capture. ON-KEEP below hands the file straight to
+        ;; the uploader, and a server with auto-publish on will publish
+        ;; it, so this cannot be left to the status pane: the client
+        ;; usually sits in the tray with no window to read. Balloon it,
+        ;; the way a windowed ddagrab capture warns about overlap.
         (unless remuxed
           (setf (recorder-last-error recorder)
-                "remux failed; recording kept whole - its tail is untrimmed"))
+                "remux failed; recording kept whole - its tail is untrimmed")
+          (notify-user (tr :notify-untrimmed-title)
+                       (tr :notify-untrimmed-text)))
         (when (recorder-on-keep recorder)
           (ignore-errors
             (funcall (recorder-on-keep recorder)

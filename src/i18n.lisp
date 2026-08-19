@@ -467,6 +467,12 @@
     :notify-software-encode-text
     ("The hardware encoder check could not run at startup, so recording uses software encoding - the game may feel slower. It switches back automatically once ffmpeg can start."
      "起動時にハードウェアエンコーダを確認できなかったため、ソフトウェアエンコードで録画しています。ゲームが重く感じられる場合があります。ffmpeg が起動できるようになれば自動的に復帰します。")
+    :notify-untrimmed-title
+    ("Check the end of this recording"
+     "この録画の終わりを確認してください")
+    :notify-untrimmed-text
+    ("The recording could not be re-encoded, so it was kept as it is - including the few seconds ffmpeg went on recording after the quest ended. If you switched away from the game there, your desktop is in those seconds. Watch the end before sharing it."
+     "録画を再エンコードできなかったため、そのまま保存しました。クエスト終了後に ffmpeg が録画し続けた数秒間も含まれています。その間にゲームから他の画面へ切り替えていた場合、デスクトップが写っています。共有する前に終わりを確認してください。")
     :notify-overlap-title
     ("Other windows may appear in the recording"
      "他のウィンドウが録画に写る可能性があります")
