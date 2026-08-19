@@ -168,10 +168,19 @@ the hosted video would show a seekbar that grows while it loads. If
 the remux fails the fragmented original is kept (playable, but quiet
 when the mixer volume is low).
 
+The remux also trims: `-t` caps the output two seconds past the point
+where the capture's last run ended (`session-video-duration-ms`, from
+the same `video_offset_ms` stamps the site seeks telemetry with). ffmpeg
+keeps recording until it has drained and exited, and on a monitor
+capture those extra frames are the desktop — a player who alt-tabs on
+the clear used to publish whatever was behind the game. A capture whose
+runs carry no offset is copied whole rather than cut at a guess, and so
+is one that reaches the fragmented-original fallback above.
+
 Known limits: capture starts a few hundred ms after the start trigger
 (ffmpeg spin-up), gdigrab can't capture a minimized window, and the
-recording gets a ~3 s video tail after the run ends (ffmpeg drains the
-buffered audio before quitting). The fullscreen path maps the monitor
+kept 2 s tail is not a privacy guarantee — an alt-tab fast enough to
+land inside it is still recorded. The fullscreen path maps the monitor
 to ddagrab's DXGI output index by its GDI name (`\\.\DISPLAYn` → n-1),
 which matches on single-GPU machines; a multi-adapter setup could pick
 the wrong monitor there (still a recoverable recording, unlike black

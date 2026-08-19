@@ -35,7 +35,8 @@
            #:cleanup-stale-recordings
            #:build-ffmpeg-args #:build-remux-args
            #:run-video-filename #:sanitize-filename
-           #:best-session-run #:reader-window-title
+           #:best-session-run #:session-video-duration-ms
+           #:reader-window-title
            #:backend-start-capture #:backend-capture-alive-p
            #:backend-request-stop #:backend-kill-capture
            #:backend-close-capture #:backend-rename-file

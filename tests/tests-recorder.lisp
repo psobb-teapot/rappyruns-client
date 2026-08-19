@@ -130,7 +130,12 @@ over the defaults. Restores the global config afterwards (it is bound)."
         (check "remux writes the final name with quest, time and date"
                (and remux
                     (search "ep1-test-quest 9'59.123 (2026-07-04 2130).mp4"
-                            (first (last (third remux)))))))
+                            (first (last (third remux))))))
+        ;; This capture's run is longer than the capture has been
+        ;; running, so no offset could be stamped and there is nothing
+        ;; to measure the cut from: the recording is copied whole.
+        (check "a capture with no usable offset is copied whole"
+               (and remux (not (member "-t" (third remux) :test #'equal)))))
       (recorder-step rec :idle '() "Ephinea PSOBB")
       (check "successful remux deletes the tmp and skips the rename"
              (let ((delete (first (events-of backend :delete))))
@@ -161,6 +166,27 @@ over the defaults. Restores the global config afterwards (it is bound)."
         (recorder-step rec :in-quest (list run) "Ephinea PSOBB")
         (check "an existing video offset is left alone"
                (eql 42 (getf run :video-offset-ms)))))
+    ;; The same offsets cut the recording off shortly after the last run
+    ;; ended, so the frames ffmpeg goes on recording until it exits -
+    ;; the desktop, once the player alt-tabs (run 5348) - stay out.
+    (multiple-value-bind (rec backend) (make-test-recorder)
+      (recorder-step rec :in-quest '() "Ephinea PSOBB")
+      (setf (ephinea-ta-client::recorder-capture-start-real rec)
+            (- (get-internal-real-time)
+               (* 700 internal-time-units-per-second)))
+      (recorder-step rec :idle (list (make-test-run :time-ms 599123))
+                     "Ephinea PSOBB")
+      (setf (mock-alive backend) nil)
+      (recorder-step rec :idle '() "Ephinea PSOBB")
+      (let* ((args (third (first (events-of backend :remux))))
+             (at (position "-t" args :test #'equal)))
+        (check "the remux trims the tail after the last run"
+               (and at
+                    ;; 700 s of capture at the clear, plus the 2 s tail,
+                    ;; plus whatever the test itself spent getting here.
+                    (<= 702 (read-from-string (nth (1+ at) args)) 703)))
+        (check "the trim caps the output rather than seeking the input"
+               (and at (> at (position "-i" args :test #'equal))))))
     ;; Abandoned quest: no completed runs, file deleted.
     (multiple-value-bind (rec backend) (make-test-recorder)
       (recorder-step rec :in-quest '() "Ephinea PSOBB")
@@ -376,6 +402,31 @@ over the defaults. Restores the global config afterwards (it is bound)."
                          (list (list :quest-slug "ab1" :time-ms 10 :aborted t)
                                (list :quest-slug "ab2" :time-ms 20 :aborted t)))
                         :quest-slug)))
+  (check "the trim keeps the run plus its tail"
+         (eql 701123
+              (session-video-duration-ms
+               (list (list :time-ms 599123 :video-offset-ms 100000)))))
+  ;; The file holds the whole capture, so the cut follows whatever
+  ;; finished LAST - here an aborted retry after the clear that names
+  ;; the file, which BEST-SESSION-RUN would have picked instead.
+  (check "the trim follows the last run to end, not the longest"
+         (eql 642000
+              (session-video-duration-ms
+               (list (list :time-ms 600000 :video-offset-ms 0)
+                     (list :time-ms 30000 :video-offset-ms 610000
+                           :aborted t)))))
+  (check "the trim ignores runs that carry no offset"
+         (eql 122500
+              (session-video-duration-ms
+               (list (list :time-ms 120500 :video-offset-ms 0)
+                     (list :time-ms 599123)))))
+  ;; No offset anywhere: cutting at a guessed place could lose the run
+  ;; itself, so the remux copies the recording whole instead.
+  (check "an unstampable capture is not trimmed"
+         (null (session-video-duration-ms
+                (list (list :time-ms 599123)))))
+  (check "an empty session is not trimmed"
+         (null (session-video-duration-ms '())))
   (let ((args (build-ffmpeg-args :window-title "T" :output-path "out.mp4")))
     (check "ffmpeg args use fragmented mp4"
            (member "+frag_keyframe+empty_moov" args :test #'equal))

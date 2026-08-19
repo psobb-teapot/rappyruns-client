@@ -328,6 +328,24 @@ the audio re-encodes through loudnorm, which still runs far faster
 than real time; the margin covers an hour-long recording on a slow
 machine under load.")
 
+(defparameter +keep-tail-seconds+ 2
+  "How much video to keep after the last run of a capture ended
+\(SESSION-VIDEO-DURATION-MS trims the rest off during the remux).
+
+Capture stops when the detector goes :idle, but ffmpeg only exits once
+it has drained and finalized - up to +STOP-GRACE-SECONDS+ later - and
+every frame in between lands in the video. On a monitor capture
+\(fullscreen PSOBB, or a windowed game WGC cannot read) those frames are
+the whole desktop, so a player who alt-tabs the moment the quest ends
+publishes whatever was behind the game: the field report that prompted
+this, run 5348, ends on the submitter's desktop.
+
+Two seconds rather than zero: the clear itself is what a reviewer
+checks a recording for, and cutting on the trigger frame would clip the
+last blow and the timer stopping. It cannot be a full privacy guarantee
+either way - a fast enough alt-tab still lands inside the tail - but it
+turns an open-ended exposure into a bounded, predictable one.")
+
 ;;; Diagnostics report. The capture pipeline writes its decisions to
 ;;; %TEMP%\ephinea-ta-recording.log (RECORDING-LOG, ffmpeg-win32); after
 ;;; each video upload the client sends the log's tail to the server
@@ -881,7 +899,7 @@ loud, so -24 drops another ~4 dB. Kept above the -70..-24 floor where
 loudnorm starts fighting to raise near-silent captures, so quiet
 recordings stay audible while sitting well below typical web video.")
 
-(defun build-remux-args (input-path output-path)
+(defun build-remux-args (input-path output-path &key duration-ms)
   "ffmpeg argv rewriting the fragmented recording as a regular MP4 with
 the moov (duration + seek index) at the front. Video is stream-copied;
 audio is loudness-normalized here, NOT during capture (loudnorm's
@@ -894,15 +912,30 @@ run 88), and the 67 ms atrim that replaced it turned out to be
 compensating the B-frame video start offset that only SOME players
 honored - that offset is gone at the source now (-bf 0 in
 BUILD-FFMPEG-ARGS), so the streams need no correction. The offline
-pass runs far faster than real time."
-  (list "-y" "-loglevel" "error"
-        "-i" input-path
-        "-c:v" "copy"
-        "-af" (format nil "loudnorm=I=~d:TP=-1.5:LRA=11,aresample=48000"
-                      +record-loudness-lufs+)
-        "-c:a" "aac" "-b:a" "160k"
-        "-movflags" "+faststart"
-        output-path))
+pass runs far faster than real time.
+
+DURATION-MS, when given (SESSION-VIDEO-DURATION-MS), caps the output
+there and drops the tail ffmpeg kept recording after the quest ended -
+the desktop, on a monitor capture. It sits after -i and before the
+output path, which is what makes it an OUTPUT option: ffmpeg stops
+writing packets past that timestamp instead of seeking the input.
+Stream copy needs no keyframe to end on, and a duration longer than the
+file simply writes the whole thing."
+  (append
+   (list "-y" "-loglevel" "error"
+         "-i" input-path)
+   (when duration-ms
+     ;; Whole and fractional seconds formatted by hand: the value is
+     ;; exact milliseconds and must not pick up a float rounding error
+     ;; on its way to becoming the cut point.
+     (list "-t" (format nil "~d.~3,'0d"
+                        (floor duration-ms 1000) (mod duration-ms 1000))))
+   (list "-c:v" "copy"
+         "-af" (format nil "loudnorm=I=~d:TP=-1.5:LRA=11,aresample=48000"
+                       +record-loudness-lufs+)
+         "-c:a" "aac" "-b:a" "160k"
+         "-movflags" "+faststart"
+         output-path)))
 
 (defun remove-subseq (list subseq)
   "LIST without the first occurrence of the consecutive SUBSEQ."
@@ -1078,6 +1111,33 @@ first grabbed frame); the run page's manual sync form can refine it."
                        (null (getf run :video-offset-ms)))
               (nconc run (list :video-offset-ms offset)))))))))
 
+(defun session-video-duration-ms (runs)
+  "How much of the capture is worth keeping: the video timestamp where
+the last of RUNS ended, plus +KEEP-TAIL-SECONDS+. The remux caps the
+output there, so the desktop frames ffmpeg records between the quest
+ending and its own exit never reach the file. NIL when no run carries a
+:VIDEO-OFFSET-MS - an untrimmed recording beats one cut at a guessed
+place - and the remux then copies everything, as it always did.
+
+The LAST run, not the best one: the file holds the whole capture, and a
+segment that finished after the clear it was cut from is still the
+player's own footage.
+
+Every input is a wall clock elapsed (ANNOTATE-VIDEO-OFFSETS), which
+runs AHEAD of the video timestamp by the ffmpeg spin-up - video time 0
+is the first grabbed frame, a few hundred ms after the spawn - and a
+capture that cannot keep up falls further behind still. Both errors
+push the cut later than the run's real end, never into it."
+  (let ((end nil))
+    (dolist (run runs)
+      (let ((offset (getf run :video-offset-ms)))
+        (when offset
+          (let ((run-end (+ offset (getf run :time-ms 0))))
+            (when (or (null end) (> run-end end))
+              (setf end run-end))))))
+    (when end
+      (+ end (* 1000 +keep-tail-seconds+)))))
+
 (defun begin-stop (recorder)
   "Ask ffmpeg to finish and decide the file's fate: keep it under the
 best completed run's name, or delete it when nothing completed."
@@ -1123,13 +1183,24 @@ file (or delete an abandoned one)."
 
 (defun begin-remux (recorder)
   "Start the background ffmpeg rewriting the kept fragmented file into
-FINAL-PATH; SAVE-RECORDING runs once it exits. When ffmpeg cannot even
-start, keep the fragmented original rather than lose the recording."
+FINAL-PATH, trimmed to the last run plus its tail; SAVE-RECORDING runs
+once it exits. When ffmpeg cannot even start, keep the fragmented
+original rather than lose the recording - untrimmed, since the trim
+lives in the remux, so a recording that reaches the fallback still
+needs its tail checked before it is shared.
+
+The duration is read here, not decided at BEGIN-STOP with the file's
+name and fate: RECORDER-STEP goes on crediting runs to the capture
+while it is :stopping, and one of those would be cut off by a length
+fixed before it arrived."
   (multiple-value-bind (capture error)
       (backend-start-remux (recorder-backend recorder)
                            (resolve-ffmpeg-path)
-                           (build-remux-args (recorder-tmp-path recorder)
-                                             (recorder-final-path recorder)))
+                           (build-remux-args
+                            (recorder-tmp-path recorder)
+                            (recorder-final-path recorder)
+                            :duration-ms (session-video-duration-ms
+                                          (recorder-session-runs recorder))))
     (declare (ignore error))
     (if capture
         (setf (recorder-remux-capture recorder) capture
