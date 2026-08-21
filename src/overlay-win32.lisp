@@ -46,7 +46,12 @@
 ;; live in ffmpeg-win32.lisp (loaded earlier); this file reuses them
 ;; (WINDOW-RECT-OF for the game window's placement).
 
-;; hWndInsertAfter is unused (SWP_NOZORDER) so :size-t 0 is fine.
+;; hWndInsertAfter carries a real value: OVERLAY-KEEP-TOPMOST passes
+;; +HWND-TOPMOST+ (-1 as unsigned :size-t, x64) with SWP_NOZORDER
+;; deliberately omitted - that call is the ONLY thing that returns the
+;; window to the topmost band after Windows drops it out, and nothing
+;; in the SBCL test net compiles this file. The placement calls pass 0
+;; under SWP_NOZORDER, where the slot is ignored.
 (fli:define-foreign-function (%set-window-pos "SetWindowPos")
     ((hwnd :pointer)
      (insert-after :size-t)
@@ -529,6 +534,10 @@ twelve windows below the game.")
 the next tick to re-assert (thread start, and every return from
 concealed - a hide/show cycle is exactly when the band is lost).")
 
+(defvar *overlay-topmost-failed* nil
+  "T once a failing re-assert has been logged, so a persistent failure
+says so once instead of once a second. Cleared by the next success.")
+
 (defun overlay-ghost-active-p ()
   "Show the ghost panel (vs header + room-split rows) only while a
 ghost is attached; a ghostless run keeps the compact v0.51.0 timer
@@ -971,7 +980,13 @@ every +OVERLAY-TOPMOST-INTERVAL-MS+ and only while the game holds the
 foreground: an overlay hoisted over an app the player deliberately
 brought up would be worse than one hidden behind the game. Everything
 else about the placement is left alone (SWP_NOMOVE / SWP_NOSIZE), and
-SWP_NOACTIVATE keeps the focus on the game."
+SWP_NOACTIVATE keeps the focus on the game.
+
+The timestamp is committed before the call, so a persistently failing
+SetWindowPos costs one attempt a second rather than one per 30 Hz
+frame - but then a failure would be invisible, and \"the overlay is
+behind the game\" looks exactly like the bug this guards against, so
+the first failure of a streak goes to the recording log."
   (when game-foreground-p
     (let ((now (get-internal-real-time))
           (interval (max 1 (round (* +overlay-topmost-interval-ms+
@@ -980,9 +995,14 @@ SWP_NOACTIVATE keeps the focus on the game."
       (when (or (null *overlay-topmost-at*)
                 (>= (- now *overlay-topmost-at*) interval))
         (setf *overlay-topmost-at* now)
-        (%set-window-pos hwnd +hwnd-topmost+ 0 0 0 0
-                         (logior +swp-nomove+ +swp-nosize+
-                                 +swp-noactivate+))))))
+        (cond ((%set-window-pos hwnd +hwnd-topmost+ 0 0 0 0
+                                (logior +swp-nomove+ +swp-nosize+
+                                        +swp-noactivate+))
+               (setf *overlay-topmost-failed* nil))
+              ((not *overlay-topmost-failed*)
+               (setf *overlay-topmost-failed* t)
+               (win32-log "overlay: HWND_TOPMOST re-assert failed - ~
+the panel may be sitting behind the game")))))))
 
 (defun overlay-timer-tick (hwnd)
   "Follow the game window and repaint while wanted, hide otherwise
@@ -1143,6 +1163,7 @@ must still not leak the fonts, brushes and back buffer."
                 *overlay-full-p* nil
                 *overlay-placement* nil
                 *overlay-topmost-at* nil
+                *overlay-topmost-failed* nil
                 ;; Drag state must not survive a thread restart: the
                 ;; fresh window starts WS_EX_TRANSPARENT, so a stale
                 ;; *overlay-drag* could never receive its button-up
