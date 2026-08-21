@@ -353,6 +353,9 @@
   "HTTRANSPARENT (-1) encoded as the window procedure's unsigned
 LRESULT: hit testing skips this window and continues to the one below,
 so the click lands on the game.")
+(defconstant +hwnd-topmost+ #xFFFFFFFFFFFFFFFF
+  "HWND_TOPMOST (-1) as SetWindowPos's unsigned :size-t
+hWndInsertAfter slot takes it (x64 build, like +HT-TRANSPARENT+).")
 (defconstant +gwl-exstyle+ -20)
 (defconstant +vk-control+ #x11)
 (defconstant +bk-transparent+ 1)
@@ -509,6 +512,22 @@ game window skips the call (it would otherwise fire at the marker's
 (defvar *overlay-timer-current-ms* nil
   "The interval the overlay timer is currently set to, so the tick can
 re-arm it only when the wanted rate actually changes.")
+
+(defconstant +overlay-topmost-interval-ms+ 1000
+  "How often the tick re-asserts HWND_TOPMOST. WS_EX_TOPMOST is set
+once at creation and the follow-the-game SetWindowPos runs with
+SWP_NOZORDER, so nothing ever put the window back on top after Windows
+dropped it out of the topmost band - which happens in the field
+(another topmost app, a display-mode switch, the game re-asserting its
+own z-order): the overlay stayed visible and correctly placed but sat
+BEHIND the game, indistinguishable from the feature being off, and no
+quest boundary healed it. Caught live on 2026-08-21 with the overlay
+twelve windows below the game.")
+
+(defvar *overlay-topmost-at* nil
+  "Internal-real-time of the last HWND_TOPMOST re-assert; NIL forces
+the next tick to re-assert (thread start, and every return from
+concealed - a hide/show cycle is exactly when the band is lost).")
 
 (defun overlay-ghost-active-p ()
   "Show the ghost panel (vs header + room-split rows) only while a
@@ -940,7 +959,30 @@ already NIL by then, so the guard makes it a no-op."
   ;; quests - the next paint recreates it, the one-time cost the
   ;; size-change path already pays routinely. Also clears the
   ;; failed-size memo so the next quest retries a failed creation.
-  (ignore-errors (overlay-release-backbuffer)))
+  (ignore-errors (overlay-release-backbuffer))
+  ;; Whatever put the game in front of us may well have taken the
+  ;; topmost band with it, so the next show re-asserts immediately
+  ;; instead of waiting out the interval.
+  (setf *overlay-topmost-at* nil))
+
+(defun overlay-keep-topmost (hwnd game-foreground-p)
+  "Put the window back at the head of the topmost band, at most once
+every +OVERLAY-TOPMOST-INTERVAL-MS+ and only while the game holds the
+foreground: an overlay hoisted over an app the player deliberately
+brought up would be worse than one hidden behind the game. Everything
+else about the placement is left alone (SWP_NOMOVE / SWP_NOSIZE), and
+SWP_NOACTIVATE keeps the focus on the game."
+  (when game-foreground-p
+    (let ((now (get-internal-real-time))
+          (interval (max 1 (round (* +overlay-topmost-interval-ms+
+                                     internal-time-units-per-second)
+                                  1000))))
+      (when (or (null *overlay-topmost-at*)
+                (>= (- now *overlay-topmost-at*) interval))
+        (setf *overlay-topmost-at* now)
+        (%set-window-pos hwnd +hwnd-topmost+ 0 0 0 0
+                         (logior +swp-nomove+ +swp-nosize+
+                                 +swp-noactivate+))))))
 
 (defun overlay-timer-tick (hwnd)
   "Follow the game window and repaint while wanted, hide otherwise
@@ -948,7 +990,8 @@ already NIL by then, so the guard makes it a no-op."
 degenerate client rect). A transient rect-query failure (display-mode
 switch, window recreation) keeps the overlay up at its last placement
 rather than blinking it off. Re-arms the timer between the pill rate
-and the marker rate as the in-world marker comes and goes."
+and the marker rate as the in-world marker comes and goes, and keeps
+re-claiming the topmost band (see OVERLAY-KEEP-TOPMOST)."
   (let ((wanted-ms (if (overlay-marker-wanted-p)
                        +overlay-marker-timer-ms+
                        +overlay-timer-ms+)))
@@ -970,14 +1013,17 @@ and the marker rate as the in-world marker comes and goes."
        ;; foreground window, so Ctrl+clicks aimed at another app that
        ;; overlaps the topmost panel are never eaten. Input goes back
        ;; to full click-through once Ctrl is released (an in-flight
-       ;; drag keeps it until its button-up).
-       (let ((arm (and (minusp (%get-async-key-state +vk-control+))
-                       (fli:pointer-eq game (%get-foreground-window)))))
+       ;; drag keeps it until its button-up). The same foreground test
+       ;; gates the topmost re-assert.
+       (let* ((foreground (fli:pointer-eq game (%get-foreground-window)))
+              (arm (and (minusp (%get-async-key-state +vk-control+))
+                        foreground)))
          (cond ((and arm (not *overlay-input-enabled*))
                 (ignore-errors (overlay-apply-input hwnd t)))
                ((and (not arm) *overlay-input-enabled*
                      (null *overlay-drag*))
-                (ignore-errors (overlay-apply-input hwnd nil)))))
+                (ignore-errors (overlay-apply-input hwnd nil))))
+         (ignore-errors (overlay-keep-topmost hwnd foreground)))
        (%invalidate-rect hwnd fli:*null-pointer* nil)))))
 
 (fli:define-foreign-callable
@@ -1096,6 +1142,7 @@ must still not leak the fonts, brushes and back buffer."
                 *overlay-size* nil
                 *overlay-full-p* nil
                 *overlay-placement* nil
+                *overlay-topmost-at* nil
                 ;; Drag state must not survive a thread restart: the
                 ;; fresh window starts WS_EX_TRANSPARENT, so a stale
                 ;; *overlay-drag* could never receive its button-up
